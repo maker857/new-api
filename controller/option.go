@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/console_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
@@ -292,6 +293,84 @@ func UpdateOption(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{
 				"success": false,
 				"message": err.Error(),
+			})
+			return
+		}
+	case service.DiagnosticCaptureModeKey:
+		if !service.DiagnosticCaptureModeValid(option.Value.(string)) {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "诊断日志模式只能是 metadata 或 full",
+			})
+			return
+		}
+	case service.DiagnosticCaptureMaxBodyMBKey:
+		maxBodyMB, parseErr := strconv.Atoi(strings.TrimSpace(option.Value.(string)))
+		if parseErr != nil || maxBodyMB < 1 {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "诊断日志 body 上限必须是大于 0 的数字",
+			})
+			return
+		}
+	case service.ErrorRewriteRulesJSONKey:
+		if _, parseErr := service.ParseErrorRewriteRulesJSON(option.Value.(string)); parseErr != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "error rewrite rules JSON is invalid: " + parseErr.Error(),
+			})
+			return
+		}
+	case service.ErrorRewriteSourceKey:
+		source := strings.ToLower(strings.TrimSpace(option.Value.(string)))
+		if source != "local" && source != "http" && source != "sql" {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "error rewrite source must be local, http, or sql",
+			})
+			return
+		}
+	case service.ErrorRewriteMonitorRulesJSONKey:
+		if _, parseErr := service.ParseErrorRewriteMonitorRulesJSON(option.Value.(string)); parseErr != nil {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "error rewrite monitor rules JSON is invalid: " + parseErr.Error(),
+			})
+			return
+		}
+	case service.ErrorRewriteSQLDriverKey:
+		driver := strings.ToLower(strings.TrimSpace(option.Value.(string)))
+		if driver != "mysql" && driver != "postgres" && driver != "postgresql" && driver != "sqlite" {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "error rewrite SQL driver must be mysql, postgres, or sqlite",
+			})
+			return
+		}
+	case service.ErrorRewriteSQLQueryKey:
+		query := strings.ToLower(strings.TrimSpace(option.Value.(string)))
+		if query != "" && !strings.HasPrefix(query, "select") {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "error rewrite SQL query must be a SELECT statement",
+			})
+			return
+		}
+	case service.ErrorRewriteRefreshSecondsKey:
+		refreshSeconds, parseErr := strconv.Atoi(strings.TrimSpace(option.Value.(string)))
+		if parseErr != nil || refreshSeconds < 1 {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "error rewrite refresh interval must be greater than 0",
+			})
+			return
+		}
+	case service.ErrorRewriteRequestTimeoutMSKey:
+		timeoutMS, parseErr := strconv.Atoi(strings.TrimSpace(option.Value.(string)))
+		if parseErr != nil || timeoutMS < 100 {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "error rewrite request timeout must be at least 100ms",
 			})
 			return
 		}

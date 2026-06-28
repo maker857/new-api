@@ -1,0 +1,258 @@
+{
+  "format": "cpa-sections-json",
+  "version": 1,
+  "trace_id": "04a32e268ff58df117b4b9cfc62b3e5f",
+  "channel": "test",
+  "started_at": "2026-06-28T11:59:31.7254039Z",
+  "updated_at": "2026-06-28T11:59:33.8320366Z",
+  "request_info": {
+    "version": "v0.0.0",
+    "url": "/v1/messages",
+    "method": "POST",
+    "downstream_transport": "http",
+    "upstream_transport": "http",
+    "timestamp": "2026-06-28T11:59:33.8320366Z",
+    "remote_addr": "127.0.0.1"
+  },
+  "headers": {
+    "Accept": [
+      "*/*"
+    ],
+    "Accept-Encoding": [
+      "gzip, deflate, br"
+    ],
+    "Anthropic-Version": [
+      "2023-06-01"
+    ],
+    "Authorization": [
+      "[REDACTED]"
+    ],
+    "Connection": [
+      "keep-alive"
+    ],
+    "Content-Length": [
+      "130"
+    ],
+    "Content-Type": [
+      "application/json"
+    ],
+    "User-Agent": [
+      "Apifox/1.0.0 (https://apifox.com)"
+    ]
+  },
+  "request_body": {
+    "mode": "full",
+    "encoding": "json",
+    "original_size": 130,
+    "saved_size": 130,
+    "truncated": false,
+    "text": "{\r\n  \"model\": \"gpt-5.5\",\r\n  \"max_tokens\": 64,\r\n  \"messages\": [\r\n    {\r\n      \"role\": \"user\",\r\n      \"content\": \"hi\"\r\n    }\r\n  ]\r\n}",
+    "json": {
+      "max_tokens": 64,
+      "messages": [
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "model": "gpt-5.5"
+    }
+  },
+  "api_requests": [
+    {
+      "sequence": 3,
+      "timestamp": "2026-06-28T11:59:31.7289035Z",
+      "upstream_url": "http://38.181.47.21/v1/chat/completions",
+      "http_method": "POST",
+      "headers": {
+        "Accept": [
+          "*/*"
+        ],
+        "Authorization": [
+          "[REDACTED]"
+        ],
+        "Content-Type": [
+          "application/json"
+        ]
+      },
+      "body": {
+        "mode": "full",
+        "encoding": "json",
+        "original_size": 90,
+        "saved_size": 90,
+        "truncated": false,
+        "text": "{\"model\":\"gpt-5.5\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_completion_tokens\":64}",
+        "json": {
+          "max_completion_tokens": 64,
+          "messages": [
+            {
+              "content": "hi",
+              "role": "user"
+            }
+          ],
+          "model": "gpt-5.5"
+        }
+      }
+    }
+  ],
+  "api_responses": [
+    {
+      "sequence": 3,
+      "timestamp": "2026-06-28T11:59:33.8194282Z",
+      "status": 200,
+      "headers": {
+        "Access-Control-Allow-Headers": [
+          "*"
+        ],
+        "Access-Control-Allow-Methods": [
+          "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+        ],
+        "Access-Control-Allow-Origin": [
+          "*"
+        ],
+        "Access-Control-Expose-Headers": [
+          "X-CPA-VERSION, X-CPA-COMMIT, X-CPA-BUILD-DATE, X-CPA-SUPPORT-PLUGIN, X-CPA-HOME-VERSION, X-CPA-HOME-BUILD-DATE, X-SERVER-VERSION, X-SERVER-BUILD-DATE"
+        ],
+        "Cache-Control": [
+          "no-cache"
+        ],
+        "Connection": [
+          "keep-alive"
+        ],
+        "Content-Length": [
+          "480"
+        ],
+        "Content-Type": [
+          "application/json"
+        ],
+        "Date": [
+          "Sun, 28 Jun 2026 11:59:55 GMT"
+        ],
+        "Server": [
+          "nginx"
+        ],
+        "Strict-Transport-Security": [
+          "max-age=31536000"
+        ],
+        "X-New-Api-Version": [
+          "v1.0.0-rc.11"
+        ],
+        "X-Oneapi-Request-Id": [
+          "202606281159532952832018268d9d6gl7CSFQT"
+        ]
+      },
+      "body": {
+        "mode": "full",
+        "encoding": "json",
+        "original_size": 480,
+        "saved_size": 480,
+        "truncated": false,
+        "text": "{\"id\":\"resp_0067c2e20b0886f9016a410cb9c430819abf0f7657f594aeec\",\"object\":\"chat.completion\",\"created\":1782647993,\"model\":\"gpt-5.5\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"Hi! How can I help?\",\"reasoning_content\":null,\"tool_calls\":null},\"finish_reason\":\"stop\",\"native_finish_reason\":\"stop\"}],\"usage\":{\"completion_tokens\":11,\"total_tokens\":314,\"prompt_tokens\":303,\"prompt_tokens_details\":{\"cached_tokens\":0},\"completion_tokens_details\":{\"reasoning_tokens\":0}}}",
+        "json": {
+          "choices": [
+            {
+              "finish_reason": "stop",
+              "index": 0,
+              "message": {
+                "content": "Hi! How can I help?",
+                "reasoning_content": null,
+                "role": "assistant",
+                "tool_calls": null
+              },
+              "native_finish_reason": "stop"
+            }
+          ],
+          "created": 1782647993,
+          "id": "resp_0067c2e20b0886f9016a410cb9c430819abf0f7657f594aeec",
+          "model": "gpt-5.5",
+          "object": "chat.completion",
+          "usage": {
+            "completion_tokens": 11,
+            "completion_tokens_details": {
+              "reasoning_tokens": 0
+            },
+            "prompt_tokens": 303,
+            "prompt_tokens_details": {
+              "cached_tokens": 0
+            },
+            "total_tokens": 314
+          }
+        }
+      }
+    }
+  ],
+  "response": {
+    "status": 200,
+    "duration_ms": 2106,
+    "headers": {
+      "Access-Control-Allow-Headers": [
+        "*"
+      ],
+      "Access-Control-Allow-Methods": [
+        "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+      ],
+      "Access-Control-Allow-Origin": [
+        "*"
+      ],
+      "Access-Control-Expose-Headers": [
+        "X-CPA-VERSION, X-CPA-COMMIT, X-CPA-BUILD-DATE, X-CPA-SUPPORT-PLUGIN, X-CPA-HOME-VERSION, X-CPA-HOME-BUILD-DATE, X-SERVER-VERSION, X-SERVER-BUILD-DATE"
+      ],
+      "Cache-Control": [
+        "no-cache"
+      ],
+      "Connection": [
+        "keep-alive"
+      ],
+      "Content-Length": [
+        "382"
+      ],
+      "Content-Type": [
+        "application/json"
+      ],
+      "Date": [
+        "Sun, 28 Jun 2026 11:59:55 GMT"
+      ],
+      "Server": [
+        "nginx"
+      ],
+      "Strict-Transport-Security": [
+        "max-age=31536000"
+      ],
+      "X-New-Api-Version": [
+        "v1.0.0-rc.11"
+      ],
+      "X-Oneapi-Request-Id": [
+        "202606281159317254039008268d9d6X9isCIHq"
+      ]
+    },
+    "body": {
+      "mode": "full",
+      "encoding": "json",
+      "original_size": 382,
+      "saved_size": 382,
+      "truncated": false,
+      "text": "{\"id\":\"resp_0067c2e20b0886f9016a410cb9c430819abf0f7657f594aeec\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Hi! How can I help?\"}],\"stop_reason\":\"end_turn\",\"model\":\"gpt-5.5\",\"usage\":{\"input_tokens\":303,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":11,\"claude_cache_creation_5_m_tokens\":0,\"claude_cache_creation_1_h_tokens\":0}}",
+      "json": {
+        "content": [
+          {
+            "text": "Hi! How can I help?",
+            "type": "text"
+          }
+        ],
+        "id": "resp_0067c2e20b0886f9016a410cb9c430819abf0f7657f594aeec",
+        "model": "gpt-5.5",
+        "role": "assistant",
+        "stop_reason": "end_turn",
+        "type": "message",
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "claude_cache_creation_1_h_tokens": 0,
+          "claude_cache_creation_5_m_tokens": 0,
+          "input_tokens": 303,
+          "output_tokens": 11
+        }
+      }
+    }
+  }
+}

@@ -67,6 +67,11 @@ type ChannelInfo struct {
 	MultiKeyDisabledTime   map[int]int64         `json:"multi_key_disabled_time,omitempty"`   // key禁用时间列表，key index -> time
 	MultiKeyPollingIndex   int                   `json:"multi_key_polling_index"`             // 多Key模式下轮询的key索引
 	MultiKeyMode           constant.MultiKeyMode `json:"multi_key_mode"`
+	ErrorRewriteEnabled    *bool                 `json:"error_rewrite_enabled,omitempty"`
+}
+
+func (c ChannelInfo) IsErrorRewriteEnabled() bool {
+	return c.ErrorRewriteEnabled == nil || *c.ErrorRewriteEnabled
 }
 
 type ChannelSortOptions struct {

@@ -219,6 +219,14 @@ func SetApiRouter(router *gin.Engine) {
 			performanceRoute.GET("/logs", controller.GetLogFiles)
 			performanceRoute.DELETE("/logs", controller.CleanupLogFiles)
 		}
+		apiRouter.POST("/error-rewrite/monitor-rules/sync", controller.SyncErrorRewriteMonitorRules)
+		apiRouter.POST("/log-management/blacklist-rules/sync", controller.SyncErrorRewriteMonitorRules)
+		errorRewriteRoute := apiRouter.Group("/error-rewrite")
+		errorRewriteRoute.Use(middleware.RootAuth())
+		{
+			errorRewriteRoute.GET("/rules", controller.GetErrorRewriteRules)
+			errorRewriteRoute.POST("/rules/refresh", controller.PullErrorRewriteMonitorRules)
+		}
 		ratioSyncRoute := apiRouter.Group("/ratio_sync")
 		ratioSyncRoute.Use(middleware.RootAuth())
 		{

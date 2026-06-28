@@ -1,0 +1,69 @@
+{
+  "format": "cpa-sections-json",
+  "version": 1,
+  "captured_at": "2026-06-28T11:51:01.1809067Z",
+  "trace_id": "37c8500ccfb70066c8e7f01621d91f47",
+  "channel": "unknown",
+  "direction": "inbound",
+  "section": "request",
+  "sequence": 4,
+  "meta": {
+    "channel": "unknown",
+    "role": "inbound",
+    "sequence": 4,
+    "trace_id": "37c8500ccfb70066c8e7f01621d91f47"
+  },
+  "request_info": {
+    "version": "v0.0.0",
+    "url": "/v1/messages",
+    "method": "POST",
+    "downstream_transport": "http",
+    "upstream_transport": "http",
+    "timestamp": "2026-06-28T11:51:01.1809067Z",
+    "remote_addr": "127.0.0.1"
+  },
+  "headers": {
+    "Accept": [
+      "*/*"
+    ],
+    "Accept-Encoding": [
+      "gzip, deflate, br"
+    ],
+    "Anthropic-Version": [
+      "2023-06-01"
+    ],
+    "Authorization": [
+      "[REDACTED]"
+    ],
+    "Connection": [
+      "keep-alive"
+    ],
+    "Content-Length": [
+      "130"
+    ],
+    "Content-Type": [
+      "application/json"
+    ],
+    "User-Agent": [
+      "Apifox/1.0.0 (https://apifox.com)"
+    ]
+  },
+  "request_body": {
+    "mode": "full",
+    "encoding": "json",
+    "original_size": 130,
+    "saved_size": 130,
+    "truncated": false,
+    "text": "{\r\n  \"model\": \"gpt-5.5\",\r\n  \"max_tokens\": 64,\r\n  \"messages\": [\r\n    {\r\n      \"role\": \"user\",\r\n      \"content\": \"hi\"\r\n    }\r\n  ]\r\n}",
+    "json": {
+      "max_tokens": 64,
+      "messages": [
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "model": "gpt-5.5"
+    }
+  }
+}

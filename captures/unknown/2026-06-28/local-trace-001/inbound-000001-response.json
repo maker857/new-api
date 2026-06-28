@@ -1,0 +1,30 @@
+{
+  "body_capture": "full",
+  "body_original_size": 122,
+  "body_saved_size": 122,
+  "body_truncated": false,
+  "captured_at": "2026-06-28T07:31:17.5545344Z",
+  "channel": "unknown",
+  "duration_ms": 364,
+  "headers": {
+    "Cache-Control": [
+      "max-age=604800"
+    ],
+    "Cache-Version": [
+      "b688f2fb5be447c25e5aa3bd063087a83db32a288bf6a4f35f2d8db310e40b14"
+    ],
+    "Content-Type": [
+      "application/json; charset=utf-8"
+    ],
+    "X-New-Api-Version": [
+      "v0.0.0"
+    ],
+    "X-Oneapi-Request-Id": [
+      "202606280731171901019008268d9d610QL65cL"
+    ]
+  },
+  "role": "inbound",
+  "sequence": 1,
+  "status_code": 404,
+  "trace_id": "local-trace-001"
+}

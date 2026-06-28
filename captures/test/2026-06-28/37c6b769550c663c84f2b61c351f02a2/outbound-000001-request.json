@@ -1,0 +1,23 @@
+{
+  "body_original_size": 105,
+  "body_saved_size": 105,
+  "body_truncated": false,
+  "captured_at": "2026-06-28T09:06:23.9789744Z",
+  "channel": "test",
+  "headers": {
+    "Accept": [
+      ""
+    ],
+    "Authorization": [
+      "[REDACTED]"
+    ],
+    "Content-Type": [
+      "application/json"
+    ]
+  },
+  "method": "POST",
+  "role": "outbound",
+  "sequence": 1,
+  "trace_id": "37c6b769550c663c84f2b61c351f02a2",
+  "url": "http://38.181.47.21/v1/chat/completions"
+}

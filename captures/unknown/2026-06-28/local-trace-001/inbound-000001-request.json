@@ -1,0 +1,36 @@
+{
+  "body_original_size": 15,
+  "body_saved_size": 15,
+  "body_truncated": false,
+  "captured_at": "2026-06-28T07:31:17.5511527Z",
+  "channel": "unknown",
+  "headers": {
+    "Connection": [
+      "Keep-Alive"
+    ],
+    "Content-Length": [
+      "15"
+    ],
+    "Content-Type": [
+      "application/json"
+    ],
+    "Expect": [
+      "100-continue"
+    ],
+    "User-Agent": [
+      "Mozilla/5.0 (Windows NT; Windows NT 10.0; zh-CN) WindowsPowerShell/5.1.22621.4249"
+    ],
+    "X-Diagnostic-Channel": [
+      "localtest"
+    ],
+    "X-Diagnostic-Trace-Id": [
+      "local-trace-001"
+    ]
+  },
+  "method": "POST",
+  "path": "/v1/test-diagnostic-capture",
+  "remote_addr": "127.0.0.1",
+  "role": "inbound",
+  "sequence": 1,
+  "trace_id": "local-trace-001"
+}

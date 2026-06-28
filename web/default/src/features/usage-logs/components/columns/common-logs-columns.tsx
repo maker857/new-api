@@ -423,9 +423,14 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
                     )}
                   </div>
                   {log.channel_name && (
-                    <span className='text-muted-foreground/70 truncate [font-family:var(--font-body)] !text-xs'>
-                      {channelName}
-                    </span>
+                    <StatusBadge
+                      label={channelName}
+                      copyText={sensitiveVisible ? log.channel_name : undefined}
+                      showDot={false}
+                      size='sm'
+                      type='text'
+                      className='text-muted-foreground/70 max-w-full truncate [font-family:var(--font-body)] !text-xs'
+                    />
                   )}
                 </TooltipTrigger>
                 <TooltipContent>
@@ -568,8 +573,28 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
             </Tooltip>
           </TooltipProvider>
           {metaParts.length > 0 && (
-            <span className='text-muted-foreground/60 truncate [font-family:var(--font-body)] !text-xs'>
-              {metaParts.join(' · ')}
+            <span className='text-muted-foreground/60 flex min-w-0 items-center gap-1 truncate [font-family:var(--font-body)] !text-xs'>
+              {group && (
+                <StatusBadge
+                  label={sensitiveVisible ? group : '***'}
+                  copyText={sensitiveVisible ? group : undefined}
+                  showDot={false}
+                  size='sm'
+                  type='text'
+                  className='text-muted-foreground/60 max-w-full truncate [font-family:var(--font-body)] !text-xs'
+                />
+              )}
+              {group && groupRatioText && <span className='shrink-0'>·</span>}
+              {groupRatioText && (
+                <StatusBadge
+                  label={groupRatioText}
+                  copyable={false}
+                  showDot={false}
+                  size='sm'
+                  type='text'
+                  className='text-muted-foreground/60 max-w-full truncate [font-family:var(--font-body)] !text-xs'
+                />
+              )}
             </span>
           )}
         </div>

@@ -1,0 +1,39 @@
+{
+  "body_original_size": 142,
+  "body_saved_size": 142,
+  "body_truncated": false,
+  "captured_at": "2026-06-28T10:53:40.4447474Z",
+  "channel": "unknown",
+  "headers": {
+    "Accept": [
+      "*/*"
+    ],
+    "Accept-Encoding": [
+      "gzip, deflate, br"
+    ],
+    "Anthropic-Version": [
+      "2023-06-01"
+    ],
+    "Authorization": [
+      "[REDACTED]"
+    ],
+    "Connection": [
+      "keep-alive"
+    ],
+    "Content-Length": [
+      "142"
+    ],
+    "Content-Type": [
+      "application/json"
+    ],
+    "User-Agent": [
+      "Apifox/1.0.0 (https://apifox.com)"
+    ]
+  },
+  "method": "POST",
+  "path": "/v1/messages",
+  "remote_addr": "127.0.0.1",
+  "role": "inbound",
+  "sequence": 4,
+  "trace_id": "36cfe59f5f04bd027d5b2567c1764b0d"
+}

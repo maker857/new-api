@@ -347,6 +347,24 @@ export type OperationsSettings = {
   WorkerValidKey: string
   WorkerAllowHttpImageRequestEnabled: boolean
   LogConsumeEnabled: boolean
+  DiagnosticCaptureEnabled: boolean
+  DiagnosticCaptureMode: string
+  DiagnosticCaptureDir: string
+  DiagnosticCaptureMaxBodyMB: number
+  DiagnosticCapturePaths: string
+  ErrorRewriteEnabled: boolean
+  ErrorRewriteSource: string
+  ErrorRewriteRulesJSON: string
+  ErrorRewriteMonitorRulesJSON: string
+  ErrorRewriteMonitorRulesVersion: string
+  ErrorRewriteMonitorLastPullAt: string
+  ErrorRewriteSyncToken: string
+  ErrorRewriteRulesURL: string
+  ErrorRewriteFallbackMessage: string
+  ErrorRewriteRefreshSeconds: number
+  ErrorRewriteRequestTimeoutMS: number
+  ErrorRewriteSQLDriver: string
+  ErrorRewriteSQLQuery: string
   'performance_setting.disk_cache_enabled': boolean
   'performance_setting.disk_cache_threshold_mb': number
   'performance_setting.disk_cache_max_size_mb': number

@@ -1,0 +1,91 @@
+{
+  "format": "cpa-sections-json",
+  "version": 1,
+  "captured_at": "2026-06-28T11:52:16.6332887Z",
+  "trace_id": "974c5bdec450b612a745799b0d0317f3",
+  "channel": "test",
+  "direction": "inbound",
+  "section": "response",
+  "sequence": 6,
+  "meta": {
+    "body_capture": "full",
+    "channel": "test",
+    "role": "inbound",
+    "sequence": 6,
+    "trace_id": "974c5bdec450b612a745799b0d0317f3"
+  },
+  "response": {
+    "status": 200,
+    "duration_ms": 2573,
+    "headers": {
+      "Access-Control-Allow-Headers": [
+        "*"
+      ],
+      "Access-Control-Allow-Methods": [
+        "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+      ],
+      "Access-Control-Allow-Origin": [
+        "*"
+      ],
+      "Access-Control-Expose-Headers": [
+        "X-CPA-VERSION, X-CPA-COMMIT, X-CPA-BUILD-DATE, X-CPA-SUPPORT-PLUGIN, X-CPA-HOME-VERSION, X-CPA-HOME-BUILD-DATE, X-SERVER-VERSION, X-SERVER-BUILD-DATE"
+      ],
+      "Cache-Control": [
+        "no-cache"
+      ],
+      "Connection": [
+        "keep-alive"
+      ],
+      "Content-Length": [
+        "382"
+      ],
+      "Content-Type": [
+        "application/json"
+      ],
+      "Date": [
+        "Sun, 28 Jun 2026 11:52:38 GMT"
+      ],
+      "Server": [
+        "nginx"
+      ],
+      "Strict-Transport-Security": [
+        "max-age=31536000"
+      ],
+      "X-New-Api-Version": [
+        "v1.0.0-rc.11"
+      ],
+      "X-Oneapi-Request-Id": [
+        "202606281152140597258008268d9d6cPMZW75c"
+      ]
+    },
+    "body": {
+      "mode": "full",
+      "encoding": "json",
+      "original_size": 382,
+      "saved_size": 382,
+      "truncated": false,
+      "text": "{\"id\":\"resp_035f4dee8604f68b016a410b04d0108198905a537ce8954562\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"Hi! How can I help?\"}],\"stop_reason\":\"end_turn\",\"model\":\"gpt-5.5\",\"usage\":{\"input_tokens\":303,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":11,\"claude_cache_creation_5_m_tokens\":0,\"claude_cache_creation_1_h_tokens\":0}}",
+      "json": {
+        "content": [
+          {
+            "text": "Hi! How can I help?",
+            "type": "text"
+          }
+        ],
+        "id": "resp_035f4dee8604f68b016a410b04d0108198905a537ce8954562",
+        "model": "gpt-5.5",
+        "role": "assistant",
+        "stop_reason": "end_turn",
+        "type": "message",
+        "usage": {
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "claude_cache_creation_1_h_tokens": 0,
+          "claude_cache_creation_5_m_tokens": 0,
+          "input_tokens": 303,
+          "output_tokens": 11
+        }
+      }
+    }
+  }
+}

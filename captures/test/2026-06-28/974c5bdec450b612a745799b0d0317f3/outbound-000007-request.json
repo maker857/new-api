@@ -1,0 +1,50 @@
+{
+  "format": "cpa-sections-json",
+  "version": 1,
+  "captured_at": "2026-06-28T11:52:14.0645954Z",
+  "trace_id": "974c5bdec450b612a745799b0d0317f3",
+  "channel": "test",
+  "direction": "outbound",
+  "section": "request",
+  "sequence": 7,
+  "meta": {
+    "channel": "test",
+    "role": "outbound",
+    "sequence": 7,
+    "trace_id": "974c5bdec450b612a745799b0d0317f3"
+  },
+  "api_request": {
+    "timestamp": "2026-06-28T11:52:14.0645954Z",
+    "upstream_url": "http://38.181.47.21/v1/chat/completions",
+    "http_method": "POST",
+    "headers": {
+      "Accept": [
+        "*/*"
+      ],
+      "Authorization": [
+        "[REDACTED]"
+      ],
+      "Content-Type": [
+        "application/json"
+      ]
+    },
+    "body": {
+      "mode": "full",
+      "encoding": "json",
+      "original_size": 90,
+      "saved_size": 90,
+      "truncated": false,
+      "text": "{\"model\":\"gpt-5.5\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_completion_tokens\":64}",
+      "json": {
+        "max_completion_tokens": 64,
+        "messages": [
+          {
+            "content": "hi",
+            "role": "user"
+          }
+        ],
+        "model": "gpt-5.5"
+      }
+    }
+  }
+}

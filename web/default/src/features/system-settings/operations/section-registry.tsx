@@ -98,6 +98,38 @@ const OPERATIONS_SECTIONS = [
     build: (settings: OperationsSettings) => (
       <LogSettingsSection
         defaultEnabled={Boolean(settings.LogConsumeEnabled)}
+        diagnosticDefaults={{
+          DiagnosticCaptureEnabled: Boolean(
+            settings.DiagnosticCaptureEnabled
+          ),
+          DiagnosticCaptureMode: settings.DiagnosticCaptureMode ?? 'full',
+          DiagnosticCaptureDir: settings.DiagnosticCaptureDir ?? 'captures',
+          DiagnosticCaptureMaxBodyMB:
+            settings.DiagnosticCaptureMaxBodyMB ?? 10,
+          DiagnosticCapturePaths: settings.DiagnosticCapturePaths ?? '',
+          ErrorRewriteEnabled: Boolean(settings.ErrorRewriteEnabled),
+          ErrorRewriteSource: settings.ErrorRewriteSource ?? 'local',
+          ErrorRewriteRulesJSON: settings.ErrorRewriteRulesJSON ?? '[]',
+          ErrorRewriteMonitorRulesJSON:
+            settings.ErrorRewriteMonitorRulesJSON ?? '[]',
+          ErrorRewriteMonitorRulesVersion:
+            settings.ErrorRewriteMonitorRulesVersion ?? '0',
+          ErrorRewriteMonitorLastPullAt:
+            settings.ErrorRewriteMonitorLastPullAt ?? '0',
+          ErrorRewriteSyncToken: settings.ErrorRewriteSyncToken ?? '',
+          ErrorRewriteRulesURL: settings.ErrorRewriteRulesURL ?? '',
+          ErrorRewriteFallbackMessage:
+            settings.ErrorRewriteFallbackMessage ??
+            'request blocked by monitoring system',
+          ErrorRewriteRefreshSeconds:
+            settings.ErrorRewriteRefreshSeconds ?? 60,
+          ErrorRewriteRequestTimeoutMS:
+            settings.ErrorRewriteRequestTimeoutMS ?? 3000,
+          ErrorRewriteSQLDriver: settings.ErrorRewriteSQLDriver ?? 'mysql',
+          ErrorRewriteSQLQuery:
+            settings.ErrorRewriteSQLQuery ??
+            'SELECT keyword, rule_type, message FROM error_rewrite_rules WHERE enabled = 1',
+        }}
       />
     ),
   },

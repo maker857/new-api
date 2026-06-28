@@ -1,0 +1,176 @@
+{
+  "format": "cpa-sections-json",
+  "version": 1,
+  "trace_id": "e88ccca9d4f9d3f88c59d24951e7aa41",
+  "channel": "aws拦截测试",
+  "started_at": "2026-06-28T12:18:03.844347Z",
+  "updated_at": "2026-06-28T12:18:08.0720667Z",
+  "request_info": {
+    "version": "v0.0.0",
+    "url": "/v1/messages",
+    "method": "POST",
+    "downstream_transport": "http",
+    "upstream_transport": "http",
+    "timestamp": "2026-06-28T12:18:08.0611223Z",
+    "remote_addr": "127.0.0.1"
+  },
+  "headers": {
+    "Accept": [
+      "*/*"
+    ],
+    "Accept-Encoding": [
+      "gzip, deflate, br"
+    ],
+    "Anthropic-Version": [
+      "2023-06-01"
+    ],
+    "Authorization": [
+      "[REDACTED]"
+    ],
+    "Connection": [
+      "keep-alive"
+    ],
+    "Content-Length": [
+      "138"
+    ],
+    "Content-Type": [
+      "application/json"
+    ],
+    "User-Agent": [
+      "Apifox/1.0.0 (https://apifox.com)"
+    ]
+  },
+  "request_body": {
+    "mode": "full",
+    "encoding": "json",
+    "original_size": 138,
+    "saved_size": 138,
+    "truncated": false,
+    "text": "{\r\n  \"model\": \"claude-opus-4-7\",\r\n  \"max_tokens\": 64,\r\n  \"messages\": [\r\n    {\r\n      \"role\": \"user\",\r\n      \"content\": \"hi\"\r\n    }\r\n  ]\r\n}",
+    "json": {
+      "max_tokens": 64,
+      "messages": [
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "model": "claude-opus-4-7"
+    }
+  },
+  "api_requests": [
+    {
+      "sequence": 8,
+      "timestamp": "2026-06-28T12:18:03.846347Z",
+      "upstream_url": "http://38.181.47.21/v1/messages",
+      "http_method": "POST",
+      "headers": {
+        "Accept": [
+          "*/*"
+        ],
+        "Anthropic-Version": [
+          "2023-06-01"
+        ],
+        "Content-Type": [
+          "application/json"
+        ],
+        "X-Api-Key": [
+          "[REDACTED]"
+        ]
+      },
+      "body": {
+        "mode": "full",
+        "encoding": "json",
+        "original_size": 87,
+        "saved_size": 87,
+        "truncated": false,
+        "text": "{\"model\":\"claude-opus-4-7\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":64}",
+        "json": {
+          "max_tokens": 64,
+          "messages": [
+            {
+              "content": "hi",
+              "role": "user"
+            }
+          ],
+          "model": "claude-opus-4-7"
+        }
+      }
+    }
+  ],
+  "api_responses": [
+    {
+      "sequence": 8,
+      "timestamp": "2026-06-28T12:18:08.0571287Z",
+      "status": 503,
+      "headers": {
+        "Connection": [
+          "keep-alive"
+        ],
+        "Content-Length": [
+          "208"
+        ],
+        "Content-Type": [
+          "application/json; charset=utf-8"
+        ],
+        "Date": [
+          "Sun, 28 Jun 2026 12:18:29 GMT"
+        ],
+        "Server": [
+          "nginx"
+        ],
+        "X-New-Api-Version": [
+          "v1.0.0-rc.11"
+        ],
+        "X-Oneapi-Request-Id": [
+          "202606281218254308923088268d9d64ebrZsrj"
+        ]
+      },
+      "body": {
+        "mode": "full",
+        "encoding": "json",
+        "original_size": 208,
+        "saved_size": 208,
+        "truncated": false,
+        "text": "{\"error\":{\"code\":\"model_not_found\",\"message\":\"No available channel for model claude-opus-4-7 under group AWS|ceshi (distributor) (request id: 202606281218254308923088268d9d64ebrZsrj)\",\"type\":\"new_api_error\"}}",
+        "json": {
+          "error": {
+            "code": "model_not_found",
+            "message": "No available channel for model claude-opus-4-7 under group AWS|ceshi (distributor) (request id: 202606281218254308923088268d9d64ebrZsrj)",
+            "type": "new_api_error"
+          }
+        }
+      }
+    }
+  ],
+  "response": {
+    "status": 503,
+    "duration_ms": 4227,
+    "headers": {
+      "Content-Type": [
+        "application/json; charset=utf-8"
+      ],
+      "X-New-Api-Version": [
+        "v0.0.0"
+      ],
+      "X-Oneapi-Request-Id": [
+        "202606281218038443470008268d9d63PoRG398"
+      ]
+    },
+    "body": {
+      "mode": "full",
+      "encoding": "json",
+      "original_size": 254,
+      "saved_size": 254,
+      "truncated": false,
+      "text": "{\"error\":{\"type\":\"model_not_found\",\"message\":\"No available channel for model claude-opus-4-7 under group AWS|ceshi (distributor) (request id: 202606281218254308923088268d9d64ebrZsrj) (request id: 202606281218038443470008268d9d63PoRG398)\"},\"type\":\"error\"}",
+      "json": {
+        "error": {
+          "message": "No available channel for model claude-opus-4-7 under group AWS|ceshi (distributor) (request id: 202606281218254308923088268d9d64ebrZsrj) (request id: 202606281218038443470008268d9d63PoRG398)",
+          "type": "model_not_found"
+        },
+        "type": "error"
+      }
+    }
+  }
+}

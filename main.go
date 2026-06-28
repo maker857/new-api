@@ -117,6 +117,9 @@ func main() {
 	// Subscription quota reset task (daily/weekly/monthly/custom)
 	service.StartSubscriptionQuotaResetTask()
 
+	// Pull monitoring blacklist rules when ErrorRewriteSource is set to HTTP.
+	service.StartErrorRewriteMonitorPullTask()
+
 	// Report this process as a system instance so the System Info page can show
 	// all currently alive nodes in multi-instance deployments.
 	service.StartSystemInstanceReporter()

@@ -1,0 +1,24 @@
+{
+  "body_capture": "full",
+  "body_original_size": 124,
+  "body_saved_size": 124,
+  "body_truncated": false,
+  "captured_at": "2026-06-28T10:53:05.4008144Z",
+  "channel": "unknown",
+  "duration_ms": 1,
+  "headers": {
+    "Content-Type": [
+      "application/json; charset=utf-8"
+    ],
+    "X-New-Api-Version": [
+      "v0.0.0"
+    ],
+    "X-Oneapi-Request-Id": [
+      "202606281053053993140008268d9d6aS1XxJwn"
+    ]
+  },
+  "role": "inbound",
+  "sequence": 1,
+  "status_code": 401,
+  "trace_id": "84a3e59133d18c0f833a51abc60398c5"
+}

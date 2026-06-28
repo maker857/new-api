@@ -1,0 +1,1 @@
+{"id":"resp_04f1f1f4c2e1641c016a40fd3725cc819a80d5d2c28e0b873a","type":"message","role":"assistant","content":[{"type":"text","text":"pong"}],"stop_reason":"end_turn","model":"gpt-5.5","usage":{"input_tokens":305,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":17,"claude_cache_creation_5_m_tokens":0,"claude_cache_creation_1_h_tokens":0}}

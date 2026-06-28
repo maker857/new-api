@@ -1,0 +1,176 @@
+{
+  "format": "cpa-sections-json",
+  "version": 1,
+  "trace_id": "305b0fb86debfa144038c501e1fa1d96",
+  "channel": "aws拦截测试",
+  "started_at": "2026-06-28T12:29:47.4387429Z",
+  "updated_at": "2026-06-28T12:29:47.6599098Z",
+  "request_info": {
+    "version": "v0.0.0",
+    "url": "/v1/messages",
+    "method": "POST",
+    "downstream_transport": "http",
+    "upstream_transport": "http",
+    "timestamp": "2026-06-28T12:29:47.65941Z",
+    "remote_addr": "127.0.0.1"
+  },
+  "headers": {
+    "Accept": [
+      "*/*"
+    ],
+    "Accept-Encoding": [
+      "gzip, deflate, br"
+    ],
+    "Anthropic-Version": [
+      "2023-06-01"
+    ],
+    "Authorization": [
+      "[REDACTED]"
+    ],
+    "Connection": [
+      "keep-alive"
+    ],
+    "Content-Length": [
+      "138"
+    ],
+    "Content-Type": [
+      "application/json"
+    ],
+    "User-Agent": [
+      "Apifox/1.0.0 (https://apifox.com)"
+    ]
+  },
+  "request_body": {
+    "mode": "full",
+    "encoding": "json",
+    "original_size": 138,
+    "saved_size": 138,
+    "truncated": false,
+    "text": "{\r\n  \"model\": \"claude-opus-4-7\",\r\n  \"max_tokens\": 64,\r\n  \"messages\": [\r\n    {\r\n      \"role\": \"user\",\r\n      \"content\": \"hi\"\r\n    }\r\n  ]\r\n}",
+    "json": {
+      "max_tokens": 64,
+      "messages": [
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "model": "claude-opus-4-7"
+    }
+  },
+  "api_requests": [
+    {
+      "sequence": 5,
+      "timestamp": "2026-06-28T12:29:47.4412832Z",
+      "upstream_url": "http://38.181.47.21/v1/messages",
+      "http_method": "POST",
+      "headers": {
+        "Accept": [
+          "*/*"
+        ],
+        "Anthropic-Version": [
+          "2023-06-01"
+        ],
+        "Content-Type": [
+          "application/json"
+        ],
+        "X-Api-Key": [
+          "[REDACTED]"
+        ]
+      },
+      "body": {
+        "mode": "full",
+        "encoding": "json",
+        "original_size": 87,
+        "saved_size": 87,
+        "truncated": false,
+        "text": "{\"model\":\"claude-opus-4-7\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":64}",
+        "json": {
+          "max_tokens": 64,
+          "messages": [
+            {
+              "content": "hi",
+              "role": "user"
+            }
+          ],
+          "model": "claude-opus-4-7"
+        }
+      }
+    }
+  ],
+  "api_responses": [
+    {
+      "sequence": 5,
+      "timestamp": "2026-06-28T12:29:47.6509119Z",
+      "status": 503,
+      "headers": {
+        "Connection": [
+          "keep-alive"
+        ],
+        "Content-Length": [
+          "259"
+        ],
+        "Content-Type": [
+          "application/json; charset=utf-8"
+        ],
+        "Date": [
+          "Sun, 28 Jun 2026 12:30:09 GMT"
+        ],
+        "Server": [
+          "nginx"
+        ],
+        "X-New-Api-Version": [
+          "v1.0.0-rc.11"
+        ],
+        "X-Oneapi-Request-Id": [
+          "20260628123009415514338268d9d6qNVDYAYc"
+        ]
+      },
+      "body": {
+        "mode": "full",
+        "encoding": "json",
+        "original_size": 259,
+        "saved_size": 259,
+        "truncated": false,
+        "text": "{\"error\":{\"type\":\"model_not_found\",\"message\":\"No available channel for model claude-opus-4-7 under group OpenAi|Codex|Pro (distributor) (request id: 20260628123009440050848268d9d6icMgwXwA) (request id: 20260628123009415514338268d9d6qNVDYAYc)\"},\"type\":\"error\"}",
+        "json": {
+          "error": {
+            "message": "No available channel for model claude-opus-4-7 under group OpenAi|Codex|Pro (distributor) (request id: 20260628123009440050848268d9d6icMgwXwA) (request id: 20260628123009415514338268d9d6qNVDYAYc)",
+            "type": "model_not_found"
+          },
+          "type": "error"
+        }
+      }
+    }
+  ],
+  "response": {
+    "status": 503,
+    "duration_ms": 221,
+    "headers": {
+      "Content-Type": [
+        "application/json; charset=utf-8"
+      ],
+      "X-New-Api-Version": [
+        "v0.0.0"
+      ],
+      "X-Oneapi-Request-Id": [
+        "202606281229474387429008268d9d6zkpVvusq"
+      ]
+    },
+    "body": {
+      "mode": "full",
+      "encoding": "json",
+      "original_size": 313,
+      "saved_size": 313,
+      "truncated": false,
+      "text": "{\"error\":{\"type\":\"\\u003cnil\\u003e\",\"message\":\"No available channel for model claude-opus-4-7 under group OpenAi|Codex|Pro (distributor) (request id: 20260628123009440050848268d9d6icMgwXwA) (request id: 20260628123009415514338268d9d6qNVDYAYc) (request id: 202606281229474387429008268d9d6zkpVvusq)\"},\"type\":\"error\"}",
+      "json": {
+        "error": {
+          "message": "No available channel for model claude-opus-4-7 under group OpenAi|Codex|Pro (distributor) (request id: 20260628123009440050848268d9d6icMgwXwA) (request id: 20260628123009415514338268d9d6qNVDYAYc) (request id: 202606281229474387429008268d9d6zkpVvusq)",
+          "type": "\u003cnil\u003e"
+        },
+        "type": "error"
+      }
+    }
+  }
+}

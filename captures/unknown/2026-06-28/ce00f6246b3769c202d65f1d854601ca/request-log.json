@@ -1,0 +1,91 @@
+{
+  "format": "cpa-sections-json",
+  "version": 1,
+  "trace_id": "ce00f6246b3769c202d65f1d854601ca",
+  "channel": "unknown",
+  "started_at": "2026-06-28T12:17:44.454163Z",
+  "updated_at": "2026-06-28T12:17:44.4561626Z",
+  "request_info": {
+    "version": "v0.0.0",
+    "url": "/v1/messages",
+    "method": "POST",
+    "downstream_transport": "http",
+    "upstream_transport": "http",
+    "timestamp": "2026-06-28T12:17:44.4556626Z",
+    "remote_addr": "127.0.0.1"
+  },
+  "headers": {
+    "Accept": [
+      "*/*"
+    ],
+    "Accept-Encoding": [
+      "gzip, deflate, br"
+    ],
+    "Anthropic-Version": [
+      "2023-06-01"
+    ],
+    "Authorization": [
+      "[REDACTED]"
+    ],
+    "Connection": [
+      "keep-alive"
+    ],
+    "Content-Length": [
+      "138"
+    ],
+    "Content-Type": [
+      "application/json"
+    ],
+    "User-Agent": [
+      "Apifox/1.0.0 (https://apifox.com)"
+    ]
+  },
+  "request_body": {
+    "mode": "full",
+    "encoding": "json",
+    "original_size": 138,
+    "saved_size": 138,
+    "truncated": false,
+    "text": "{\r\n  \"model\": \"claude-opus-4-7\",\r\n  \"max_tokens\": 64,\r\n  \"messages\": [\r\n    {\r\n      \"role\": \"user\",\r\n      \"content\": \"hi\"\r\n    }\r\n  ]\r\n}",
+    "json": {
+      "max_tokens": 64,
+      "messages": [
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "model": "claude-opus-4-7"
+    }
+  },
+  "response": {
+    "status": 503,
+    "duration_ms": 1,
+    "headers": {
+      "Content-Type": [
+        "application/json; charset=utf-8"
+      ],
+      "X-New-Api-Version": [
+        "v0.0.0"
+      ],
+      "X-Oneapi-Request-Id": [
+        "202606281217444541630008268d9d67CCWtJ48"
+      ]
+    },
+    "body": {
+      "mode": "full",
+      "encoding": "json",
+      "original_size": 202,
+      "saved_size": 202,
+      "truncated": false,
+      "text": "{\"error\":{\"code\":\"model_not_found\",\"message\":\"No available channel for model claude-opus-4-7 under group vip (distributor) (request id: 202606281217444541630008268d9d67CCWtJ48)\",\"type\":\"new_api_error\"}}",
+      "json": {
+        "error": {
+          "code": "model_not_found",
+          "message": "No available channel for model claude-opus-4-7 under group vip (distributor) (request id: 202606281217444541630008268d9d67CCWtJ48)",
+          "type": "new_api_error"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "format": "cpa-sections-json",
+  "version": 1,
+  "captured_at": "2026-06-28T11:51:52.2124811Z",
+  "trace_id": "b8123455c07e4aa9a233c1849f3f9f1d",
+  "channel": "unknown",
+  "direction": "inbound",
+  "section": "response",
+  "sequence": 5,
+  "meta": {
+    "body_capture": "full",
+    "channel": "unknown",
+    "role": "inbound",
+    "sequence": 5,
+    "trace_id": "b8123455c07e4aa9a233c1849f3f9f1d"
+  },
+  "response": {
+    "status": 503,
+    "duration_ms": 5,
+    "headers": {
+      "Content-Type": [
+        "application/json; charset=utf-8"
+      ],
+      "X-New-Api-Version": [
+        "v0.0.0"
+      ],
+      "X-Oneapi-Request-Id": [
+        "202606281151522071184008268d9d69qwLdLlQ"
+      ]
+    },
+    "body": {
+      "mode": "full",
+      "encoding": "json",
+      "original_size": 198,
+      "saved_size": 198,
+      "truncated": false,
+      "text": "{\"error\":{\"code\":\"model_not_found\",\"message\":\"No available channel for model gpt-5.5 under group default (distributor) (request id: 202606281151522071184008268d9d69qwLdLlQ)\",\"type\":\"new_api_error\"}}",
+      "json": {
+        "error": {
+          "code": "model_not_found",
+          "message": "No available channel for model gpt-5.5 under group default (distributor) (request id: 202606281151522071184008268d9d69qwLdLlQ)",
+          "type": "new_api_error"
+        }
+      }
+    }
+  }
+}

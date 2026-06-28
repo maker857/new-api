@@ -297,6 +297,7 @@ func migrateDB() error {
 		&SystemInstance{},
 		&SystemTask{},
 		&SystemTaskLock{},
+		&LogBlacklistRule{},
 	)
 	if err != nil {
 		return err

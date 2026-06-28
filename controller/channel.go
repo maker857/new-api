@@ -923,7 +923,11 @@ func UpdateChannel(c *gin.Context) {
 	}
 
 	// Always copy the original ChannelInfo so that fields like IsMultiKey and MultiKeySize are retained.
+	requestChannelInfo := channel.ChannelInfo
 	channel.ChannelInfo = originChannel.ChannelInfo
+	if requestChannelInfo.ErrorRewriteEnabled != nil {
+		channel.ChannelInfo.ErrorRewriteEnabled = requestChannelInfo.ErrorRewriteEnabled
+	}
 
 	// If the request explicitly specifies a new MultiKeyMode, apply it on top of the original info.
 	if channel.MultiKeyMode != nil && *channel.MultiKeyMode != "" {

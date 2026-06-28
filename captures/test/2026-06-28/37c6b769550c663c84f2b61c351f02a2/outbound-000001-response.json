@@ -1,0 +1,53 @@
+{
+  "body_original_size": 480,
+  "body_saved_size": 480,
+  "body_truncated": false,
+  "captured_at": "2026-06-28T09:06:26.7878997Z",
+  "channel": "test",
+  "duration_ms": 2807,
+  "headers": {
+    "Access-Control-Allow-Headers": [
+      "*"
+    ],
+    "Access-Control-Allow-Methods": [
+      "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+    ],
+    "Access-Control-Allow-Origin": [
+      "*"
+    ],
+    "Access-Control-Expose-Headers": [
+      "X-CPA-VERSION, X-CPA-COMMIT, X-CPA-BUILD-DATE, X-CPA-SUPPORT-PLUGIN, X-CPA-HOME-VERSION, X-CPA-HOME-BUILD-DATE, X-SERVER-VERSION, X-SERVER-BUILD-DATE"
+    ],
+    "Cache-Control": [
+      "no-cache"
+    ],
+    "Connection": [
+      "keep-alive"
+    ],
+    "Content-Length": [
+      "480"
+    ],
+    "Content-Type": [
+      "application/json"
+    ],
+    "Date": [
+      "Sun, 28 Jun 2026 09:06:48 GMT"
+    ],
+    "Server": [
+      "nginx"
+    ],
+    "Strict-Transport-Security": [
+      "max-age=31536000"
+    ],
+    "X-New-Api-Version": [
+      "v1.0.0-rc.11"
+    ],
+    "X-Oneapi-Request-Id": [
+      "202606280906453912705278268d9d6QlcTCqLm"
+    ]
+  },
+  "role": "outbound",
+  "sequence": 1,
+  "status_code": 200,
+  "trace_id": "37c6b769550c663c84f2b61c351f02a2"
+}

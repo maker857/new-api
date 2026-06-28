@@ -1189,6 +1189,29 @@ export function ChannelMutateDrawer({
                       )}
                     />
 
+                    <FormField
+                      control={form.control}
+                      name='error_rewrite_enabled'
+                      render={({ field }) => (
+                        <FormItem className={sideDrawerSwitchItemClassName()}>
+                          <div className='flex flex-col gap-0.5'>
+                            <FormLabel>{t('黑名单错误改写')}</FormLabel>
+                            <FormDescription className='text-xs'>
+                              {t(
+                                '全局错误改写开启时，本渠道是否参与黑名单筛选并改写上游错误返回。全局关闭时此开关不会生效。'
+                              )}
+                            </FormDescription>
+                          </div>
+                          <FormControl>
+                            <Switch
+                              checked={field.value !== false}
+                              onCheckedChange={field.onChange}
+                            />
+                          </FormControl>
+                        </FormItem>
+                      )}
+                    />
+
                     {currentType === 1 && (
                       <FormField
                         control={form.control}
@@ -2659,6 +2682,7 @@ export function ChannelMutateDrawer({
                             </FormItem>
                           )}
                         />
+
                       </div>
 
                       <div className='flex flex-col gap-4 border-t pt-4'>

@@ -539,12 +539,13 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
       let group = log.group
       if (!group) group = other?.group || ''
 
-      const metaParts: string[] = []
       const groupRatioText = getGroupRatioText(other)
-      if (group) {
-        metaParts.push(sensitiveVisible ? group : '••••')
-      }
-      if (groupRatioText) metaParts.push(groupRatioText)
+      const groupDisplay = group
+        ? sensitiveVisible
+          ? group
+          : '••••'
+        : ''
+      const hasMeta = Boolean(groupDisplay || groupRatioText)
 
       return (
         <div className='flex max-w-[200px] flex-col gap-0.5'>
@@ -567,10 +568,26 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
               )}
             </Tooltip>
           </TooltipProvider>
-          {metaParts.length > 0 && (
-            <span className='text-muted-foreground/60 truncate [font-family:var(--font-body)] !text-xs'>
-              {metaParts.join(' · ')}
-            </span>
+          {hasMeta && (
+            <div className='text-muted-foreground/60 flex min-w-0 items-center gap-1 truncate [font-family:var(--font-body)] !text-xs'>
+              {groupDisplay && (
+                <StatusBadge
+                  label={groupDisplay}
+                  copyText={sensitiveVisible ? group : undefined}
+                  copyable={sensitiveVisible}
+                  type='text'
+                  size='sm'
+                  variant='neutral'
+                  className='min-w-0 max-w-full !text-xs font-normal'
+                />
+              )}
+              {groupDisplay && groupRatioText && (
+                <span className='shrink-0'>·</span>
+              )}
+              {groupRatioText && (
+                <span className='shrink-0'>{groupRatioText}</span>
+              )}
+            </div>
           )}
         </div>
       )

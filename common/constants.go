@@ -113,6 +113,8 @@ var DebugEnabled bool
 var MemoryCacheEnabled bool
 
 var LogConsumeEnabled = true
+var ServerLogMaxSizeMB = 0
+var RequestLogMaxSizeMB = 0
 
 var TLSInsecureSkipVerify bool
 var InsecureTLSConfig = &tls.Config{InsecureSkipVerify: true}

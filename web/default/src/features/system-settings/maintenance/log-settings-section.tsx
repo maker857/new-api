@@ -78,12 +78,14 @@ import type { LogCleanupTask } from '../types'
 
 const logSettingsSchema = z.object({
   LogConsumeEnabled: z.boolean(),
+  ServerLogMaxSizeMB: z.coerce.number().int().min(0),
+  RequestLogMaxSizeMB: z.coerce.number().int().min(0),
 })
 
 type LogSettingsFormValues = z.infer<typeof logSettingsSchema>
 
 type LogSettingsSectionProps = {
-  defaultEnabled: boolean
+  defaultValues: LogSettingsFormValues
 }
 
 type ServerLogInfo = {
@@ -138,15 +140,13 @@ function isActiveLogCleanupTask(task: LogCleanupTask | null) {
 }
 
 export function LogSettingsSection({
-  defaultEnabled,
+  defaultValues,
 }: LogSettingsSectionProps) {
   const { t } = useTranslation()
   const updateOption = useUpdateOption()
   const form = useForm<LogSettingsFormValues>({
     resolver: zodResolver(logSettingsSchema),
-    defaultValues: {
-      LogConsumeEnabled: defaultEnabled,
-    },
+    defaultValues,
   })
 
   const [purgeDate, setPurgeDate] = useState<Date | undefined>(() =>
@@ -174,8 +174,8 @@ export function LogSettingsSection({
   }, [])
 
   useEffect(() => {
-    form.reset({ LogConsumeEnabled: defaultEnabled })
-  }, [defaultEnabled, form])
+    form.reset(defaultValues)
+  }, [defaultValues, form])
 
   useEffect(() => {
     fetchServerLogInfo()
@@ -257,11 +257,13 @@ export function LogSettingsSection({
   }, [logCleanupActive, logCleanupTaskId, t])
 
   const onSubmit = async (values: LogSettingsFormValues) => {
-    if (values.LogConsumeEnabled === defaultEnabled) return
-    await updateOption.mutateAsync({
-      key: 'LogConsumeEnabled',
-      value: values.LogConsumeEnabled,
-    })
+    const entries = Object.entries(values) as Array<
+      [keyof LogSettingsFormValues, boolean | number]
+    >
+    for (const [key, value] of entries) {
+      if (value === defaultValues[key]) continue
+      await updateOption.mutateAsync({ key, value })
+    }
   }
 
   const handleRequestCleanLogs = () => {
@@ -366,6 +368,71 @@ export function LogSettingsSection({
               </SettingsSwitchItem>
             )}
           />
+
+          <SettingsControlGroup className='space-y-4'>
+            <div>
+              <h4 className='text-sm font-medium'>
+                {t('Log storage limits')}
+              </h4>
+              <p className='text-muted-foreground text-sm'>
+                {t('Set 0 to disable automatic size-based cleanup.')}
+              </p>
+            </div>
+            <div className='grid gap-4 md:grid-cols-2'>
+              <FormField
+                control={form.control}
+                name='ServerLogMaxSizeMB'
+                render={({ field }) => (
+                  <div className='space-y-2'>
+                    <FormLabel>{t('Server log max size (MB)')}</FormLabel>
+                    <FormControl>
+                      <Input
+                        type='number'
+                        min={0}
+                        step={1}
+                        value={field.value}
+                        onChange={(event) =>
+                          field.onChange(Number(event.target.value))
+                        }
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      {t(
+                        'Limits oneapi runtime log files. Oldest files are deleted first.'
+                      )}
+                    </FormDescription>
+                    <FormMessage />
+                  </div>
+                )}
+              />
+              <FormField
+                control={form.control}
+                name='RequestLogMaxSizeMB'
+                render={({ field }) => (
+                  <div className='space-y-2'>
+                    <FormLabel>{t('Request log max size (MB)')}</FormLabel>
+                    <FormControl>
+                      <Input
+                        type='number'
+                        min={0}
+                        step={1}
+                        value={field.value}
+                        onChange={(event) =>
+                          field.onChange(Number(event.target.value))
+                        }
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      {t(
+                        'Limits saved request and response log files. Oldest files are deleted first.'
+                      )}
+                    </FormDescription>
+                    <FormMessage />
+                  </div>
+                )}
+              />
+            </div>
+          </SettingsControlGroup>
 
           <SettingsControlGroup className='space-y-3'>
             <div>

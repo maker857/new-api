@@ -45,6 +45,8 @@ const SITE_SECTIONS = [
           About: settings.About,
           HomePageContent: settings.HomePageContent,
           ServerAddress: settings.ServerAddress,
+          ServerLogMaxSizeMB: Number(settings.ServerLogMaxSizeMB ?? 0),
+          RequestLogMaxSizeMB: Number(settings.RequestLogMaxSizeMB ?? 0),
           legal: {
             user_agreement: settings['legal.user_agreement'],
             privacy_policy: settings['legal.privacy_policy'],

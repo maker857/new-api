@@ -33,6 +33,8 @@ const defaultSiteSettings: SiteSettings = {
   About: '',
   HomePageContent: '',
   ServerAddress: '',
+  ServerLogMaxSizeMB: 0,
+  RequestLogMaxSizeMB: 0,
   'legal.user_agreement': '',
   'legal.privacy_policy': '',
   HeaderNavModules: '',

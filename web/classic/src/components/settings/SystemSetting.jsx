@@ -102,6 +102,8 @@ const SystemSetting = () => {
     LinuxDOClientSecret: '',
     LinuxDOMinimumTrustLevel: '',
     ServerAddress: '',
+    ServerLogMaxSizeMB: 0,
+    RequestLogMaxSizeMB: 0,
     // SSRF防护配置
     'fetch_setting.enable_ssrf_protection': true,
     'fetch_setting.allow_private_ip': '',
@@ -212,6 +214,10 @@ const SystemSetting = () => {
           case 'MinTopUp':
             item.value = parseFloat(item.value);
             break;
+          case 'ServerLogMaxSizeMB':
+          case 'RequestLogMaxSizeMB':
+            item.value = Number(item.value || 0);
+            break;
           default:
             break;
         }
@@ -319,6 +325,19 @@ const SystemSetting = () => {
   const submitServerAddress = async () => {
     let ServerAddress = removeTrailingSlash(inputs.ServerAddress);
     await updateOptions([{ key: 'ServerAddress', value: ServerAddress }]);
+  };
+
+  const submitLogSizeLimits = async () => {
+    await updateOptions([
+      {
+        key: 'ServerLogMaxSizeMB',
+        value: Number(inputs.ServerLogMaxSizeMB || 0),
+      },
+      {
+        key: 'RequestLogMaxSizeMB',
+        value: Number(inputs.RequestLogMaxSizeMB || 0),
+      },
+    ]);
   };
 
   const submitSMTP = async () => {
@@ -766,6 +785,34 @@ const SystemSetting = () => {
                   </Row>
                   <Button onClick={submitServerAddress}>
                     {t('更新服务器地址')}
+                  </Button>
+                  <Row
+                    gutter={{ xs: 8, sm: 16, md: 24, lg: 24, xl: 24, xxl: 24 }}
+                    style={{ marginTop: 16 }}
+                  >
+                    <Col xs={24} sm={24} md={12} lg={12} xl={12}>
+                      <Form.InputNumber
+                        field='ServerLogMaxSizeMB'
+                        label={t('运行日志最大体积 (MB)')}
+                        min={0}
+                        step={1}
+                        precision={0}
+                        extraText={t('0 表示不限制；超过限制后会优先删除最旧的运行日志文件')}
+                      />
+                    </Col>
+                    <Col xs={24} sm={24} md={12} lg={12} xl={12}>
+                      <Form.InputNumber
+                        field='RequestLogMaxSizeMB'
+                        label={t('请求日志最大体积 (MB)')}
+                        min={0}
+                        step={1}
+                        precision={0}
+                        extraText={t('0 表示不限制；超过限制后会优先删除最旧的请求日志文件')}
+                      />
+                    </Col>
+                  </Row>
+                  <Button onClick={submitLogSizeLimits} style={{ marginTop: 8 }}>
+                    {t('保存日志体积限制')}
                   </Button>
                 </Form.Section>
               </Card>

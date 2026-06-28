@@ -48,6 +48,8 @@ func InitOptionMap() {
 	common.OptionMap["AutomaticDisableChannelEnabled"] = strconv.FormatBool(common.AutomaticDisableChannelEnabled)
 	common.OptionMap["AutomaticEnableChannelEnabled"] = strconv.FormatBool(common.AutomaticEnableChannelEnabled)
 	common.OptionMap["LogConsumeEnabled"] = strconv.FormatBool(common.LogConsumeEnabled)
+	common.OptionMap["ServerLogMaxSizeMB"] = strconv.Itoa(common.ServerLogMaxSizeMB)
+	common.OptionMap["RequestLogMaxSizeMB"] = strconv.Itoa(common.RequestLogMaxSizeMB)
 	common.OptionMap["DisplayInCurrencyEnabled"] = strconv.FormatBool(common.DisplayInCurrencyEnabled)
 	common.OptionMap["DisplayTokenStatEnabled"] = strconv.FormatBool(common.DisplayTokenStatEnabled)
 	common.OptionMap["DrawingEnabled"] = strconv.FormatBool(common.DrawingEnabled)
@@ -374,6 +376,18 @@ func updateOptionMap(key string, value string) (err error) {
 	case "SMTPPort":
 		intValue, _ := strconv.Atoi(value)
 		common.SMTPPort = intValue
+	case "ServerLogMaxSizeMB":
+		intValue, _ := strconv.Atoi(value)
+		if intValue < 0 {
+			intValue = 0
+		}
+		common.ServerLogMaxSizeMB = intValue
+	case "RequestLogMaxSizeMB":
+		intValue, _ := strconv.Atoi(value)
+		if intValue < 0 {
+			intValue = 0
+		}
+		common.RequestLogMaxSizeMB = intValue
 	case "SMTPAccount":
 		common.SMTPAccount = value
 	case "SMTPFrom":

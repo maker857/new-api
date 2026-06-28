@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -70,6 +71,21 @@ func SetupLogger() {
 			_ = oldFile.Close()
 		}
 		common.LogWriterMu.Unlock()
+		pruneServerLogFilesByMaxSize(logPath)
+	}
+}
+
+func pruneServerLogFilesByMaxSize(activeLogPath string) {
+	maxBytes := common.MaxSizeMBToBytes(common.ServerLogMaxSizeMB)
+	if *common.LogDir == "" || maxBytes <= 0 {
+		return
+	}
+	_, err := common.PruneLogFilesByMaxSize(*common.LogDir, maxBytes, func(path string, info os.FileInfo) bool {
+		name := filepath.Base(path)
+		return filepath.Dir(path) == *common.LogDir && strings.HasPrefix(name, "oneapi-") && strings.HasSuffix(name, ".log")
+	}, map[string]struct{}{activeLogPath: {}})
+	if err != nil {
+		log.Printf("failed to prune server log files: %v", err)
 	}
 }
 
@@ -110,13 +126,28 @@ func logHelper(ctx context.Context, level string, msg string) {
 	_, _ = fmt.Fprintf(writer, "[%s] %v | %s | %s \n", level, now.Format("2006/01/02 - 15:04:05"), id, msg)
 	common.LogWriterMu.RUnlock()
 	logCount++ // we don't need accurate count, so no lock here
-	if logCount > maxLogCount && !setupLogWorking {
+	if ((logCount > maxLogCount) || shouldRotateCurrentLogFileBySize()) && !setupLogWorking {
 		logCount = 0
 		setupLogWorking = true
 		gopool.Go(func() {
 			SetupLogger()
 		})
 	}
+}
+
+func shouldRotateCurrentLogFileBySize() bool {
+	if common.ServerLogMaxSizeMB <= 0 || logCount%100 != 0 {
+		return false
+	}
+	maxBytes := common.MaxSizeMBToBytes(common.ServerLogMaxSizeMB)
+	currentLogPathMu.RLock()
+	file := currentLogFile
+	currentLogPathMu.RUnlock()
+	if file == nil || maxBytes <= 0 {
+		return false
+	}
+	info, err := file.Stat()
+	return err == nil && info.Size() > maxBytes
 }
 
 func LogQuota(quota int) string {

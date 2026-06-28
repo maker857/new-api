@@ -223,6 +223,15 @@ func UpdateOption(c *gin.Context) {
 			})
 			return
 		}
+	case "ServerLogMaxSizeMB", "RequestLogMaxSizeMB":
+		value, parseErr := strconv.Atoi(option.Value.(string))
+		if parseErr != nil || value < 0 {
+			c.JSON(http.StatusOK, gin.H{
+				"success": false,
+				"message": "log size limit must be a non-negative integer",
+			})
+			return
+		}
 	case "GroupRatio":
 		err = ratio_setting.CheckGroupRatio(option.Value.(string))
 		if err != nil {

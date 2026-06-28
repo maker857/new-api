@@ -192,6 +192,7 @@ const EditChannelModal = (props) => {
     thinking_to_content: false,
     proxy: '',
     pass_through_body_enabled: false,
+    save_request_log: false,
     system_prompt: '',
     system_prompt_override: false,
     settings: '',
@@ -206,6 +207,7 @@ const EditChannelModal = (props) => {
     disable_store: false, // false = 允许透传（默认开启）
     allow_safety_identifier: false,
     allow_include_obfuscation: false,
+    save_request_log: false,
     allow_inference_geo: false,
     allow_speed: false,
     claude_beta_query: false,
@@ -514,6 +516,7 @@ const EditChannelModal = (props) => {
     thinking_to_content: false,
     proxy: '',
     pass_through_body_enabled: false,
+    save_request_log: false,
     system_prompt: '',
   });
   const showApiConfigCard = true; // 控制是否显示 API 配置卡片
@@ -905,6 +908,7 @@ const EditChannelModal = (props) => {
             parsedSettings.allow_safety_identifier || false;
           data.allow_include_obfuscation =
             parsedSettings.allow_include_obfuscation || false;
+          data.save_request_log = parsedSettings.save_request_log || false;
           data.allow_inference_geo =
             parsedSettings.allow_inference_geo || false;
           data.allow_speed = parsedSettings.allow_speed || false;
@@ -936,6 +940,7 @@ const EditChannelModal = (props) => {
           data.disable_store = false;
           data.allow_safety_identifier = false;
           data.allow_include_obfuscation = false;
+          data.save_request_log = false;
           data.allow_inference_geo = false;
           data.allow_speed = false;
           data.claude_beta_query = false;
@@ -954,6 +959,7 @@ const EditChannelModal = (props) => {
         data.disable_store = false;
         data.allow_safety_identifier = false;
         data.allow_include_obfuscation = false;
+        data.save_request_log = false;
         data.allow_inference_geo = false;
         data.allow_speed = false;
         data.claude_beta_query = false;
@@ -993,6 +999,7 @@ const EditChannelModal = (props) => {
         pass_through_body_enabled: data.pass_through_body_enabled,
         system_prompt: data.system_prompt,
         system_prompt_override: data.system_prompt_override || false,
+        save_request_log: data.save_request_log || false,
       });
       initialModelsRef.current = (data.models || [])
         .map((model) => (model || '').trim())
@@ -1033,6 +1040,7 @@ const EditChannelModal = (props) => {
         (data.system_prompt && data.system_prompt.trim()) ||
         data.thinking_to_content ||
         data.pass_through_body_enabled ||
+        data.save_request_log ||
         data.force_format ||
         data.claude_beta_query ||
         data.system_prompt_override;
@@ -1375,6 +1383,7 @@ const EditChannelModal = (props) => {
       thinking_to_content: false,
       proxy: '',
       pass_through_body_enabled: false,
+      save_request_log: false,
       system_prompt: '',
       system_prompt_override: false,
     });
@@ -1761,6 +1770,8 @@ const EditChannelModal = (props) => {
     }
 
     // type === 20: 设置企业账户标识，无论是true还是false都要传到后端
+    settings.save_request_log = localInputs.save_request_log === true;
+
     if (localInputs.type === 20) {
       settings.openrouter_enterprise =
         localInputs.is_enterprise_account === true;
@@ -1838,6 +1849,7 @@ const EditChannelModal = (props) => {
     delete localInputs.disable_store;
     delete localInputs.allow_safety_identifier;
     delete localInputs.allow_include_obfuscation;
+    delete localInputs.save_request_log;
     delete localInputs.allow_inference_geo;
     delete localInputs.allow_speed;
     delete localInputs.claude_beta_query;
@@ -2507,6 +2519,8 @@ const EditChannelModal = (props) => {
                   <Text className='text-sm font-medium text-gray-500 mb-3 block'>
                     {t('额外设置')}
                   </Text>
+
+                  <Form.Switch field='save_request_log' label={t('保存请求日志')} checkedText={t('开')} uncheckedText={t('关')} onChange={(value) => handleChannelOtherSettingsChange('save_request_log', value)} extraText={t('保存该渠道的请求和响应正文')} />
 
                   {inputs.type === 14 && (
                     <Form.Switch field='claude_beta_query' label={t('Claude 强制 beta=true')} checkedText={t('开')} uncheckedText={t('关')} onChange={(value) => handleChannelOtherSettingsChange('claude_beta_query', value)} extraText={t('开启后，该渠道请求 Claude 时将强制追加 ?beta=true（无需客户端手动传参）')} />

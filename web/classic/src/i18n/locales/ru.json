@@ -3700,6 +3700,8 @@
     "并确认自行承担部署": "confirm that I bear legal responsibility arising from deployment",
     "运营和收费行为产生的法律责任": "operation and charging behavior",
     "，": ", ",
-    "、": ", "
+    "、": ", ",
+    "保存该渠道的请求和响应正文": "Сохранять тела запросов и ответов для этого канала",
+    "保存请求日志": "Сохранять журналы запросов"
   }
 }

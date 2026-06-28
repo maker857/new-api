@@ -97,7 +97,11 @@ const OPERATIONS_SECTIONS = [
     titleKey: 'Log Maintenance',
     build: (settings: OperationsSettings) => (
       <LogSettingsSection
-        defaultEnabled={Boolean(settings.LogConsumeEnabled)}
+        defaultValues={{
+          LogConsumeEnabled: Boolean(settings.LogConsumeEnabled),
+          ServerLogMaxSizeMB: Number(settings.ServerLogMaxSizeMB ?? 0),
+          RequestLogMaxSizeMB: Number(settings.RequestLogMaxSizeMB ?? 0),
+        }}
       />
     ),
   },

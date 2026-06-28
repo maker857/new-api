@@ -200,6 +200,7 @@ export const channelFormSchema = z
     disable_store: z.boolean().optional(), // OpenAI only
     allow_safety_identifier: z.boolean().optional(), // OpenAI only
     allow_include_obfuscation: z.boolean().optional(), // OpenAI: include usage obfuscation
+    save_request_log: z.boolean().optional(), // Save request/response file logs
     allow_inference_geo: z.boolean().optional(), // OpenAI/Anthropic: inference geography
     allow_speed: z.boolean().optional(), // Anthropic: speed mode control
     claude_beta_query: z.boolean().optional(), // Anthropic: beta query passthrough
@@ -340,6 +341,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   disable_store: false,
   allow_safety_identifier: false,
   allow_include_obfuscation: false,
+  save_request_log: false,
   allow_inference_geo: false,
   allow_speed: false,
   claude_beta_query: false,
@@ -396,6 +398,7 @@ export function transformChannelToFormDefaults(
   let disableStore = false
   let allowSafetyIdentifier = false
   let allowIncludeObfuscation = false
+  let saveRequestLog = false
   let allowInferenceGeo = false
   let allowSpeed = false
   let claudeBetaQuery = false
@@ -416,6 +419,7 @@ export function transformChannelToFormDefaults(
       disableStore = parsed.disable_store === true
       allowSafetyIdentifier = parsed.allow_safety_identifier === true
       allowIncludeObfuscation = parsed.allow_include_obfuscation === true
+      saveRequestLog = parsed.save_request_log === true
       allowInferenceGeo = parsed.allow_inference_geo === true
       allowSpeed = parsed.allow_speed === true
       claudeBetaQuery = parsed.claude_beta_query === true
@@ -474,6 +478,7 @@ export function transformChannelToFormDefaults(
     allow_service_tier: allowServiceTier,
     disable_store: disableStore,
     allow_include_obfuscation: allowIncludeObfuscation,
+    save_request_log: saveRequestLog,
     allow_inference_geo: allowInferenceGeo,
     allow_speed: allowSpeed,
     claude_beta_query: claudeBetaQuery,
@@ -516,6 +521,8 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
       console.error('Failed to parse existing settings:', error)
     }
   }
+
+  settingsObj.save_request_log = formData.save_request_log === true
 
   // Add vertex_key_type for Vertex AI channels (type 41)
   if (formData.type === 41) {

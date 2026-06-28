@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/types"
 
@@ -306,6 +307,7 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 		ModelName:        modelName,
 		Quota:            0,
 		ChannelId:        channelId,
+		ChannelName:      common.GetContextKeyString(c, constant.ContextKeyChannelName),
 		TokenId:          tokenId,
 		UseTime:          useTimeSeconds,
 		IsStream:         isStream,
@@ -320,6 +322,7 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 		UpstreamRequestId: upstreamRequestId,
 		Other:             otherStr,
 	}
+	writeRequestFileLog(c, log)
 	err := createLog(log)
 	if err != nil {
 		logger.LogError(c, "failed to record log: "+err.Error())
@@ -370,6 +373,7 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 		ModelName:        params.ModelName,
 		Quota:            params.Quota,
 		ChannelId:        params.ChannelId,
+		ChannelName:      common.GetContextKeyString(c, constant.ContextKeyChannelName),
 		TokenId:          params.TokenId,
 		UseTime:          params.UseTimeSeconds,
 		IsStream:         params.IsStream,
@@ -384,6 +388,7 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 		UpstreamRequestId: upstreamRequestId,
 		Other:             otherStr,
 	}
+	writeRequestFileLog(c, log)
 	err := createLog(log)
 	if err != nil {
 		logger.LogError(c, "failed to record log: "+err.Error())

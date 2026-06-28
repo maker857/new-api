@@ -46,6 +46,8 @@ export default function SettingsLog(props) {
   const [loadingCleanHistoryLog, setLoadingCleanHistoryLog] = useState(false);
   const [inputs, setInputs] = useState({
     LogConsumeEnabled: false,
+    ServerLogMaxSizeMB: 0,
+    RequestLogMaxSizeMB: 0,
     historyTimestamp: dayjs().subtract(1, 'month').toDate(),
   });
   const refForm = useRef();
@@ -183,7 +185,11 @@ export default function SettingsLog(props) {
     const currentInputs = {};
     for (let key in props.options) {
       if (Object.keys(inputs).includes(key)) {
-        currentInputs[key] = props.options[key];
+        if (key === 'ServerLogMaxSizeMB' || key === 'RequestLogMaxSizeMB') {
+          currentInputs[key] = Number(props.options[key] || 0);
+        } else {
+          currentInputs[key] = props.options[key];
+        }
       }
     }
     currentInputs['historyTimestamp'] = inputs.historyTimestamp;
@@ -212,6 +218,38 @@ export default function SettingsLog(props) {
                     setInputs({
                       ...inputs,
                       LogConsumeEnabled: value,
+                    });
+                  }}
+                />
+              </Col>
+              <Col xs={24} sm={12} md={8} lg={8} xl={8}>
+                <Form.InputNumber
+                  field={'ServerLogMaxSizeMB'}
+                  label={t('运行日志最大体积 (MB)')}
+                  min={0}
+                  step={1}
+                  precision={0}
+                  extraText={t('限制 oneapi 运行日志文件总大小，0 表示不限制，超过后优先删除最旧文件')}
+                  onChange={(value) => {
+                    setInputs({
+                      ...inputs,
+                      ServerLogMaxSizeMB: Number(value || 0),
+                    });
+                  }}
+                />
+              </Col>
+              <Col xs={24} sm={12} md={8} lg={8} xl={8}>
+                <Form.InputNumber
+                  field={'RequestLogMaxSizeMB'}
+                  label={t('请求日志最大体积 (MB)')}
+                  min={0}
+                  step={1}
+                  precision={0}
+                  extraText={t('限制保存的请求和响应日志文件总大小，0 表示不限制，超过后优先删除最旧文件')}
+                  onChange={(value) => {
+                    setInputs({
+                      ...inputs,
+                      RequestLogMaxSizeMB: Number(value || 0),
                     });
                   }}
                 />

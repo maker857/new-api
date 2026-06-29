@@ -1,0 +1,173 @@
+{
+  "format": "cpa-sections-json",
+  "version": 1,
+  "trace_id": "89b969527d552a52a7a0aab163c4b11b",
+  "channel": "本地结日志服务器aws测试",
+  "started_at": "2026-06-29T01:37:36.1465406Z",
+  "updated_at": "2026-06-29T01:37:36.3248612Z",
+  "request_info": {
+    "version": "v0.0.0",
+    "url": "/v1/messages",
+    "method": "POST",
+    "downstream_transport": "http",
+    "upstream_transport": "http",
+    "timestamp": "2026-06-29T01:37:36.3178613Z",
+    "remote_addr": "127.0.0.1"
+  },
+  "headers": {
+    "Accept": [
+      "*/*"
+    ],
+    "Accept-Encoding": [
+      "gzip, deflate, br"
+    ],
+    "Anthropic-Version": [
+      "2023-06-01"
+    ],
+    "Authorization": [
+      "[REDACTED]"
+    ],
+    "Connection": [
+      "keep-alive"
+    ],
+    "Content-Length": [
+      "138"
+    ],
+    "Content-Type": [
+      "application/json"
+    ],
+    "User-Agent": [
+      "Apifox/1.0.0 (https://apifox.com)"
+    ]
+  },
+  "request_body": {
+    "mode": "full",
+    "encoding": "json",
+    "original_size": 138,
+    "saved_size": 138,
+    "truncated": false,
+    "text": "{\r\n  \"model\": \"claude-opus-4-7\",\r\n  \"max_tokens\": 64,\r\n  \"messages\": [\r\n    {\r\n      \"role\": \"user\",\r\n      \"content\": \"hi\"\r\n    }\r\n  ]\r\n}",
+    "json": {
+      "max_tokens": 64,
+      "messages": [
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "model": "claude-opus-4-7"
+    }
+  },
+  "api_requests": [
+    {
+      "sequence": 8,
+      "timestamp": "2026-06-29T01:37:36.1495405Z",
+      "upstream_url": "http://38.181.47.21/:3000/v1/messages",
+      "http_method": "POST",
+      "headers": {
+        "Accept": [
+          "*/*"
+        ],
+        "Anthropic-Version": [
+          "2023-06-01"
+        ],
+        "Content-Type": [
+          "application/json"
+        ],
+        "X-Api-Key": [
+          "[REDACTED]"
+        ]
+      },
+      "body": {
+        "mode": "full",
+        "encoding": "json",
+        "original_size": 87,
+        "saved_size": 87,
+        "truncated": false,
+        "text": "{\"model\":\"claude-opus-4-7\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":64}",
+        "json": {
+          "max_tokens": 64,
+          "messages": [
+            {
+              "content": "hi",
+              "role": "user"
+            }
+          ],
+          "model": "claude-opus-4-7"
+        }
+      }
+    }
+  ],
+  "api_responses": [
+    {
+      "sequence": 8,
+      "timestamp": "2026-06-29T01:37:36.3149356Z",
+      "status": 200,
+      "headers": {
+        "Cache-Control": [
+          "no-cache",
+          "no-cache"
+        ],
+        "Cache-Version": [
+          "b688f2fb5be447c25e5aa3bd063087a83db32a288bf6a4f35f2d8db310e40b14"
+        ],
+        "Connection": [
+          "keep-alive"
+        ],
+        "Content-Type": [
+          "text/html; charset=utf-8"
+        ],
+        "Date": [
+          "Mon, 29 Jun 2026 01:37:58 GMT"
+        ],
+        "Server": [
+          "nginx"
+        ],
+        "Vary": [
+          "Accept-Encoding"
+        ],
+        "X-Oneapi-Request-Id": [
+          "202606290137584466912618268d9d66b0DyPUb"
+        ]
+      },
+      "body": {
+        "mode": "full",
+        "encoding": "text",
+        "original_size": 1082,
+        "saved_size": 1082,
+        "truncated": false,
+        "text": "\u003c!doctype html\u003e\n\u003chtml lang=\"en\"\u003e\n  \u003chead\u003e\n    \u003cmeta charset=\"UTF-8\" /\u003e\n    \u003clink rel=\"icon\" type=\"image/png\" href=\"/logo.png\" /\u003e\n    \u003cmeta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" /\u003e\n\n    \u003c!-- Primary Meta Tags --\u003e\n    \u003ctitle\u003eNew API\u003c/title\u003e\n    \u003cmeta name=\"title\" content=\"New API\" /\u003e\n    \u003cmeta\n      name=\"description\"\n      content=\"Unified AI API gateway and admin dashboard.\"\n    /\u003e\n\n    \u003cmeta name=\"theme-color\" content=\"#fff\" /\u003e\n    \u003c!--Umami QuantumNous--\u003e\n    \u003c!--Google Analytics QuantumNous--\u003e\n  \u003clink rel=\"icon\" href=\"/favicon.ico\"\u003e\u003cscript defer src=\"/static/js/vendor-ui-primitives.9fda9f53d9.js\"\u003e\u003c/script\u003e\u003cscript defer src=\"/static/js/vendor-tanstack.90be8f69e1.js\"\u003e\u003c/script\u003e\u003cscript defer src=\"/static/js/lib-react.a6dd11adaa.js\"\u003e\u003c/script\u003e\u003cscript defer src=\"/static/js/3757.f703490349.js\"\u003e\u003c/script\u003e\u003cscript defer src=\"/static/js/index.a10093f43e.js\"\u003e\u003c/script\u003e\u003clink href=\"/static/css/3757.10e003a7e2.css\" rel=\"stylesheet\"\u003e\u003clink href=\"/static/css/index.649595e337.css\" rel=\"stylesheet\"\u003e\u003c/head\u003e\n\n  \u003cbody\u003e\n    \u003cdiv id=\"root\"\u003e\u003c/div\u003e\n  \u003c/body\u003e\n\u003c/html\u003e\n"
+      }
+    }
+  ],
+  "response": {
+    "status": 500,
+    "duration_ms": 178,
+    "headers": {
+      "Content-Type": [
+        "application/json; charset=utf-8"
+      ],
+      "X-New-Api-Version": [
+        "v0.0.0"
+      ],
+      "X-Oneapi-Request-Id": [
+        "202606290137361457623008268d9d6aufqHjtt"
+      ]
+    },
+    "body": {
+      "mode": "full",
+      "encoding": "json",
+      "original_size": 173,
+      "saved_size": 173,
+      "truncated": false,
+      "text": "{\"error\":{\"type\":\"new_api_error\",\"message\":\"invalid character '\\u003c' looking for beginning of value (request id: 202606290137361457623008268d9d6aufqHjtt)\"},\"type\":\"error\"}",
+      "json": {
+        "error": {
+          "message": "invalid character '\u003c' looking for beginning of value (request id: 202606290137361457623008268d9d6aufqHjtt)",
+          "type": "new_api_error"
+        },
+        "type": "error"
+      }
+    }
+  }
+}

@@ -12,9 +12,9 @@ import (
 
 type OpenAIError struct {
 	Message  string          `json:"message"`
-	Type     string          `json:"type"`
-	Param    string          `json:"param"`
-	Code     any             `json:"code"`
+	Type     string          `json:"type,omitempty"`
+	Param    string          `json:"param,omitempty"`
+	Code     any             `json:"code,omitempty"`
 	Metadata json.RawMessage `json:"metadata,omitempty"`
 }
 
@@ -215,9 +215,13 @@ func (e *NewAPIError) ToClaudeError() ClaudeError {
 	switch e.errorType {
 	case ErrorTypeOpenAIError:
 		if openAIError, ok := e.RelayError.(OpenAIError); ok {
+			errorType := openAIError.Type
+			if errorType == "" && openAIError.Code != nil {
+				errorType = fmt.Sprintf("%v", openAIError.Code)
+			}
 			result = ClaudeError{
 				Message: e.Error(),
-				Type:    fmt.Sprintf("%v", openAIError.Code),
+				Type:    errorType,
 			}
 		}
 	case ErrorTypeClaudeError:

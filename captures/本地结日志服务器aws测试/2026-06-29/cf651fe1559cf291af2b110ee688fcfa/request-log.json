@@ -1,0 +1,85 @@
+{
+  "format": "cpa-sections-json",
+  "version": 1,
+  "trace_id": "cf651fe1559cf291af2b110ee688fcfa",
+  "channel": "本地结日志服务器aws测试",
+  "started_at": "2026-06-29T01:38:10.4681096Z",
+  "updated_at": "2026-06-29T01:38:10.6391968Z",
+  "api_requests": [
+    {
+      "sequence": 9,
+      "timestamp": "2026-06-29T01:38:10.4681096Z",
+      "upstream_url": "http://38.181.47.21:3000/v1/messages",
+      "http_method": "POST",
+      "headers": {
+        "Accept": [
+          ""
+        ],
+        "Anthropic-Version": [
+          "2023-06-01"
+        ],
+        "Content-Type": [
+          "application/json"
+        ],
+        "X-Api-Key": [
+          "[REDACTED]"
+        ]
+      },
+      "body": {
+        "mode": "full",
+        "encoding": "json",
+        "original_size": 98,
+        "saved_size": 98,
+        "truncated": false,
+        "text": "{\"model\":\"claude-opus-4-7\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":16,\"tools\":[]}",
+        "json": {
+          "max_tokens": 16,
+          "messages": [
+            {
+              "content": "hi",
+              "role": "user"
+            }
+          ],
+          "model": "claude-opus-4-7",
+          "tools": []
+        }
+      }
+    }
+  ],
+  "api_responses": [
+    {
+      "sequence": 9,
+      "timestamp": "2026-06-29T01:38:10.6391968Z",
+      "status": 503,
+      "headers": {
+        "Content-Length": [
+          "208"
+        ],
+        "Content-Type": [
+          "application/json; charset=utf-8"
+        ],
+        "Date": [
+          "Mon, 29 Jun 2026 01:38:32 GMT"
+        ],
+        "X-Oneapi-Request-Id": [
+          "202606290138327733705498268d9d69zUBexDY"
+        ]
+      },
+      "body": {
+        "mode": "full",
+        "encoding": "json",
+        "original_size": 208,
+        "saved_size": 208,
+        "truncated": false,
+        "text": "{\"error\":{\"code\":\"model_not_found\",\"message\":\"No available channel for model claude-opus-4-7 under group AWS|ceshi (distributor) (request id: 202606290138327733705498268d9d69zUBexDY)\",\"type\":\"new_api_error\"}}",
+        "json": {
+          "error": {
+            "code": "model_not_found",
+            "message": "No available channel for model claude-opus-4-7 under group AWS|ceshi (distributor) (request id: 202606290138327733705498268d9d69zUBexDY)",
+            "type": "new_api_error"
+          }
+        }
+      }
+    }
+  ]
+}

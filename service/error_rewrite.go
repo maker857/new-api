@@ -45,6 +45,12 @@ type ErrorRewriteRule struct {
 	Keyword         string `json:"keyword,omitempty"`
 	Type            string `json:"type,omitempty"`
 	Message         string `json:"message,omitempty"`
+	ErrorType       string `json:"error_type,omitempty"`
+	ErrorTypeMode   string `json:"error_type_mode,omitempty"`
+	ErrorCode       string `json:"error_code,omitempty"`
+	ErrorCodeMode   string `json:"error_code_mode,omitempty"`
+	ErrorParam      string `json:"error_param,omitempty"`
+	ErrorParamMode  string `json:"error_param_mode,omitempty"`
 	StatusCode      int    `json:"status_code,omitempty"`
 	ChannelID       int    `json:"channel_id,omitempty"`
 	ChannelName     string `json:"channel_name,omitempty"`
@@ -84,6 +90,17 @@ type ErrorRewriteMatchContext struct {
 	GroupScope   string
 	ModelName    string
 	ChannelInfo  *model.ChannelInfo
+}
+
+type errorRewriteReplacement struct {
+	Message    string
+	StatusCode int
+	ErrorType  string
+	TypeMode   string
+	ErrorCode  string
+	CodeMode   string
+	ErrorParam string
+	ParamMode  string
 }
 
 var errorRewriteCache = struct {
@@ -128,19 +145,19 @@ func DefaultErrorRewriteOptions() map[string]string {
 }
 
 func RewriteUpstreamErrorMessage(message string) string {
-	rewritten, _, ok := rewriteUpstreamError(message, ErrorRewriteMatchContext{})
+	replacement, ok := rewriteUpstreamError(message, ErrorRewriteMatchContext{})
 	if !ok {
 		return message
 	}
-	return rewritten
+	return replacement.Message
 }
 
-func rewriteUpstreamError(message string, matchCtx ErrorRewriteMatchContext) (string, int, bool) {
+func rewriteUpstreamError(message string, matchCtx ErrorRewriteMatchContext) (errorRewriteReplacement, bool) {
 	if strings.TrimSpace(message) == "" || !optionBool(ErrorRewriteEnabledKey) {
-		return message, 0, false
+		return errorRewriteReplacement{}, false
 	}
 	if matchCtx.ChannelInfo != nil && !matchCtx.ChannelInfo.IsErrorRewriteEnabled() {
-		return message, 0, false
+		return errorRewriteReplacement{}, false
 	}
 	monitorRules := currentErrorRewriteRules()
 	localRules, err := ErrorRewriteRulesFromOptions()
@@ -152,20 +169,20 @@ func rewriteUpstreamError(message string, matchCtx ErrorRewriteMatchContext) (st
 			continue
 		}
 		key := ruleReplacementKey(rule)
-		if replacement, statusCode := replacementForKeyword(localRules, key); replacement != "" {
-			return replacement, statusCode, true
+		if replacement := replacementForKeyword(localRules, key); replacement.Message != "" {
+			return replacement, true
 		}
-		return optionString(ErrorRewriteFallbackMessageKey, "request blocked by monitoring system"), 0, true
+		return errorRewriteReplacement{Message: optionString(ErrorRewriteFallbackMessageKey, "request blocked by monitoring system")}, true
 	}
 	for _, word := range monitorRules.Blacklist {
 		if containsFold(message, word) {
-			if replacement, statusCode := replacementForKeyword(localRules, word); replacement != "" {
-				return replacement, statusCode, true
+			if replacement := replacementForKeyword(localRules, word); replacement.Message != "" {
+				return replacement, true
 			}
-			return optionString(ErrorRewriteFallbackMessageKey, "request blocked by monitoring system"), 0, true
+			return errorRewriteReplacement{Message: optionString(ErrorRewriteFallbackMessageKey, "request blocked by monitoring system")}, true
 		}
 	}
-	return message, 0, false
+	return errorRewriteReplacement{}, false
 }
 
 func RewriteNewAPIError(err *types.NewAPIError) {
@@ -183,20 +200,27 @@ func RewriteNewAPIErrorWithMatchContext(err *types.NewAPIError, matchCtx ErrorRe
 	if matchCtx.StatusCode == 0 {
 		matchCtx.StatusCode = err.StatusCode
 	}
-	rewritten, statusCode, ok := rewriteUpstreamError(err.Error(), matchCtx)
-	if !ok || rewritten == "" || rewritten == err.Error() {
+	replacement, ok := rewriteUpstreamError(err.Error(), matchCtx)
+	if !ok || replacement.Message == "" || replacement.Message == err.Error() {
 		return
 	}
+	rewritten := replacement.Message
 	err.SetMessage(rewritten)
-	if isValidRewriteStatusCode(statusCode) {
-		err.StatusCode = statusCode
+	if isValidRewriteStatusCode(replacement.StatusCode) {
+		err.StatusCode = replacement.StatusCode
 	}
 	switch relayErr := err.RelayError.(type) {
 	case types.OpenAIError:
 		relayErr.Message = rewritten
+		relayErr.Metadata = nil
+		relayErr.Type = rewriteStringField(relayErr.Type, replacement.TypeMode, replacement.ErrorType)
+		relayErr.Code = rewriteAnyField(relayErr.Code, replacement.CodeMode, replacement.ErrorCode)
+		relayErr.Param = rewriteStringField(relayErr.Param, replacement.ParamMode, replacement.ErrorParam)
+		err.Metadata = nil
 		err.RelayError = relayErr
 	case types.ClaudeError:
 		relayErr.Message = rewritten
+		relayErr.Type = rewriteStringField(relayErr.Type, replacement.TypeMode, replacement.ErrorType)
 		err.RelayError = relayErr
 	}
 }
@@ -628,13 +652,70 @@ func ResetErrorRewriteMonitorCache() {
 	errorRewriteCache.Unlock()
 }
 
-func replacementForKeyword(rules ErrorRewriteRules, keyword string) (string, int) {
+func replacementForKeyword(rules ErrorRewriteRules, keyword string) errorRewriteReplacement {
 	for _, rule := range rules.Rules {
 		if strings.EqualFold(strings.TrimSpace(ruleReplacementKey(rule)), strings.TrimSpace(keyword)) {
-			return strings.TrimSpace(rule.Message), rule.StatusCode
+			return errorRewriteReplacement{
+				Message:    strings.TrimSpace(rule.Message),
+				StatusCode: rule.StatusCode,
+				ErrorType:  strings.TrimSpace(rule.ErrorType),
+				TypeMode:   normalizeRewriteFieldMode(rule.ErrorTypeMode, rule.ErrorType),
+				ErrorCode:  strings.TrimSpace(rule.ErrorCode),
+				CodeMode:   normalizeRewriteFieldModeWithDefault(rule.ErrorCodeMode, rule.ErrorCode, "filter"),
+				ErrorParam: strings.TrimSpace(rule.ErrorParam),
+				ParamMode:  normalizeRewriteFieldModeWithDefault(rule.ErrorParamMode, rule.ErrorParam, "filter"),
+			}
 		}
 	}
-	return "", 0
+	return errorRewriteReplacement{}
+}
+
+func normalizeRewriteFieldModeWithDefault(mode string, value string, defaultMode string) string {
+	if strings.TrimSpace(mode) == "" && strings.TrimSpace(value) == "" {
+		return normalizeRewriteFieldMode(defaultMode, "")
+	}
+	return normalizeRewriteFieldMode(mode, value)
+}
+
+func normalizeRewriteFieldMode(mode string, value string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	switch mode {
+	case "filter", "remove", "delete", "过滤":
+		return "filter"
+	case "keep", "preserve", "保留":
+		return "keep"
+	case "replace", "替换":
+		return "replace"
+	default:
+		if strings.TrimSpace(value) != "" {
+			return "replace"
+		}
+		return "keep"
+	}
+}
+
+func rewriteStringField(current string, mode string, replacement string) string {
+	switch normalizeRewriteFieldMode(mode, replacement) {
+	case "filter":
+		return ""
+	case "replace":
+		if strings.TrimSpace(current) != "" && strings.TrimSpace(replacement) != "" {
+			return strings.TrimSpace(replacement)
+		}
+	}
+	return current
+}
+
+func rewriteAnyField(current any, mode string, replacement string) any {
+	switch normalizeRewriteFieldMode(mode, replacement) {
+	case "filter":
+		return nil
+	case "replace":
+		if current != nil && strings.TrimSpace(fmt.Sprintf("%v", current)) != "" && strings.TrimSpace(replacement) != "" {
+			return strings.TrimSpace(replacement)
+		}
+	}
+	return current
 }
 
 func ruleContentContains(rule ErrorRewriteRule) string {

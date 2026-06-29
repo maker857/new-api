@@ -1,0 +1,167 @@
+{
+  "format": "cpa-sections-json",
+  "version": 1,
+  "trace_id": "587826f9c67bfb9e3b82101e1e4db837",
+  "channel": "本地结日志服务器aws测试",
+  "started_at": "2026-06-29T03:26:15.6442397Z",
+  "updated_at": "2026-06-29T03:26:15.8111373Z",
+  "request_info": {
+    "version": "v0.0.0",
+    "url": "/v1/messages",
+    "method": "POST",
+    "downstream_transport": "http",
+    "upstream_transport": "http",
+    "timestamp": "2026-06-29T03:26:15.8076376Z",
+    "remote_addr": "127.0.0.1"
+  },
+  "headers": {
+    "Accept": [
+      "*/*"
+    ],
+    "Accept-Encoding": [
+      "gzip, deflate, br"
+    ],
+    "Anthropic-Version": [
+      "2023-06-01"
+    ],
+    "Authorization": [
+      "[REDACTED]"
+    ],
+    "Connection": [
+      "keep-alive"
+    ],
+    "Content-Length": [
+      "138"
+    ],
+    "Content-Type": [
+      "application/json"
+    ],
+    "User-Agent": [
+      "Apifox/1.0.0 (https://apifox.com)"
+    ]
+  },
+  "request_body": {
+    "mode": "full",
+    "encoding": "json",
+    "original_size": 138,
+    "saved_size": 138,
+    "truncated": false,
+    "text": "{\r\n  \"model\": \"claude-opus-4-7\",\r\n  \"max_tokens\": 64,\r\n  \"messages\": [\r\n    {\r\n      \"role\": \"user\",\r\n      \"content\": \"hi\"\r\n    }\r\n  ]\r\n}",
+    "json": {
+      "max_tokens": 64,
+      "messages": [
+        {
+          "content": "hi",
+          "role": "user"
+        }
+      ],
+      "model": "claude-opus-4-7"
+    }
+  },
+  "api_requests": [
+    {
+      "sequence": 6,
+      "timestamp": "2026-06-29T03:26:15.6458631Z",
+      "upstream_url": "http://38.181.47.21:3000/v1/messages",
+      "http_method": "POST",
+      "headers": {
+        "Accept": [
+          "*/*"
+        ],
+        "Anthropic-Version": [
+          "2023-06-01"
+        ],
+        "Content-Type": [
+          "application/json"
+        ],
+        "X-Api-Key": [
+          "[REDACTED]"
+        ]
+      },
+      "body": {
+        "mode": "full",
+        "encoding": "json",
+        "original_size": 87,
+        "saved_size": 87,
+        "truncated": false,
+        "text": "{\"model\":\"claude-opus-4-7\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":64}",
+        "json": {
+          "max_tokens": 64,
+          "messages": [
+            {
+              "content": "hi",
+              "role": "user"
+            }
+          ],
+          "model": "claude-opus-4-7"
+        }
+      }
+    }
+  ],
+  "api_responses": [
+    {
+      "sequence": 6,
+      "timestamp": "2026-06-29T03:26:15.8044225Z",
+      "status": 503,
+      "headers": {
+        "Content-Length": [
+          "208"
+        ],
+        "Content-Type": [
+          "application/json; charset=utf-8"
+        ],
+        "Date": [
+          "Mon, 29 Jun 2026 03:26:38 GMT"
+        ],
+        "X-Oneapi-Request-Id": [
+          "202606290326380338809148268d9d6lQY59yzJ"
+        ]
+      },
+      "body": {
+        "mode": "full",
+        "encoding": "json",
+        "original_size": 208,
+        "saved_size": 208,
+        "truncated": false,
+        "text": "{\"error\":{\"code\":\"model_not_found\",\"message\":\"No available channel for model claude-opus-4-7 under group AWS|ceshi (distributor) (request id: 202606290326380338809148268d9d6lQY59yzJ)\",\"type\":\"new_api_error\"}}",
+        "json": {
+          "error": {
+            "code": "model_not_found",
+            "message": "No available channel for model claude-opus-4-7 under group AWS|ceshi (distributor) (request id: 202606290326380338809148268d9d6lQY59yzJ)",
+            "type": "new_api_error"
+          }
+        }
+      }
+    }
+  ],
+  "response": {
+    "status": 500,
+    "duration_ms": 166,
+    "headers": {
+      "Content-Type": [
+        "application/json; charset=utf-8"
+      ],
+      "X-New-Api-Version": [
+        "v0.0.0"
+      ],
+      "X-Oneapi-Request-Id": [
+        "202606290326156442397008268d9d6fxufxMuY"
+      ]
+    },
+    "body": {
+      "mode": "full",
+      "encoding": "json",
+      "original_size": 150,
+      "saved_size": 150,
+      "truncated": false,
+      "text": "{\"error\":{\"type\":\"upstream error\",\"message\":\"upstream error: do request failed (request id: 202606290326156442397008268d9d6fxufxMuY)\"},\"type\":\"error\"}",
+      "json": {
+        "error": {
+          "message": "upstream error: do request failed (request id: 202606290326156442397008268d9d6fxufxMuY)",
+          "type": "upstream error"
+        },
+        "type": "error"
+      }
+    }
+  }
+}

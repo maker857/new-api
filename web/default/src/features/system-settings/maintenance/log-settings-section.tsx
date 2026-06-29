@@ -188,6 +188,12 @@ type ServerLogInfo = {
 type ErrorRewriteVisualRule = {
   content_contains: string
   message: string
+  error_type?: string
+  error_type_mode?: string
+  error_code?: string
+  error_code_mode?: string
+  error_param?: string
+  error_param_mode?: string
   status_code?: number
 }
 
@@ -207,6 +213,27 @@ type ErrorRewriteMonitorRule = {
 type ErrorRewriteMonitorStats = {
   total: number
   enabled: number
+}
+
+function rewriteFieldModeLabel(
+  mode?: string,
+  value?: string,
+  defaultMode = '保留'
+): string {
+  const normalized = mode?.trim().toLowerCase()
+  if (normalized === 'replace' || mode === '替换') return '替换'
+  if (
+    normalized === 'filter' ||
+    normalized === 'remove' ||
+    normalized === 'delete' ||
+    mode === '过滤'
+  ) {
+    return '过滤'
+  }
+  if (normalized === 'keep' || normalized === 'preserve' || mode === '保留') {
+    return '保留'
+  }
+  return value?.trim() ? '替换' : defaultMode
 }
 
 const HOURS_IN_DAY = 24
@@ -274,6 +301,24 @@ function parseErrorRewriteRules(value: string): ErrorRewriteVisualRule[] {
                 ? item.keyword
                 : '',
           message: typeof item.message === 'string' ? item.message : '',
+          error_type:
+            typeof item.error_type === 'string' ? item.error_type : undefined,
+          error_type_mode:
+            typeof item.error_type_mode === 'string'
+              ? item.error_type_mode
+              : undefined,
+          error_code:
+            typeof item.error_code === 'string' ? item.error_code : undefined,
+          error_code_mode:
+            typeof item.error_code_mode === 'string'
+              ? item.error_code_mode
+              : undefined,
+          error_param:
+            typeof item.error_param === 'string' ? item.error_param : undefined,
+          error_param_mode:
+            typeof item.error_param_mode === 'string'
+              ? item.error_param_mode
+              : undefined,
           ...(statusCode ? { status_code: statusCode } : {}),
         }
       })
@@ -294,6 +339,14 @@ function stringifyErrorRewriteRules(rules: ErrorRewriteVisualRule[]): string {
       return {
         content_contains: rule.content_contains,
         message: rule.message,
+        ...(rule.error_type ? { error_type: rule.error_type } : {}),
+        ...(rule.error_type_mode ? { error_type_mode: rule.error_type_mode } : {}),
+        ...(rule.error_code ? { error_code: rule.error_code } : {}),
+        ...(rule.error_code_mode ? { error_code_mode: rule.error_code_mode } : {}),
+        ...(rule.error_param ? { error_param: rule.error_param } : {}),
+        ...(rule.error_param_mode
+          ? { error_param_mode: rule.error_param_mode }
+          : {}),
         ...(statusCode ? { status_code: statusCode } : {}),
       }
     }),
@@ -1030,7 +1083,7 @@ export function LogSettingsSection({
                               key={`${monitorRule.id ?? index}-${monitorRuleContent(
                                 monitorRule
                               )}`}
-                              className='rounded-md border p-3'
+                              className='bg-card rounded-lg border-2 border-border p-4 shadow-sm'
                             >
                               <div className='space-y-2'>
                                 <div className='flex flex-wrap items-center gap-2'>
@@ -1056,8 +1109,13 @@ export function LogSettingsSection({
                                     </div>
                                   ))}
                                 </div>
-                                <div className='bg-muted/40 min-h-10 whitespace-pre-wrap rounded-md border px-3 py-2 text-sm'>
-                                  {monitorRuleContent(monitorRule)}
+                                <div className='space-y-1'>
+                                  <div className='text-muted-foreground text-xs'>
+                                    黑名单过滤内容
+                                  </div>
+                                  <div className='border-l-destructive bg-destructive/5 min-h-11 whitespace-pre-wrap rounded-md border border-l-4 px-3 py-2 text-sm font-medium'>
+                                    {monitorRuleContent(monitorRule) || '空内容'}
+                                  </div>
                                 </div>
                               </div>
 
@@ -1107,6 +1165,192 @@ export function LogSettingsSection({
                                       )
                                     }}
                                   />
+                                </div>
+                              </div>
+                              <div className='mt-3 grid gap-3 md:grid-cols-3'>
+                                <div className='space-y-2'>
+                                  <Label>错误 type</Label>
+                                  <div className='grid grid-cols-[120px_minmax(0,1fr)] gap-2'>
+                                    <Select
+                                      value={
+                                        rewriteFieldModeLabel(
+                                          replacement.error_type_mode,
+                                          replacement.error_type
+                                        )
+                                      }
+                                      onValueChange={(value) =>
+                                        field.onChange(
+                                          updateReplacementRuleJSON(
+                                            field.value,
+                                            monitorRule,
+                                            { error_type_mode: value }
+                                          )
+                                        )
+                                      }
+                                    >
+                                      <SelectTrigger>
+                                        <SelectValue />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        <SelectItem value='替换'>
+                                          替换
+                                        </SelectItem>
+                                        <SelectItem value='过滤'>
+                                          过滤
+                                        </SelectItem>
+                                        <SelectItem value='保留'>
+                                          保留
+                                        </SelectItem>
+                                      </SelectContent>
+                                    </Select>
+                                    <Input
+                                      value={replacement.error_type ?? ''}
+                                      disabled={
+                                        rewriteFieldModeLabel(
+                                          replacement.error_type_mode,
+                                          replacement.error_type
+                                        ) !== '替换'
+                                      }
+                                      placeholder='仅上游有 type 时替换'
+                                      onChange={(event) =>
+                                        field.onChange(
+                                          updateReplacementRuleJSON(
+                                            field.value,
+                                            monitorRule,
+                                            {
+                                              error_type:
+                                                event.target.value.trim() ||
+                                                undefined,
+                                            }
+                                          )
+                                        )
+                                      }
+                                    />
+                                  </div>
+                                </div>
+                                <div className='space-y-2'>
+                                  <Label>错误 code</Label>
+                                  <div className='grid grid-cols-[120px_minmax(0,1fr)] gap-2'>
+                                    <Select
+                                      value={
+                                        rewriteFieldModeLabel(
+                                          replacement.error_code_mode,
+                                          replacement.error_code,
+                                          '过滤'
+                                        )
+                                      }
+                                      onValueChange={(value) =>
+                                        field.onChange(
+                                          updateReplacementRuleJSON(
+                                            field.value,
+                                            monitorRule,
+                                            { error_code_mode: value }
+                                          )
+                                        )
+                                      }
+                                    >
+                                      <SelectTrigger>
+                                        <SelectValue />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        <SelectItem value='替换'>
+                                          替换
+                                        </SelectItem>
+                                        <SelectItem value='过滤'>
+                                          过滤
+                                        </SelectItem>
+                                        <SelectItem value='保留'>
+                                          保留
+                                        </SelectItem>
+                                      </SelectContent>
+                                    </Select>
+                                    <Input
+                                      value={replacement.error_code ?? ''}
+                                      disabled={
+                                        rewriteFieldModeLabel(
+                                          replacement.error_code_mode,
+                                          replacement.error_code,
+                                          '过滤'
+                                        ) !== '替换'
+                                      }
+                                      placeholder='仅上游有 code 时替换'
+                                      onChange={(event) =>
+                                        field.onChange(
+                                          updateReplacementRuleJSON(
+                                            field.value,
+                                            monitorRule,
+                                            {
+                                              error_code:
+                                                event.target.value.trim() ||
+                                                undefined,
+                                            }
+                                          )
+                                        )
+                                      }
+                                    />
+                                  </div>
+                                </div>
+                                <div className='space-y-2'>
+                                  <Label>错误 param</Label>
+                                  <div className='grid grid-cols-[120px_minmax(0,1fr)] gap-2'>
+                                    <Select
+                                      value={
+                                        rewriteFieldModeLabel(
+                                          replacement.error_param_mode,
+                                          replacement.error_param,
+                                          '过滤'
+                                        )
+                                      }
+                                      onValueChange={(value) =>
+                                        field.onChange(
+                                          updateReplacementRuleJSON(
+                                            field.value,
+                                            monitorRule,
+                                            { error_param_mode: value }
+                                          )
+                                        )
+                                      }
+                                    >
+                                      <SelectTrigger>
+                                        <SelectValue />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        <SelectItem value='替换'>
+                                          替换
+                                        </SelectItem>
+                                        <SelectItem value='过滤'>
+                                          过滤
+                                        </SelectItem>
+                                        <SelectItem value='保留'>
+                                          保留
+                                        </SelectItem>
+                                      </SelectContent>
+                                    </Select>
+                                    <Input
+                                      value={replacement.error_param ?? ''}
+                                      disabled={
+                                        rewriteFieldModeLabel(
+                                          replacement.error_param_mode,
+                                          replacement.error_param,
+                                          '过滤'
+                                        ) !== '替换'
+                                      }
+                                      placeholder='仅上游有 param 时替换'
+                                      onChange={(event) =>
+                                        field.onChange(
+                                          updateReplacementRuleJSON(
+                                            field.value,
+                                            monitorRule,
+                                            {
+                                              error_param:
+                                                event.target.value.trim() ||
+                                                undefined,
+                                            }
+                                          )
+                                        )
+                                      }
+                                    />
+                                  </div>
                                 </div>
                               </div>
                             </div>

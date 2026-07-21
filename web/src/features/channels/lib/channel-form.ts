@@ -227,6 +227,8 @@ export const channelFormSchema = z
     pass_through_body_enabled: z.boolean().optional(),
     system_prompt: z.string().optional(),
     system_prompt_override: z.boolean().optional(),
+    error_rewrite_enabled: z.boolean().optional(),
+    diagnostic_capture_enabled: z.boolean().optional(),
     // Type-specific settings (stored in settings JSON)
     is_enterprise_account: z.boolean().optional(), // OpenRouter specific
     vertex_key_type: z.enum(['json', 'api_key']).optional(), // Vertex AI specific
@@ -377,6 +379,8 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   pass_through_body_enabled: false,
   system_prompt: '',
   system_prompt_override: false,
+  error_rewrite_enabled: true,
+  diagnostic_capture_enabled: true,
   // Type-specific settings
   is_enterprise_account: false,
   vertex_key_type: 'json',
@@ -408,6 +412,9 @@ export function transformChannelToFormDefaults(
   channel: Channel
 ): ChannelFormValues {
   // Parse channel extra settings from setting field
+  const errorRewriteEnabled = channel.channel_info?.error_rewrite_enabled !== false
+  const diagnosticCaptureEnabled =
+    channel.channel_info?.diagnostic_capture_enabled !== false
   let extraSettings = {
     force_format: false,
     thinking_to_content: false,
@@ -415,6 +422,8 @@ export function transformChannelToFormDefaults(
     pass_through_body_enabled: false,
     system_prompt: '',
     system_prompt_override: false,
+    error_rewrite_enabled: errorRewriteEnabled,
+    diagnostic_capture_enabled: diagnosticCaptureEnabled,
   }
 
   if (channel.setting) {
@@ -427,6 +436,8 @@ export function transformChannelToFormDefaults(
         pass_through_body_enabled: parsed.pass_through_body_enabled || false,
         system_prompt: parsed.system_prompt || '',
         system_prompt_override: parsed.system_prompt_override || false,
+        error_rewrite_enabled: errorRewriteEnabled,
+        diagnostic_capture_enabled: diagnosticCaptureEnabled,
       }
     } catch (error) {
       // eslint-disable-next-line no-console
@@ -719,6 +730,14 @@ export function transformFormDataToCreatePayload(formData: ChannelFormValues): {
     header_override: formData.header_override || null,
     settings: buildSettingsJSON(formData),
     other: formData.other || '',
+    channel_info: {
+      is_multi_key: false,
+      multi_key_size: 0,
+      multi_key_polling_index: 0,
+      multi_key_mode: formData.multi_key_type || 'random',
+      error_rewrite_enabled: formData.error_rewrite_enabled !== false,
+      diagnostic_capture_enabled: formData.diagnostic_capture_enabled !== false,
+    },
   }
 
   // Clean up empty strings to null for optional fields
@@ -766,6 +785,14 @@ export function transformFormDataToUpdatePayload(
     header_override: formData.header_override || null,
     settings: buildSettingsJSON(formData),
     other: formData.other || '',
+    channel_info: {
+      is_multi_key: false,
+      multi_key_size: 0,
+      multi_key_polling_index: 0,
+      multi_key_mode: formData.multi_key_type || 'random',
+      error_rewrite_enabled: formData.error_rewrite_enabled !== false,
+      diagnostic_capture_enabled: formData.diagnostic_capture_enabled !== false,
+    },
   }
 
   // Only include key if it was changed (not empty)

@@ -1,6 +1,10 @@
 package controller
 
 import (
+	"io"
+	"net/http"
+	"time"
+
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
@@ -8,6 +12,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+const kalosPublicPricingURL = "https://kalosai.info/api/pricing"
+const kalosPublicRankingsURL = "https://kalosai.info/api/rankings?period=week"
 
 func filterPricingByUsableGroups(pricing []model.Pricing, usableGroup map[string]string) []model.Pricing {
 	if len(pricing) == 0 {
@@ -74,6 +81,46 @@ func GetPricing(c *gin.Context) {
 		"auto_groups":        service.GetUserAutoGroup(group),
 		"pricing_version":    "a42d372ccf0b5dd13ecf71203521f9d2",
 	})
+}
+
+func GetKalosPublicPricing(c *gin.Context) {
+	proxyKalosPublicJSON(c, kalosPublicPricingURL)
+}
+
+func GetKalosPublicRankings(c *gin.Context) {
+	proxyKalosPublicJSON(c, kalosPublicRankingsURL)
+}
+
+func proxyKalosPublicJSON(c *gin.Context, url string) {
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{
+			"success": false,
+			"message": "获取 Kalos 公开数据失败",
+		})
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 20<<20))
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{
+			"success": false,
+			"message": "读取 Kalos 公开数据失败",
+		})
+		return
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		c.JSON(http.StatusBadGateway, gin.H{
+			"success": false,
+			"message": "Kalos 公开接口返回异常",
+			"status":  resp.StatusCode,
+		})
+		return
+	}
+
+	c.Data(http.StatusOK, "application/json; charset=utf-8", body)
 }
 
 func ResetModelRatio(c *gin.Context) {

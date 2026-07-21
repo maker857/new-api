@@ -32,6 +32,8 @@ func SetApiRouter(router *gin.Engine) {
 		//apiRouter.GET("/midjourney", controller.GetMidjourney)
 		apiRouter.GET("/home_page_content", controller.GetHomePageContent)
 		apiRouter.GET("/pricing", middleware.HeaderNavModuleAuth("pricing"), controller.GetPricing)
+		apiRouter.GET("/kalos-public/pricing", controller.GetKalosPublicPricing)
+		apiRouter.GET("/kalos-public/rankings", controller.GetKalosPublicRankings)
 		perfMetricsRoute := apiRouter.Group("/perf-metrics")
 		perfMetricsRoute.Use(middleware.HeaderNavModulePublicOrUserAuth("pricing"))
 		{
@@ -224,6 +226,14 @@ func SetApiRouter(router *gin.Engine) {
 			performanceRoute.POST("/gc", controller.ForceGC)
 			performanceRoute.GET("/logs", controller.GetLogFiles)
 			performanceRoute.DELETE("/logs", controller.CleanupLogFiles)
+		}
+		apiRouter.POST("/error-rewrite/monitor-rules/sync", controller.SyncErrorRewriteMonitorRules)
+		apiRouter.POST("/log-management/blacklist-rules/sync", controller.SyncErrorRewriteMonitorRules)
+		errorRewriteRoute := apiRouter.Group("/error-rewrite")
+		errorRewriteRoute.Use(middleware.RootAuth())
+		{
+			errorRewriteRoute.GET("/rules", controller.GetErrorRewriteRules)
+			errorRewriteRoute.POST("/rules/refresh", controller.PullErrorRewriteMonitorRules)
 		}
 		ratioSyncRoute := apiRouter.Group("/ratio_sync")
 		ratioSyncRoute.Use(middleware.RootAuth())

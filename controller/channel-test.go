@@ -859,9 +859,16 @@ func TestChannel(c *gin.Context) {
 	}
 	result := testChannel(requestCtx, channel, testUserID, testModel, endpointType, isStream)
 	if result.localErr != nil {
+		message := result.localErr.Error()
+		if result.newAPIError != nil {
+			service.RewriteNewAPIErrorWithGinContext(result.newAPIError, result.context)
+			message = result.newAPIError.Error()
+		} else {
+			message = service.RewriteUpstreamErrorMessage(message)
+		}
 		resp := gin.H{
 			"success": false,
-			"message": result.localErr.Error(),
+			"message": message,
 			"time":    0.0,
 		}
 		if result.newAPIError != nil {
@@ -875,6 +882,7 @@ func TestChannel(c *gin.Context) {
 	go channel.UpdateResponseTime(milliseconds)
 	consumedTime := float64(milliseconds) / 1000.0
 	if result.newAPIError != nil {
+		service.RewriteNewAPIErrorWithGinContext(result.newAPIError, result.context)
 		c.JSON(http.StatusOK, gin.H{
 			"success":    false,
 			"message":    result.newAPIError.Error(),

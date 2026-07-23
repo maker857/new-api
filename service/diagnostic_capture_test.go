@@ -437,6 +437,22 @@ func TestCleanupDiagnosticCaptureTempFilesKeepsActiveFiles(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestRemoveDiagnosticCaptureTempFileRemovesEmptySpoolDirectories(t *testing.T) {
+	tempRoot := t.TempDir()
+	spoolDir := filepath.Join(tempRoot, "2026-07-24", "request-id")
+	require.NoError(t, os.MkdirAll(spoolDir, 0o700))
+	tempPath := filepath.Join(spoolDir, "inbound-request.part")
+	require.NoError(t, os.WriteFile(tempPath, []byte("body"), 0o600))
+
+	removeDiagnosticCaptureTempFile(DiagnosticCaptureConfig{TempDir: tempRoot}, &diagnosticCapturePartState{
+		tempPath:  tempPath,
+		savedSize: int64(len("body")),
+	})
+
+	require.NoDirExists(t, spoolDir)
+	require.NoDirExists(t, tempRoot)
+}
+
 func TestDiagnosticCaptureChannelEnabledReturnsFalseWhenChannelLookupFails(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())

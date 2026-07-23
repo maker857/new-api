@@ -944,6 +944,24 @@ func removeDiagnosticCaptureTempFile(cfg DiagnosticCaptureConfig, state *diagnos
 	if err := os.Remove(state.tempPath); err == nil {
 		enforceDiagnosticCaptureStorage(cfg, "", state.savedSize, 0)
 		recordDiagnosticCaptureTempBytesChange(cfg, -state.savedSize)
+		removeEmptyDiagnosticCaptureTempDirectories(cfg.TempDir, filepath.Dir(state.tempPath))
+	}
+}
+
+// removeEmptyDiagnosticCaptureTempDirectories clears the request-scoped spool
+// directory after its final part has been merged into the formal capture.
+func removeEmptyDiagnosticCaptureTempDirectories(tempRoot, dir string) {
+	tempRoot = filepath.Clean(tempRoot)
+	if tempRoot == "." || tempRoot == "" {
+		return
+	}
+	for current := filepath.Clean(dir); current == tempRoot || strings.HasPrefix(current, tempRoot+string(os.PathSeparator)); current = filepath.Dir(current) {
+		if err := os.Remove(current); err != nil {
+			return
+		}
+		if current == tempRoot {
+			return
+		}
 	}
 }
 

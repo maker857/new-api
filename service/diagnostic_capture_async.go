@@ -948,22 +948,96 @@ func removeDiagnosticCaptureTempFile(cfg DiagnosticCaptureConfig, state *diagnos
 }
 
 type diagnosticCaptureJSONWriter struct {
-	writer *bufio.Writer
-	err    error
+	writer      *bufio.Writer
+	err         error
+	indent      int
+	inString    bool
+	escaped     bool
+	atLineStart bool
 }
 
 func (w *diagnosticCaptureJSONWriter) raw(value string) {
 	if w.err != nil {
 		return
 	}
-	_, w.err = w.writer.WriteString(value)
+	w.writePretty([]byte(value))
 }
 
 func (w *diagnosticCaptureJSONWriter) bytes(value []byte) {
 	if w.err != nil {
 		return
 	}
-	_, w.err = w.writer.Write(value)
+	w.writePretty(value)
+}
+
+func (w *diagnosticCaptureJSONWriter) writePretty(value []byte) {
+	for _, char := range value {
+		if w.err != nil {
+			return
+		}
+		if w.inString {
+			w.writeByte(char)
+			if w.escaped {
+				w.escaped = false
+			} else if char == '\\' {
+				w.escaped = true
+			} else if char == '"' {
+				w.inString = false
+			}
+			continue
+		}
+
+		switch char {
+		case ' ', '\n', '\r', '\t':
+			continue
+		case '"':
+			w.writeByte(char)
+			w.inString = true
+		case '{', '[':
+			w.writeByte(char)
+			w.indent++
+			w.writeNewline()
+		case '}', ']':
+			w.indent--
+			w.writeNewline()
+			w.writeByte(char)
+		case ',':
+			w.writeByte(char)
+			w.writeNewline()
+		case ':':
+			w.writeByte(char)
+			w.writeByte(' ')
+		default:
+			w.writeByte(char)
+		}
+	}
+}
+
+func (w *diagnosticCaptureJSONWriter) writeByte(char byte) {
+	if w.err != nil {
+		return
+	}
+	if w.atLineStart && char != '\n' {
+		for i := 0; i < w.indent; i++ {
+			if _, w.err = w.writer.WriteString("  "); w.err != nil {
+				return
+			}
+		}
+		w.atLineStart = false
+	}
+	_, w.err = w.writer.Write([]byte{char})
+}
+
+func (w *diagnosticCaptureJSONWriter) writeNewline() {
+	if w.err != nil || w.atLineStart {
+		return
+	}
+	_, w.err = w.writer.WriteString("\n")
+	w.atLineStart = true
+}
+
+func (w *diagnosticCaptureJSONWriter) finish() {
+	w.writeNewline()
 }
 
 func (w *diagnosticCaptureJSONWriter) value(value any) {
@@ -1035,8 +1109,12 @@ func writeDiagnosticCaptureSession(cfg DiagnosticCaptureConfig, flow *Diagnostic
 	if err != nil {
 		return err
 	}
-	stream := &diagnosticCaptureJSONWriter{writer: bufio.NewWriterSize(file, diagnosticCaptureChunkSize)}
+	stream := &diagnosticCaptureJSONWriter{writer: bufio.NewWriterSize(file, diagnosticCaptureChunkSize), atLineStart: true}
 	stream.raw(`{"format":"cpa-sections-json","version":1`)
+	if flow.ProxyTraceID != "" {
+		stream.raw(`,"proxy_trace_id":`)
+		stream.value(flow.ProxyTraceID)
+	}
 	if flow.TraceID != "" {
 		stream.raw(`,"newapi_request_id":`)
 		stream.value(flow.TraceID)
@@ -1078,7 +1156,8 @@ func writeDiagnosticCaptureSession(cfg DiagnosticCaptureConfig, flow *Diagnostic
 		stream.raw(`,"response":`)
 		writeDiagnosticInboundResponse(stream, cfg, flow, inboundResponse)
 	}
-	stream.raw("}\n")
+	stream.raw("}")
+	stream.finish()
 	if stream.err == nil {
 		stream.err = stream.writer.Flush()
 	}
@@ -1206,13 +1285,12 @@ func writeDiagnosticCaptureBody(w *diagnosticCaptureJSONWriter, cfg DiagnosticCa
 	truncated := !state.complete || state.originalSize != state.savedSize
 	w.raw(`{"mode":`)
 	w.value(cfg.Mode)
-	w.raw(`,"body_original_size":`)
+	w.raw(`,"original_size":`)
 	w.value(state.originalSize)
-	w.raw(`,"body_saved_size":`)
+	w.raw(`,"saved_size":`)
 	w.value(state.savedSize)
-	if truncated {
-		w.raw(`,"body_truncated":true`)
-	}
+	w.raw(`,"truncated":`)
+	w.value(truncated)
 	if cfg.Mode != "full" {
 		w.raw(`,"encoding":"metadata-only"}`)
 		return

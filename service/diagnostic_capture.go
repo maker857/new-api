@@ -77,11 +77,12 @@ type DiagnosticCaptureConfig struct {
 }
 
 type DiagnosticFlow struct {
-	TraceID string
-	Channel string
-	Started time.Time
-	session *diagnosticCaptureSession
-	writer  *diagnosticResponseWriter
+	TraceID      string
+	ProxyTraceID string
+	Channel      string
+	Started      time.Time
+	session      *diagnosticCaptureSession
+	writer       *diagnosticResponseWriter
 }
 
 type captureBody struct {
@@ -109,6 +110,7 @@ type diagnosticCPAJSON struct {
 type diagnosticCombinedCPAJSON struct {
 	Format          string                      `json:"format"`
 	Version         int                         `json:"version"`
+	ProxyTraceID    string                      `json:"proxy_trace_id,omitempty"`
 	NewAPIRequestID string                      `json:"newapi_request_id,omitempty"`
 	RequestInfo     *diagnosticRequestInfoJSON  `json:"request_info,omitempty"`
 	Headers         map[string][]string         `json:"headers,omitempty"`
@@ -345,9 +347,10 @@ func StartDiagnosticCapture(c *gin.Context) {
 		}
 	}
 	flow := &DiagnosticFlow{
-		TraceID: diagnosticTraceIDFromContext(c),
-		Channel: safeCaptureName(common.GetContextKeyString(c, constant.ContextKeyChannelName), "unknown"),
-		Started: time.Now(),
+		TraceID:      diagnosticTraceIDFromContext(c),
+		ProxyTraceID: strings.TrimSpace(c.GetHeader(DiagnosticTraceHeader)),
+		Channel:      safeCaptureName(common.GetContextKeyString(c, constant.ContextKeyChannelName), "unknown"),
+		Started:      time.Now(),
 	}
 	flow.session = newDiagnosticCaptureSession(cfg, flow)
 	if flow.session == nil {

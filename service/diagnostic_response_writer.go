@@ -1,34 +1,56 @@
 package service
 
 import (
-	"bytes"
 	"net/http"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 )
 
 type diagnosticResponseWriter struct {
 	gin.ResponseWriter
-	buf      bytes.Buffer
-	maxBytes int64
-	total    int64
+	session     *diagnosticCaptureSession
+	partID      string
+	captureBody bool
+	total       int64
+	finished    bool
+	writeFailed bool
+	mu          sync.Mutex
 }
 
-func newDiagnosticResponseWriter(w gin.ResponseWriter, cfg DiagnosticCaptureConfig) *diagnosticResponseWriter {
+func newDiagnosticResponseWriter(w gin.ResponseWriter, session *diagnosticCaptureSession, partID string, captureBody bool) *diagnosticResponseWriter {
 	return &diagnosticResponseWriter{
 		ResponseWriter: w,
-		maxBytes:       cfg.MaxBodyBytes,
+		session:        session,
+		partID:         partID,
+		captureBody:    captureBody,
 	}
 }
 
 func (w *diagnosticResponseWriter) Write(data []byte) (int, error) {
-	w.capture(data)
-	return w.ResponseWriter.Write(data)
+	n, err := w.ResponseWriter.Write(data)
+	if n > 0 {
+		w.capture(data[:n])
+	}
+	if err != nil {
+		w.mu.Lock()
+		w.writeFailed = true
+		w.mu.Unlock()
+	}
+	return n, err
 }
 
 func (w *diagnosticResponseWriter) WriteString(data string) (int, error) {
-	w.capture([]byte(data))
-	return w.ResponseWriter.WriteString(data)
+	n, err := w.ResponseWriter.WriteString(data)
+	if n > 0 {
+		w.capture([]byte(data[:n]))
+	}
+	if err != nil {
+		w.mu.Lock()
+		w.writeFailed = true
+		w.mu.Unlock()
+	}
+	return n, err
 }
 
 func (w *diagnosticResponseWriter) WriteHeaderNow() {
@@ -44,26 +66,19 @@ func (w *diagnosticResponseWriter) Header() http.Header {
 }
 
 func (w *diagnosticResponseWriter) capture(data []byte) {
-	if len(data) == 0 {
+	if !w.captureBody || len(data) == 0 {
 		return
 	}
 	w.total += int64(len(data))
-	remaining := w.maxBytes - int64(w.buf.Len())
-	if remaining <= 0 {
-		return
-	}
-	if int64(len(data)) > remaining {
-		w.buf.Write(data[:remaining])
-		return
-	}
-	w.buf.Write(data)
+	w.session.writeChunk(w.partID, data)
 }
 
-func (w *diagnosticResponseWriter) body() captureBody {
-	return captureBody{
-		Data:         w.buf.Bytes(),
-		OriginalSize: w.total,
-		SavedSize:    int64(w.buf.Len()),
-		Truncated:    w.total > int64(w.buf.Len()),
+func (w *diagnosticResponseWriter) finish(meta map[string]any) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.finished {
+		return
 	}
+	w.finished = true
+	w.session.endPart(w.partID, meta, w.total, !w.writeFailed)
 }

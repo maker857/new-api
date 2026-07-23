@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
@@ -46,6 +47,11 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+} from '@/components/ui/input-group'
 import { Label } from '@/components/ui/label'
 import { Progress } from '@/components/ui/progress'
 import {
@@ -59,17 +65,19 @@ import {
 import { Separator } from '@/components/ui/separator'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
-import { DateTimePicker } from '@/components/datetime-picker'
 import { api } from '@/lib/api'
 import dayjs from '@/lib/dayjs'
 import { formatTimestampToDate } from '@/lib/format'
+
 import {
   getCurrentLogCleanupTask,
   getSystemTask,
   startLogCleanupTask,
+  updateDiagnosticCaptureSettings,
 } from '../api'
 import {
   SettingsControlGroup,
+  SettingsControlChildren,
   SettingsForm,
   SettingsSwitchContent,
   SettingsSwitchItem,
@@ -79,88 +87,136 @@ import { SettingsSection } from '../components/settings-section'
 import { useUpdateOption } from '../hooks/use-update-option'
 import type { LogCleanupTask } from '../types'
 
-const logSettingsSchema = z.object({
-  LogConsumeEnabled: z.boolean(),
-  DiagnosticCaptureEnabled: z.boolean(),
-  DiagnosticCaptureMode: z.enum(['metadata', 'full']),
-  DiagnosticCaptureDir: z.string().min(1),
-  DiagnosticCaptureMaxBodyMB: z.coerce.number<number>().int().min(1),
-  DiagnosticCapturePaths: z.string(),
-  ErrorRewriteEnabled: z.boolean(),
-  ErrorRewriteSource: z.enum(['local', 'http', 'sql']),
-  ErrorRewriteSyncToken: z.string(),
-  ErrorRewriteRulesJSON: z.string().superRefine((value, ctx) => {
-    try {
-      const parsed = JSON.parse(value || '[]')
-      if (!Array.isArray(parsed)) {
+const logSettingsSchema = z
+  .object({
+    LogConsumeEnabled: z.boolean(),
+    DiagnosticCaptureEnabled: z.boolean(),
+    DiagnosticCaptureDir: z.string().min(1),
+    DiagnosticCaptureTempDir: z.string().min(1),
+    DiagnosticCaptureTempRetentionMinutes: z.coerce
+      .number<number>()
+      .int()
+      .min(1)
+      .max(5256000),
+    DiagnosticCaptureAutoCleanupEnabled: z.boolean(),
+    DiagnosticCaptureMaxStorageValue: z.coerce
+      .number<number>()
+      .int()
+      .min(0)
+      .max(10485760),
+    DiagnosticCaptureStorageUnit: z.enum(['MB', 'GB']),
+    DiagnosticCaptureCleanupPercent: z.coerce
+      .number<number>()
+      .int()
+      .min(0)
+      .max(90),
+    DiagnosticCaptureCleanupRateMB: z.coerce
+      .number<number>()
+      .int()
+      .min(0)
+      .max(10240),
+    DiagnosticCaptureMinRetentionMinutes: z.coerce
+      .number<number>()
+      .int()
+      .min(0)
+      .max(5256000),
+    DiagnosticCaptureIncompleteTimeoutMinutes: z.coerce
+      .number<number>()
+      .int()
+      .min(0)
+      .max(5256000),
+    DiagnosticCapturePaths: z.string(),
+    ErrorRewriteEnabled: z.boolean(),
+    ErrorRewriteSource: z.enum(['local', 'http', 'sql']),
+    ErrorRewriteSyncToken: z.string(),
+    ErrorRewriteRulesJSON: z.string().superRefine((value, ctx) => {
+      try {
+        const parsed = JSON.parse(value || '[]')
+        if (!Array.isArray(parsed)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'Rules must be a JSON array',
+          })
+          return
+        }
+        for (const item of parsed) {
+          if (!item || typeof item !== 'object') {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: 'Each rule must be an object',
+            })
+            return
+          }
+          const matchContent = errorRewriteMatchContent(item)
+          if (matchContent.trim() === '') {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: 'Each rule must include match content',
+            })
+            return
+          }
+          if (
+            item.status_code !== undefined &&
+            (!Number.isInteger(item.status_code) ||
+              item.status_code < 100 ||
+              item.status_code > 599)
+          ) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: 'status_code must be between 100 and 599',
+            })
+            return
+          }
+        }
+      } catch {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: 'Rules must be a JSON array',
+          message: 'Invalid JSON data',
         })
-        return
       }
-      for (const item of parsed) {
-        if (!item || typeof item !== 'object') {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: 'Each rule must be an object',
-          })
-          return
-        }
-        const matchContent =
-          typeof item.content_contains === 'string'
-            ? item.content_contains
-            : typeof item.keyword === 'string'
-              ? item.keyword
-              : ''
-        if (matchContent.trim() === '') {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: 'Each rule must include match content',
-          })
-          return
-        }
-        if (
-          item.status_code !== undefined &&
-          (!Number.isInteger(item.status_code) ||
-            item.status_code < 100 ||
-            item.status_code > 599)
-        ) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: 'status_code must be between 100 and 599',
-          })
-          return
-        }
-      }
-    } catch {
+    }),
+    ErrorRewriteRulesURL: z.string(),
+    ErrorRewriteFallbackMessage: z.string().min(1),
+    ErrorRewriteRefreshSeconds: z.coerce.number<number>().int().min(1),
+    ErrorRewriteRequestTimeoutMS: z.coerce.number<number>().int().min(100),
+    ErrorRewriteSQLDriver: z.enum(['mysql', 'postgres', 'sqlite']),
+    ErrorRewriteSQLQuery: z.string().refine((value) => {
+      const trimmed = value.trim().toLowerCase()
+      return trimmed === '' || trimmed.startsWith('select')
+    }, 'SQL query must be a SELECT statement'),
+  })
+  .superRefine((values, ctx) => {
+    const maxStorageValue =
+      values.DiagnosticCaptureStorageUnit === 'GB' ? 10240 : 10485760
+    if (values.DiagnosticCaptureMaxStorageValue > maxStorageValue) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: 'Invalid JSON data',
+        path: ['DiagnosticCaptureMaxStorageValue'],
+        message: `Maximum is ${maxStorageValue} ${values.DiagnosticCaptureStorageUnit}`,
       })
     }
-  }),
-  ErrorRewriteRulesURL: z.string(),
-  ErrorRewriteFallbackMessage: z.string().min(1),
-  ErrorRewriteRefreshSeconds: z.coerce.number<number>().int().min(1),
-  ErrorRewriteRequestTimeoutMS: z.coerce.number<number>().int().min(100),
-  ErrorRewriteSQLDriver: z.enum(['mysql', 'postgres', 'sqlite']),
-  ErrorRewriteSQLQuery: z.string().refine((value) => {
-    const trimmed = value.trim().toLowerCase()
-    return trimmed === '' || trimmed.startsWith('select')
-  }, 'SQL query must be a SELECT statement'),
-})
+  })
 
 type LogSettingsFormInput = z.input<typeof logSettingsSchema>
 type LogSettingsFormValues = z.output<typeof logSettingsSchema>
 
 type LogSettingsSectionProps = {
+  mode?: 'maintenance' | 'capture'
   defaultEnabled: boolean
   diagnosticDefaults: {
     DiagnosticCaptureEnabled: boolean
     DiagnosticCaptureMode: string
     DiagnosticCaptureDir: string
-    DiagnosticCaptureMaxBodyMB: number
+    DiagnosticCaptureTempDir: string
+    DiagnosticCaptureTempRetentionMinutes: number
+    DiagnosticCaptureAutoCleanupEnabled: boolean
+    DiagnosticCaptureMaxStorageBytes: number
+    DiagnosticCaptureCleanupPercent: number
+    DiagnosticCaptureCleanupRateMB: number
+    DiagnosticCaptureMinRetentionMinutes: number
+    DiagnosticCaptureIncompleteTimeoutMinutes: number
+    DiagnosticCaptureMinRetentionHours: number
+    DiagnosticCaptureIncompleteTimeoutHours: number
     DiagnosticCapturePaths: string
     ErrorRewriteEnabled: boolean
     ErrorRewriteSource: string
@@ -185,6 +241,29 @@ type ServerLogInfo = {
   total_size: number
   oldest_time?: string
   newest_time?: string
+}
+
+type DiagnosticCaptureStorageInfo = {
+  current_bytes: number
+  temporary_bytes: number
+  last_cleanup_at: number
+  last_cleanup_cutoff: number
+  last_deleted_count: number
+  last_freed_bytes: number
+  last_cleanup_status: string
+  last_temp_cleanup_at: number
+  last_temp_deleted_count: number
+  last_temp_freed_bytes: number
+}
+
+const diagnosticStorageMB = 1024 * 1024
+const diagnosticStorageGB = 1024 * diagnosticStorageMB
+
+function getDiagnosticStorageDisplay(bytes: number) {
+  if (bytes >= diagnosticStorageGB && bytes % diagnosticStorageGB === 0) {
+    return { value: bytes / diagnosticStorageGB, unit: 'GB' as const }
+  }
+  return { value: Math.floor(bytes / diagnosticStorageMB), unit: 'MB' as const }
 }
 
 type ErrorRewriteVisualRule = {
@@ -296,12 +375,7 @@ function parseErrorRewriteRules(value: string): ErrorRewriteVisualRule[] {
             : undefined
 
         return {
-          content_contains:
-            typeof item.content_contains === 'string'
-              ? item.content_contains
-              : typeof item.keyword === 'string'
-                ? item.keyword
-                : '',
+          content_contains: errorRewriteMatchContent(item),
           message: typeof item.message === 'string' ? item.message : '',
           error_type:
             typeof item.error_type === 'string' ? item.error_type : undefined,
@@ -342,9 +416,13 @@ function stringifyErrorRewriteRules(rules: ErrorRewriteVisualRule[]): string {
         content_contains: rule.content_contains,
         message: rule.message,
         ...(rule.error_type ? { error_type: rule.error_type } : {}),
-        ...(rule.error_type_mode ? { error_type_mode: rule.error_type_mode } : {}),
+        ...(rule.error_type_mode
+          ? { error_type_mode: rule.error_type_mode }
+          : {}),
         ...(rule.error_code ? { error_code: rule.error_code } : {}),
-        ...(rule.error_code_mode ? { error_code_mode: rule.error_code_mode } : {}),
+        ...(rule.error_code_mode
+          ? { error_code_mode: rule.error_code_mode }
+          : {}),
         ...(rule.error_param ? { error_param: rule.error_param } : {}),
         ...(rule.error_param_mode
           ? { error_param_mode: rule.error_param_mode }
@@ -357,14 +435,14 @@ function stringifyErrorRewriteRules(rules: ErrorRewriteVisualRule[]): string {
   )
 }
 
+function errorRewriteMatchContent(item: Record<string, unknown>): string {
+  if (typeof item.content_contains === 'string') return item.content_contains
+  if (typeof item.keyword === 'string') return item.keyword
+  return ''
+}
+
 function monitorRuleContent(rule: ErrorRewriteMonitorRule): string {
-  return (
-    typeof rule.content_contains === 'string'
-      ? rule.content_contains
-      : typeof rule.keyword === 'string'
-        ? rule.keyword
-        : ''
-  ).trim()
+  return errorRewriteMatchContent(rule).trim()
 }
 
 function findReplacementRule(
@@ -451,23 +529,41 @@ function formatUnixTime(seconds?: number | null): string {
 }
 
 export function LogSettingsSection({
+  mode = 'maintenance',
   defaultEnabled,
   diagnosticDefaults,
 }: LogSettingsSectionProps) {
   const { t } = useTranslation()
+  const queryClient = useQueryClient()
   const updateOption = useUpdateOption()
+  const updateCaptureSettings = useMutation({
+    mutationFn: updateDiagnosticCaptureSettings,
+  })
   const form = useForm<LogSettingsFormInput, unknown, LogSettingsFormValues>({
     resolver: zodResolver(logSettingsSchema),
     defaultValues: {
       LogConsumeEnabled: defaultEnabled,
       DiagnosticCaptureEnabled: diagnosticDefaults.DiagnosticCaptureEnabled,
-      DiagnosticCaptureMode:
-        diagnosticDefaults.DiagnosticCaptureMode === 'full'
-          ? 'full'
-          : 'metadata',
       DiagnosticCaptureDir: diagnosticDefaults.DiagnosticCaptureDir,
-      DiagnosticCaptureMaxBodyMB:
-        diagnosticDefaults.DiagnosticCaptureMaxBodyMB,
+      DiagnosticCaptureTempDir: diagnosticDefaults.DiagnosticCaptureTempDir,
+      DiagnosticCaptureTempRetentionMinutes:
+        diagnosticDefaults.DiagnosticCaptureTempRetentionMinutes,
+      DiagnosticCaptureAutoCleanupEnabled:
+        diagnosticDefaults.DiagnosticCaptureAutoCleanupEnabled,
+      DiagnosticCaptureMaxStorageValue: getDiagnosticStorageDisplay(
+        diagnosticDefaults.DiagnosticCaptureMaxStorageBytes
+      ).value,
+      DiagnosticCaptureStorageUnit: getDiagnosticStorageDisplay(
+        diagnosticDefaults.DiagnosticCaptureMaxStorageBytes
+      ).unit,
+      DiagnosticCaptureCleanupPercent:
+        diagnosticDefaults.DiagnosticCaptureCleanupPercent,
+      DiagnosticCaptureCleanupRateMB:
+        diagnosticDefaults.DiagnosticCaptureCleanupRateMB,
+      DiagnosticCaptureMinRetentionMinutes:
+        diagnosticDefaults.DiagnosticCaptureMinRetentionMinutes,
+      DiagnosticCaptureIncompleteTimeoutMinutes:
+        diagnosticDefaults.DiagnosticCaptureIncompleteTimeoutMinutes,
       DiagnosticCapturePaths: diagnosticDefaults.DiagnosticCapturePaths,
       ErrorRewriteEnabled: diagnosticDefaults.ErrorRewriteEnabled,
       ErrorRewriteSource:
@@ -480,8 +576,7 @@ export function LogSettingsSection({
       ErrorRewriteRulesURL: diagnosticDefaults.ErrorRewriteRulesURL,
       ErrorRewriteFallbackMessage:
         diagnosticDefaults.ErrorRewriteFallbackMessage,
-      ErrorRewriteRefreshSeconds:
-        diagnosticDefaults.ErrorRewriteRefreshSeconds,
+      ErrorRewriteRefreshSeconds: diagnosticDefaults.ErrorRewriteRefreshSeconds,
       ErrorRewriteRequestTimeoutMS:
         diagnosticDefaults.ErrorRewriteRequestTimeoutMS,
       ErrorRewriteSQLDriver:
@@ -515,6 +610,25 @@ export function LogSettingsSection({
   const [serverLogCleanupMode, setServerLogCleanupMode] = useState('by_count')
   const [serverLogCleanupValue, setServerLogCleanupValue] = useState(10)
   const [serverLogCleanupLoading, setServerLogCleanupLoading] = useState(false)
+  const [minRetentionUnit, setMinRetentionUnit] = useState<'hours' | 'minutes'>(
+    'hours'
+  )
+  const [incompleteTimeoutUnit, setIncompleteTimeoutUnit] = useState<
+    'hours' | 'minutes'
+  >('hours')
+  const [diagnosticStorageInfo, setDiagnosticStorageInfo] =
+    useState<DiagnosticCaptureStorageInfo | null>(null)
+
+  const fetchDiagnosticStorageInfo = useCallback(async () => {
+    try {
+      const res = await api.get('/api/performance/diagnostic-capture-storage')
+      if (res.data?.success) {
+        setDiagnosticStorageInfo(res.data.data)
+      }
+    } catch {
+      setDiagnosticStorageInfo(null)
+    }
+  }, [])
 
   const fetchServerLogInfo = useCallback(async () => {
     try {
@@ -555,13 +669,26 @@ export function LogSettingsSection({
     form.reset({
       LogConsumeEnabled: defaultEnabled,
       DiagnosticCaptureEnabled: diagnosticDefaults.DiagnosticCaptureEnabled,
-      DiagnosticCaptureMode:
-        diagnosticDefaults.DiagnosticCaptureMode === 'full'
-          ? 'full'
-          : 'metadata',
       DiagnosticCaptureDir: diagnosticDefaults.DiagnosticCaptureDir,
-      DiagnosticCaptureMaxBodyMB:
-        diagnosticDefaults.DiagnosticCaptureMaxBodyMB,
+      DiagnosticCaptureTempDir: diagnosticDefaults.DiagnosticCaptureTempDir,
+      DiagnosticCaptureTempRetentionMinutes:
+        diagnosticDefaults.DiagnosticCaptureTempRetentionMinutes,
+      DiagnosticCaptureAutoCleanupEnabled:
+        diagnosticDefaults.DiagnosticCaptureAutoCleanupEnabled,
+      DiagnosticCaptureMaxStorageValue: getDiagnosticStorageDisplay(
+        diagnosticDefaults.DiagnosticCaptureMaxStorageBytes
+      ).value,
+      DiagnosticCaptureStorageUnit: getDiagnosticStorageDisplay(
+        diagnosticDefaults.DiagnosticCaptureMaxStorageBytes
+      ).unit,
+      DiagnosticCaptureCleanupPercent:
+        diagnosticDefaults.DiagnosticCaptureCleanupPercent,
+      DiagnosticCaptureCleanupRateMB:
+        diagnosticDefaults.DiagnosticCaptureCleanupRateMB,
+      DiagnosticCaptureMinRetentionMinutes:
+        diagnosticDefaults.DiagnosticCaptureMinRetentionMinutes,
+      DiagnosticCaptureIncompleteTimeoutMinutes:
+        diagnosticDefaults.DiagnosticCaptureIncompleteTimeoutMinutes,
       DiagnosticCapturePaths: diagnosticDefaults.DiagnosticCapturePaths,
       ErrorRewriteEnabled: diagnosticDefaults.ErrorRewriteEnabled,
       ErrorRewriteSource:
@@ -574,8 +701,7 @@ export function LogSettingsSection({
       ErrorRewriteRulesURL: diagnosticDefaults.ErrorRewriteRulesURL,
       ErrorRewriteFallbackMessage:
         diagnosticDefaults.ErrorRewriteFallbackMessage,
-      ErrorRewriteRefreshSeconds:
-        diagnosticDefaults.ErrorRewriteRefreshSeconds,
+      ErrorRewriteRefreshSeconds: diagnosticDefaults.ErrorRewriteRefreshSeconds,
       ErrorRewriteRequestTimeoutMS:
         diagnosticDefaults.ErrorRewriteRequestTimeoutMS,
       ErrorRewriteSQLDriver:
@@ -588,11 +714,26 @@ export function LogSettingsSection({
   }, [defaultEnabled, diagnosticDefaults, form])
 
   useEffect(() => {
-    fetchServerLogInfo()
+    if (mode === 'maintenance') {
+      fetchServerLogInfo()
+      return
+    }
     fetchMonitorBlacklistRules()
-  }, [fetchMonitorBlacklistRules, fetchServerLogInfo])
+  }, [
+    fetchMonitorBlacklistRules,
+    fetchServerLogInfo,
+    mode,
+  ])
 
   useEffect(() => {
+    if (mode !== 'capture') return
+    fetchDiagnosticStorageInfo()
+    const interval = window.setInterval(fetchDiagnosticStorageInfo, 60_000)
+    return () => window.clearInterval(interval)
+  }, [fetchDiagnosticStorageInfo, mode])
+
+  useEffect(() => {
+    if (mode !== 'maintenance') return
     let cancelled = false
 
     async function fetchCurrentLogCleanupTask() {
@@ -611,7 +752,7 @@ export function LogSettingsSection({
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [mode])
 
   const purgeTimestamp = useMemo(() => {
     if (!purgeDate) return null
@@ -632,6 +773,12 @@ export function LogSettingsSection({
   const logCleanupProcessed = logCleanupState?.processed ?? 0
   const logCleanupTotal = logCleanupState?.total ?? 0
   const logCleanupTaskId = logCleanupTask?.task_id
+  let diagnosticCleanupStatus = '-'
+  if (diagnosticStorageInfo?.last_cleanup_status === 'retention_limited') {
+    diagnosticCleanupStatus = t('Limited by minimum retention')
+  } else if (diagnosticStorageInfo?.last_cleanup_status) {
+    diagnosticCleanupStatus = t('Completed')
+  }
 
   useEffect(() => {
     if (!logCleanupTaskId || !logCleanupActive) return
@@ -668,6 +815,36 @@ export function LogSettingsSection({
   }, [logCleanupActive, logCleanupTaskId, t])
 
   const onSubmit = async (values: LogSettingsFormValues) => {
+    const storageMultiplier =
+      values.DiagnosticCaptureStorageUnit === 'GB'
+        ? diagnosticStorageGB
+        : diagnosticStorageMB
+    const maxStorageBytes =
+      values.DiagnosticCaptureMaxStorageValue * storageMultiplier
+    if (mode === 'capture') {
+      const result = await updateCaptureSettings.mutateAsync({
+        enabled: values.DiagnosticCaptureEnabled,
+        capture_dir: values.DiagnosticCaptureDir,
+        temp_dir: values.DiagnosticCaptureTempDir,
+        temp_retention_minutes: values.DiagnosticCaptureTempRetentionMinutes,
+        auto_cleanup_enabled: values.DiagnosticCaptureAutoCleanupEnabled,
+        max_storage_bytes: maxStorageBytes,
+        cleanup_percent: values.DiagnosticCaptureCleanupPercent,
+        cleanup_rate_mb: values.DiagnosticCaptureCleanupRateMB,
+        min_retention_minutes: values.DiagnosticCaptureMinRetentionMinutes,
+        incomplete_timeout_minutes:
+          values.DiagnosticCaptureIncompleteTimeoutMinutes,
+        paths: values.DiagnosticCapturePaths,
+      })
+      if (!result.success) {
+        throw new Error(result.message || t('Failed to update setting'))
+      }
+      queryClient.invalidateQueries({ queryKey: ['system-options'] })
+      toast.success(t('Setting updated successfully'))
+      form.reset(values)
+      fetchDiagnosticStorageInfo()
+      return
+    }
     const updates = [
       ['LogConsumeEnabled', values.LogConsumeEnabled, defaultEnabled],
       [
@@ -676,19 +853,59 @@ export function LogSettingsSection({
         diagnosticDefaults.DiagnosticCaptureEnabled,
       ],
       [
-        'DiagnosticCaptureMode',
-        values.DiagnosticCaptureMode,
-        diagnosticDefaults.DiagnosticCaptureMode,
-      ],
-      [
         'DiagnosticCaptureDir',
         values.DiagnosticCaptureDir,
         diagnosticDefaults.DiagnosticCaptureDir,
       ],
       [
-        'DiagnosticCaptureMaxBodyMB',
-        values.DiagnosticCaptureMaxBodyMB,
-        diagnosticDefaults.DiagnosticCaptureMaxBodyMB,
+        'DiagnosticCaptureTempDir',
+        values.DiagnosticCaptureTempDir,
+        diagnosticDefaults.DiagnosticCaptureTempDir,
+      ],
+      [
+        'DiagnosticCaptureTempRetentionMinutes',
+        values.DiagnosticCaptureTempRetentionMinutes,
+        diagnosticDefaults.DiagnosticCaptureTempRetentionMinutes,
+      ],
+      [
+        'DiagnosticCaptureAutoCleanupEnabled',
+        values.DiagnosticCaptureAutoCleanupEnabled,
+        diagnosticDefaults.DiagnosticCaptureAutoCleanupEnabled,
+      ],
+      [
+        'DiagnosticCaptureMaxStorageBytes',
+        maxStorageBytes,
+        diagnosticDefaults.DiagnosticCaptureMaxStorageBytes,
+      ],
+      [
+        'DiagnosticCaptureCleanupPercent',
+        values.DiagnosticCaptureCleanupPercent,
+        diagnosticDefaults.DiagnosticCaptureCleanupPercent,
+      ],
+      [
+        'DiagnosticCaptureCleanupRateMB',
+        values.DiagnosticCaptureCleanupRateMB,
+        diagnosticDefaults.DiagnosticCaptureCleanupRateMB,
+      ],
+      [
+        'DiagnosticCaptureMinRetentionMinutes',
+        values.DiagnosticCaptureMinRetentionMinutes,
+        diagnosticDefaults.DiagnosticCaptureMinRetentionMinutes,
+      ],
+      [
+        'DiagnosticCaptureMinRetentionHours',
+        Math.floor(values.DiagnosticCaptureMinRetentionMinutes / 60),
+        diagnosticDefaults.DiagnosticCaptureMinRetentionHours,
+      ],
+      [
+        'DiagnosticCaptureIncompleteTimeoutMinutes',
+        values.DiagnosticCaptureIncompleteTimeoutMinutes,
+        diagnosticDefaults.DiagnosticCaptureIncompleteTimeoutMinutes,
+      ],
+      [
+        'DiagnosticCaptureIncompleteTimeoutHours',
+        Math.floor(values.DiagnosticCaptureIncompleteTimeoutMinutes / 60),
+        diagnosticDefaults.DiagnosticCaptureIncompleteTimeoutHours,
       ],
       [
         'DiagnosticCapturePaths',
@@ -849,149 +1066,31 @@ export function LogSettingsSection({
   }
 
   return (
-    <SettingsSection title={t('Log Maintenance')}>
+    <SettingsSection
+      title={t(mode === 'capture' ? 'Log Capture' : 'Log Maintenance')}
+    >
       <Form {...form}>
         <SettingsForm onSubmit={form.handleSubmit(onSubmit)}>
           <SettingsPageFormActions
             onSave={form.handleSubmit(onSubmit)}
-            isSaving={updateOption.isPending}
-            saveLabel='Save log settings'
+            isSaving={
+              mode === 'capture'
+                ? updateCaptureSettings.isPending
+                : updateOption.isPending
+            }
+            saveLabel={t('Save log settings')}
           />
-          <FormField
-            control={form.control}
-            name='LogConsumeEnabled'
-            render={({ field }) => (
-              <SettingsSwitchItem>
-                <SettingsSwitchContent>
-                  <FormLabel>{t('Record quota usage')}</FormLabel>
-                  <FormDescription>
-                    {t(
-                      'Track per-request consumption to power usage analytics. Keeping this on increases database writes.'
-                    )}
-                  </FormDescription>
-                </SettingsSwitchContent>
-                <FormControl>
-                  <Switch
-                    checked={field.value}
-                    onCheckedChange={field.onChange}
-                  />
-                </FormControl>
-                <FormMessage />
-              </SettingsSwitchItem>
-            )}
-          />
-
-          <SettingsControlGroup className='space-y-4'>
+          {mode === 'maintenance' && (
             <FormField
               control={form.control}
-              name='DiagnosticCaptureEnabled'
+              name='LogConsumeEnabled'
               render={({ field }) => (
                 <SettingsSwitchItem>
                   <SettingsSwitchContent>
-                    <FormLabel>{t('Diagnostic capture')}</FormLabel>
-                    <FormDescription>
-                      {t('Save relay request and response captures to disk.')}
-                    </FormDescription>
-                  </SettingsSwitchContent>
-                  <FormControl>
-                    <Switch
-                      checked={field.value}
-                      onCheckedChange={field.onChange}
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </SettingsSwitchItem>
-              )}
-            />
-
-            <div className='grid gap-4 md:grid-cols-3'>
-              <FormField
-                control={form.control}
-                name='DiagnosticCaptureMode'
-                render={({ field }) => (
-                  <div className='space-y-2'>
-                    <FormLabel>{t('Capture mode')}</FormLabel>
-                    <Select
-                      value={field.value}
-                      onValueChange={field.onChange}
-                    >
-                      <FormControl>
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        <SelectGroup>
-                          <SelectItem value='metadata'>
-                            {t('Metadata')}
-                          </SelectItem>
-                          <SelectItem value='full'>{t('Full')}</SelectItem>
-                        </SelectGroup>
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </div>
-                )}
-              />
-
-              <FormField
-                control={form.control}
-                name='DiagnosticCaptureDir'
-                render={({ field }) => (
-                  <div className='space-y-2'>
-                    <FormLabel>{t('Capture directory')}</FormLabel>
-                    <FormControl>
-                      <Input {...field} />
-                    </FormControl>
-                    <FormMessage />
-                  </div>
-                )}
-              />
-
-              <FormField
-                control={form.control}
-                name='DiagnosticCaptureMaxBodyMB'
-                render={({ field }) => (
-                  <div className='space-y-2'>
-                    <FormLabel>{t('Max body size (MB)')}</FormLabel>
-                    <FormControl>
-                      <Input type='number' min={1} {...field} />
-                    </FormControl>
-                    <FormMessage />
-                  </div>
-                )}
-              />
-            </div>
-
-            <FormField
-              control={form.control}
-              name='DiagnosticCapturePaths'
-              render={({ field }) => (
-                <div className='space-y-2'>
-                  <FormLabel>{t('Capture paths')}</FormLabel>
-                  <FormControl>
-                    <Input {...field} />
-                  </FormControl>
-                  <FormDescription>
-                    {t('Comma-separated paths. Use * for prefix matching.')}
-                  </FormDescription>
-                  <FormMessage />
-                </div>
-              )}
-            />
-          </SettingsControlGroup>
-
-          <SettingsControlGroup className='space-y-4'>
-            <FormField
-              control={form.control}
-              name='ErrorRewriteEnabled'
-              render={({ field }) => (
-                <SettingsSwitchItem>
-                  <SettingsSwitchContent>
-                    <FormLabel>{t('Error rewrite')}</FormLabel>
+                    <FormLabel>{t('Record quota usage')}</FormLabel>
                     <FormDescription>
                       {t(
-                        'Rewrite upstream error messages when monitoring rules match blacklisted text.'
+                        'Track per-request consumption to power usage analytics. Keeping this on increases database writes.'
                       )}
                     </FormDescription>
                   </SettingsSwitchContent>
@@ -1005,789 +1104,1359 @@ export function LogSettingsSection({
                 </SettingsSwitchItem>
               )}
             />
+          )}
 
-            <FormField
-              control={form.control}
-              name='ErrorRewriteSource'
-              render={({ field }) => (
-                <div className='space-y-2'>
-                  <FormLabel>{t('Rules source')}</FormLabel>
-                  <FormControl>
-                    <div className='grid gap-2 md:grid-cols-2'>
-                      <Button
-                        type='button'
-                        variant={field.value === 'local' ? 'default' : 'outline'}
-                        onClick={() => field.onChange('local')}
-                      >
-                        模式 1：等待监控服务器推送
-                      </Button>
-                      <Button
-                        type='button'
-                        variant={field.value === 'http' ? 'default' : 'outline'}
-                        onClick={() => field.onChange('http')}
-                      >
-                        模式 2：定时拉取监控规则
-                      </Button>
+          {mode === 'capture' && (
+            <>
+              <SettingsControlGroup className='space-y-5'>
+                <FormField
+                  control={form.control}
+                  name='DiagnosticCaptureEnabled'
+                  render={({ field }) => (
+                    <SettingsSwitchItem>
+                      <SettingsSwitchContent>
+                        <FormLabel>{t('Diagnostic capture')}</FormLabel>
+                        <FormDescription>
+                          {t(
+                            'Save relay request and response captures to disk.'
+                          )}
+                        </FormDescription>
+                      </SettingsSwitchContent>
+                      <FormControl>
+                        <Switch
+                          checked={field.value}
+                          onCheckedChange={field.onChange}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </SettingsSwitchItem>
+                  )}
+                />
+
+                <SettingsControlChildren className='grid gap-x-5 gap-y-4 md:grid-cols-2'>
+                  <FormField
+                    control={form.control}
+                    name='DiagnosticCaptureDir'
+                    render={({ field }) => (
+                      <div className='space-y-2'>
+                        <FormLabel>{t('Capture directory')}</FormLabel>
+                        <FormControl>
+                          <Input {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </div>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name='DiagnosticCaptureTempDir'
+                    render={({ field }) => (
+                      <div className='space-y-2'>
+                        <FormLabel>
+                          {t('Temporary capture directory')}
+                        </FormLabel>
+                        <FormControl>
+                          <Input {...field} />
+                        </FormControl>
+                        <FormDescription>
+                          {t(
+                            'Exclude this directory from diagnostic log synchronization.'
+                          )}
+                        </FormDescription>
+                        <FormMessage />
+                      </div>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name='DiagnosticCaptureTempRetentionMinutes'
+                    render={({ field }) => (
+                      <div className='space-y-2'>
+                        <FormLabel>
+                          {t('Temporary file retention (minutes)')}
+                        </FormLabel>
+                        <FormControl>
+                          <Input
+                            type='number'
+                            min={1}
+                            max={5256000}
+                            {...field}
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          {t(
+                            'Completed temporary files are deleted immediately. This only cleans abandoned files.'
+                          )}
+                        </FormDescription>
+                        <FormMessage />
+                      </div>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name='DiagnosticCapturePaths'
+                    render={({ field }) => (
+                      <div className='space-y-2 md:col-span-2'>
+                        <FormLabel>{t('Capture paths')}</FormLabel>
+                        <FormControl>
+                          <Input {...field} />
+                        </FormControl>
+                        <FormDescription>
+                          {t(
+                            'Comma-separated paths. Use * for prefix matching.'
+                          )}
+                        </FormDescription>
+                        <FormMessage />
+                      </div>
+                    )}
+                  />
+                </SettingsControlChildren>
+
+                <div className='space-y-4 border-t pt-5'>
+                  <FormField
+                    control={form.control}
+                    name='DiagnosticCaptureAutoCleanupEnabled'
+                    render={({ field }) => (
+                      <SettingsSwitchItem className='bg-background rounded-lg border px-4'>
+                        <SettingsSwitchContent>
+                          <FormLabel>{t('Enable automatic cleanup')}</FormLabel>
+                          <FormDescription>
+                            {t(
+                              'Automatically remove the oldest diagnostic captures when the storage limit is reached.'
+                            )}
+                          </FormDescription>
+                        </SettingsSwitchContent>
+                        <FormControl>
+                          <Switch
+                            checked={field.value}
+                            onCheckedChange={field.onChange}
+                          />
+                        </FormControl>
+                      </SettingsSwitchItem>
+                    )}
+                  />
+
+                  <div className='bg-background space-y-3 rounded-xl border p-4'>
+                    <div>
+                      <h4 className='text-sm font-medium'>
+                        {t('Saved capture cleanup')}
+                      </h4>
+                      <p className='text-muted-foreground mt-1 text-xs'>
+                        {t(
+                          'Configure when and how saved diagnostic captures are removed.'
+                        )}
+                      </p>
                     </div>
-                  </FormControl>
-                  <FormDescription>
-                    模式 1 需要监控服务器能访问 New API；模式 2 适合本地电脑没有公网 IP 时测试，New API 会主动访问监控服务器。
-                  </FormDescription>
-                  <FormMessage />
-                </div>
-              )}
-            />
+                    <SettingsControlChildren className='grid gap-x-5 gap-y-5 md:grid-cols-2 xl:grid-cols-4'>
+                      <FormField
+                        control={form.control}
+                        name='DiagnosticCaptureMaxStorageValue'
+                        render={({ field }) => (
+                          <div className='space-y-2'>
+                            <FormLabel>{t('Max diagnostic storage')}</FormLabel>
+                            <FormControl>
+                              <Input type='number' min={0} {...field} />
+                            </FormControl>
+                            <FormMessage />
+                          </div>
+                        )}
+                      />
 
-            <FormField
-              control={form.control}
-              name='ErrorRewriteRulesJSON'
-              render={({ field }) => (
-                <div className='space-y-3'>
-                  <div className='flex flex-wrap items-center justify-between gap-2'>
-                    <FormLabel>监控黑名单筛选规则</FormLabel>
-                    <div className='text-muted-foreground flex flex-wrap gap-2 text-xs'>
-                      <span className='bg-muted rounded px-2 py-1'>
-                        已读取 {monitorRuleStats.total} 条
-                      </span>
-                      <span className='bg-muted rounded px-2 py-1'>
-                        已启用 {monitorRuleStats.enabled} 条
-                      </span>
-                      <span className='bg-muted rounded px-2 py-1'>
-                        上次拉取：{formatUnixTime(monitorLastPullAt)}
-                      </span>
-                      <span className='bg-muted rounded px-2 py-1'>
-                        拉取间隔：{form.watch('ErrorRewriteRefreshSeconds')} 秒
-                      </span>
+                      <FormField
+                        control={form.control}
+                        name='DiagnosticCaptureStorageUnit'
+                        render={({ field }) => (
+                          <div className='space-y-2'>
+                            <FormLabel>{t('Storage unit')}</FormLabel>
+                            <Select
+                              value={field.value}
+                              onValueChange={field.onChange}
+                            >
+                              <FormControl>
+                                <SelectTrigger>
+                                  <SelectValue />
+                                </SelectTrigger>
+                              </FormControl>
+                              <SelectContent>
+                                <SelectGroup>
+                                  <SelectItem value='MB'>MB</SelectItem>
+                                  <SelectItem value='GB'>GB</SelectItem>
+                                </SelectGroup>
+                              </SelectContent>
+                            </Select>
+                            <FormMessage />
+                          </div>
+                        )}
+                      />
+
+                      <FormField
+                        control={form.control}
+                        name='DiagnosticCaptureCleanupPercent'
+                        render={({ field }) => (
+                          <div className='space-y-2'>
+                            <FormLabel>{t('Cleanup percentage')}</FormLabel>
+                            <FormControl>
+                              <InputGroup>
+                                <InputGroupInput
+                                  type='number'
+                                  min={0}
+                                  max={90}
+                                  {...field}
+                                />
+                                <InputGroupAddon align='inline-end'>
+                                  %
+                                </InputGroupAddon>
+                              </InputGroup>
+                            </FormControl>
+                            <FormDescription>
+                              {t(
+                                'Set 0 to clean only enough to reach the storage limit.'
+                              )}
+                            </FormDescription>
+                            <FormMessage />
+                          </div>
+                        )}
+                      />
+
+                      <FormField
+                        control={form.control}
+                        name='DiagnosticCaptureCleanupRateMB'
+                        render={({ field }) => (
+                          <div className='space-y-2'>
+                            <FormLabel>
+                              {t('Cleanup rate limit (MB/s)')}
+                            </FormLabel>
+                            <FormControl>
+                              <Input
+                                type='number'
+                                min={0}
+                                max={10240}
+                                {...field}
+                              />
+                            </FormControl>
+                            <FormDescription>
+                              {t(
+                                'Set 0 for no limit. A positive value limits cleanup by released bytes per second.'
+                              )}
+                            </FormDescription>
+                            <FormMessage />
+                          </div>
+                        )}
+                      />
+                    </SettingsControlChildren>
+                  </div>
+
+                  <div className='bg-background space-y-3 rounded-xl border p-4'>
+                    <div>
+                      <h4 className='text-sm font-medium'>
+                        {t('Cleanup protection period')}
+                      </h4>
+                      <p className='text-muted-foreground mt-1 text-xs'>
+                        {t(
+                          'Set how long completed and incomplete captures are protected from cleanup.'
+                        )}
+                      </p>
+                    </div>
+                    <SettingsControlChildren className='grid gap-x-5 gap-y-5 md:grid-cols-2'>
+                      <FormField
+                        control={form.control}
+                        name='DiagnosticCaptureMinRetentionMinutes'
+                        render={({ field }) => (
+                          <div className='space-y-2'>
+                            <FormLabel>{t('Minimum retention')}</FormLabel>
+                            <div className='grid grid-cols-[minmax(0,1fr)_8rem] gap-2'>
+                              <Input
+                                type='number'
+                                min={0}
+                                max={
+                                  minRetentionUnit === 'hours'
+                                    ? 87600
+                                    : 5256000
+                                }
+                                step={1}
+                                value={
+                                  minRetentionUnit === 'hours'
+                                    ? field.value / 60
+                                    : field.value
+                                }
+                                onChange={(event) => {
+                                  const value = event.target.value
+                                  field.onChange(
+                                    value === ''
+                                      ? value
+                                      : Number(value) *
+                                          (minRetentionUnit === 'hours'
+                                            ? 60
+                                            : 1)
+                                  )
+                                }}
+                              />
+                              <Select
+                                value={minRetentionUnit}
+                                onValueChange={(value) =>
+                                  setMinRetentionUnit(
+                                    value as 'hours' | 'minutes'
+                                  )
+                                }
+                              >
+                                <SelectTrigger>
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value='hours'>
+                                    {t('Hours')}
+                                  </SelectItem>
+                                  <SelectItem value='minutes'>
+                                    {t('Minutes')}
+                                  </SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <FormDescription>
+                              {t(
+                                'Set 0 to allow cleanup of all completed diagnostic captures.'
+                              )}
+                            </FormDescription>
+                            <FormMessage />
+                          </div>
+                        )}
+                      />
+
+                      <FormField
+                        control={form.control}
+                        name='DiagnosticCaptureIncompleteTimeoutMinutes'
+                        render={({ field }) => (
+                          <div className='space-y-2'>
+                            <FormLabel>
+                              {t('Incomplete capture timeout')}
+                            </FormLabel>
+                            <div className='grid grid-cols-[minmax(0,1fr)_8rem] gap-2'>
+                              <Input
+                                type='number'
+                                min={0}
+                                max={
+                                  incompleteTimeoutUnit === 'hours'
+                                    ? 87600
+                                    : 5256000
+                                }
+                                step={1}
+                                value={
+                                  incompleteTimeoutUnit === 'hours'
+                                    ? field.value / 60
+                                    : field.value
+                                }
+                                onChange={(event) => {
+                                  const value = event.target.value
+                                  field.onChange(
+                                    value === ''
+                                      ? value
+                                      : Number(value) *
+                                          (incompleteTimeoutUnit === 'hours'
+                                            ? 60
+                                            : 1)
+                                  )
+                                }}
+                              />
+                              <Select
+                                value={incompleteTimeoutUnit}
+                                onValueChange={(value) =>
+                                  setIncompleteTimeoutUnit(
+                                    value as 'hours' | 'minutes'
+                                  )
+                                }
+                              >
+                                <SelectTrigger>
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value='hours'>
+                                    {t('Hours')}
+                                  </SelectItem>
+                                  <SelectItem value='minutes'>
+                                    {t('Minutes')}
+                                  </SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
+                            <FormDescription>
+                              {t(
+                                'Set 0 to keep incomplete captures forever; otherwise they can be cleaned after this timeout.'
+                              )}
+                            </FormDescription>
+                            <FormMessage />
+                          </div>
+                        )}
+                      />
+                    </SettingsControlChildren>
+                  </div>
+                </div>
+
+                {diagnosticStorageInfo && (
+                  <div className='grid gap-4 md:grid-cols-2'>
+                    <div className='bg-background space-y-3 rounded-xl border p-4 text-sm'>
+                      <h4 className='text-sm font-medium'>
+                        {t('Saved capture cleanup')}
+                      </h4>
+                      <div className='grid gap-x-6 gap-y-2 xl:grid-cols-2'>
+                        <div>
+                          <span className='text-muted-foreground'>
+                            {t('Current usage')}:
+                          </span>{' '}
+                          {formatBytes(diagnosticStorageInfo.current_bytes)}
+                        </div>
+                        <div>
+                          <span className='text-muted-foreground'>
+                            {t('Cleanup status')}:
+                          </span>{' '}
+                          {diagnosticCleanupStatus}
+                        </div>
+                        <div>
+                          <span className='text-muted-foreground'>
+                            {t('Last cleanup run time')}:
+                          </span>{' '}
+                          {diagnosticStorageInfo.last_cleanup_at
+                            ? formatUnixTime(diagnosticStorageInfo.last_cleanup_at)
+                            : t('Not cleaned yet')}
+                        </div>
+                        <div>
+                          <span className='text-muted-foreground'>
+                            {t('Last cleanup cutoff')}:
+                          </span>{' '}
+                          {diagnosticStorageInfo.last_cleanup_cutoff
+                            ? formatUnixTime(
+                                diagnosticStorageInfo.last_cleanup_cutoff
+                              )
+                            : '-'}
+                        </div>
+                        <div>
+                          <span className='text-muted-foreground'>
+                            {t('Deleted captures')}:
+                          </span>{' '}
+                          {diagnosticStorageInfo.last_deleted_count}
+                        </div>
+                        <div>
+                          <span className='text-muted-foreground'>
+                            {t('Freed space')}:
+                          </span>{' '}
+                          {formatBytes(diagnosticStorageInfo.last_freed_bytes)}
+                        </div>
+                      </div>
+                    </div>
+                    <div className='bg-background space-y-3 rounded-xl border p-4 text-sm'>
+                      <h4 className='text-sm font-medium'>
+                        {t('Temporary capture directory')}
+                      </h4>
+                      <div className='grid gap-x-6 gap-y-2 xl:grid-cols-2'>
+                        <div>
+                          <span className='text-muted-foreground'>
+                            {t('Temporary usage')}:
+                          </span>{' '}
+                          {formatBytes(diagnosticStorageInfo.temporary_bytes)}
+                        </div>
+                        <div>
+                          <span className='text-muted-foreground'>
+                            {t('Last temporary cleanup')}:
+                          </span>{' '}
+                          {diagnosticStorageInfo.last_temp_cleanup_at
+                            ? formatUnixTime(
+                                diagnosticStorageInfo.last_temp_cleanup_at
+                              )
+                            : t('Not cleaned yet')}
+                        </div>
+                        <div>
+                          <span className='text-muted-foreground'>
+                            {t('Temporary files deleted')}:
+                          </span>{' '}
+                          {diagnosticStorageInfo.last_temp_deleted_count}
+                        </div>
+                        <div>
+                          <span className='text-muted-foreground'>
+                            {t('Temporary space freed')}:
+                          </span>{' '}
+                          {formatBytes(
+                            diagnosticStorageInfo.last_temp_freed_bytes
+                          )}
+                        </div>
+                      </div>
                     </div>
                   </div>
-                  <FormControl>
-                    <div className='space-y-3'>
-                      {isLoadingMonitorRules ? (
-                        <div className='text-muted-foreground rounded-md border border-dashed px-4 py-6 text-center text-sm'>
-                          正在读取监控黑名单规则...
-                        </div>
-                      ) : monitorBlacklistRules.length === 0 ? (
-                        <div className='text-muted-foreground rounded-md border border-dashed px-4 py-6 text-center text-sm'>
-                          暂未同步到监控黑名单规则
-                        </div>
-                      ) : (
-                        monitorBlacklistRules.map((monitorRule, index) => {
-                          const localRules = parseErrorRewriteRules(field.value)
-                          const replacement = findReplacementRule(
-                            localRules,
-                            monitorRule
-                          )
+                )}
+              </SettingsControlGroup>
 
-                          return (
-                            <div
-                              key={`${monitorRule.id ?? index}-${monitorRuleContent(
-                                monitorRule
-                              )}`}
-                              className='bg-card rounded-lg border-2 border-border p-4 shadow-sm'
-                            >
-                              <div className='space-y-2'>
-                                <div className='flex flex-wrap items-center gap-2'>
-                                  <Label>黑名单筛选规则</Label>
-                                  {monitorRule.id ? (
-                                    <span className='bg-muted text-muted-foreground rounded px-2 py-0.5 text-xs'>
-                                      #{monitorRule.id}
-                                    </span>
-                                  ) : null}
+              <SettingsControlGroup className='space-y-4'>
+                <FormField
+                  control={form.control}
+                  name='ErrorRewriteEnabled'
+                  render={({ field }) => (
+                    <SettingsSwitchItem>
+                      <SettingsSwitchContent>
+                        <FormLabel>{t('Error rewrite')}</FormLabel>
+                        <FormDescription>
+                          {t(
+                            'Rewrite upstream error messages when monitoring rules match blacklisted text.'
+                          )}
+                        </FormDescription>
+                      </SettingsSwitchContent>
+                      <FormControl>
+                        <Switch
+                          checked={field.value}
+                          onCheckedChange={field.onChange}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </SettingsSwitchItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name='ErrorRewriteSource'
+                  render={({ field }) => (
+                    <div className='space-y-2'>
+                      <FormLabel>{t('Rules source')}</FormLabel>
+                      <FormControl>
+                        <div className='grid gap-2 md:grid-cols-2'>
+                          <Button
+                            type='button'
+                            variant={
+                              field.value === 'local' ? 'default' : 'outline'
+                            }
+                            onClick={() => field.onChange('local')}
+                          >
+                            模式 1：等待监控服务器推送
+                          </Button>
+                          <Button
+                            type='button'
+                            variant={
+                              field.value === 'http' ? 'default' : 'outline'
+                            }
+                            onClick={() => field.onChange('http')}
+                          >
+                            模式 2：定时拉取监控规则
+                          </Button>
+                        </div>
+                      </FormControl>
+                      <FormDescription>
+                        模式 1 需要监控服务器能访问 New API；模式 2
+                        适合本地电脑没有公网 IP 时测试，New API
+                        会主动访问监控服务器。
+                      </FormDescription>
+                      <FormMessage />
+                    </div>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name='ErrorRewriteRulesJSON'
+                  render={({ field }) => (
+                    <div className='space-y-3'>
+                      <div className='flex flex-wrap items-center justify-between gap-2'>
+                        <FormLabel>监控黑名单筛选规则</FormLabel>
+                        <div className='text-muted-foreground flex flex-wrap gap-2 text-xs'>
+                          <span className='bg-muted rounded px-2 py-1'>
+                            已读取 {monitorRuleStats.total} 条
+                          </span>
+                          <span className='bg-muted rounded px-2 py-1'>
+                            已启用 {monitorRuleStats.enabled} 条
+                          </span>
+                          <span className='bg-muted rounded px-2 py-1'>
+                            上次拉取：{formatUnixTime(monitorLastPullAt)}
+                          </span>
+                          <span className='bg-muted rounded px-2 py-1'>
+                            拉取间隔：{form.watch('ErrorRewriteRefreshSeconds')}{' '}
+                            秒
+                          </span>
+                        </div>
+                      </div>
+                      <FormControl>
+                        <div className='space-y-3'>
+                          {(() => {
+                            if (isLoadingMonitorRules) {
+                              return (
+                                <div className='text-muted-foreground rounded-md border border-dashed px-4 py-6 text-center text-sm'>
+                                  正在读取监控黑名单规则...
                                 </div>
-                                <div className='grid gap-2 md:grid-cols-3 xl:grid-cols-6'>
-                                  {monitorRuleFields(monitorRule).map((item) => (
-                                    <div
-                                      key={item.label}
-                                      className='bg-muted/40 rounded-md border px-3 py-2'
-                                    >
-                                      <div className='text-muted-foreground text-xs'>
-                                        {item.label}
+                              )
+                            }
+                            if (monitorBlacklistRules.length === 0) {
+                              return (
+                                <div className='text-muted-foreground rounded-md border border-dashed px-4 py-6 text-center text-sm'>
+                                  暂未同步到监控黑名单规则
+                                </div>
+                              )
+                            }
+                            return monitorBlacklistRules.map(
+                              (monitorRule, index) => {
+                                const localRules = parseErrorRewriteRules(
+                                  field.value
+                                )
+                                const replacement = findReplacementRule(
+                                  localRules,
+                                  monitorRule
+                                )
+
+                                return (
+                                  <div
+                                    key={`${monitorRule.id ?? index}-${monitorRuleContent(
+                                      monitorRule
+                                    )}`}
+                                    className='bg-card border-border rounded-lg border-2 p-4 shadow-sm'
+                                  >
+                                    <div className='space-y-2'>
+                                      <div className='flex flex-wrap items-center gap-2'>
+                                        <Label>黑名单筛选规则</Label>
+                                        {monitorRule.id ? (
+                                          <span className='bg-muted text-muted-foreground rounded px-2 py-0.5 text-xs'>
+                                            #{monitorRule.id}
+                                          </span>
+                                        ) : null}
                                       </div>
-                                      <div className='mt-1 break-words text-sm'>
-                                        {item.value}
+                                      <div className='grid gap-2 md:grid-cols-3 xl:grid-cols-6'>
+                                        {monitorRuleFields(monitorRule).map(
+                                          (item) => (
+                                            <div
+                                              key={item.label}
+                                              className='bg-muted/40 rounded-md border px-3 py-2'
+                                            >
+                                              <div className='text-muted-foreground text-xs'>
+                                                {item.label}
+                                              </div>
+                                              <div className='mt-1 text-sm break-words'>
+                                                {item.value}
+                                              </div>
+                                            </div>
+                                          )
+                                        )}
+                                      </div>
+                                      <div className='space-y-1'>
+                                        <div className='text-muted-foreground text-xs'>
+                                          黑名单过滤内容
+                                        </div>
+                                        <div className='border-l-destructive bg-destructive/5 min-h-11 rounded-md border border-l-4 px-3 py-2 text-sm font-medium whitespace-pre-wrap'>
+                                          {monitorRuleContent(monitorRule) ||
+                                            '空内容'}
+                                        </div>
                                       </div>
                                     </div>
-                                  ))}
-                                </div>
-                                <div className='space-y-1'>
-                                  <div className='text-muted-foreground text-xs'>
-                                    黑名单过滤内容
-                                  </div>
-                                  <div className='border-l-destructive bg-destructive/5 min-h-11 whitespace-pre-wrap rounded-md border border-l-4 px-3 py-2 text-sm font-medium'>
-                                    {monitorRuleContent(monitorRule) || '空内容'}
-                                  </div>
-                                </div>
-                              </div>
 
-                              <div className='mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_180px] md:items-start'>
-                                <div className='space-y-2'>
-                                  <Label>{t('Error message content')}</Label>
-                                  <Textarea
-                                    rows={3}
-                                    value={replacement.message}
-                                    placeholder={t(
-                                      'Upstream service is temporarily unavailable. Please try again later.'
-                                    )}
-                                    onChange={(event) =>
-                                      field.onChange(
-                                        updateReplacementRuleJSON(
-                                          field.value,
-                                          monitorRule,
-                                          {
-                                            message: event.target.value,
+                                    <div className='mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_180px] md:items-start'>
+                                      <div className='space-y-2'>
+                                        <Label>
+                                          {t('Error message content')}
+                                        </Label>
+                                        <Textarea
+                                          rows={3}
+                                          value={replacement.message}
+                                          placeholder={t(
+                                            'Upstream service is temporarily unavailable. Please try again later.'
+                                          )}
+                                          onChange={(event) =>
+                                            field.onChange(
+                                              updateReplacementRuleJSON(
+                                                field.value,
+                                                monitorRule,
+                                                {
+                                                  message: event.target.value,
+                                                }
+                                              )
+                                            )
                                           }
-                                        )
-                                      )
-                                    }
-                                  />
-                                </div>
-                                <div className='space-y-2'>
-                                  <Label>{t('Returned status code')}</Label>
-                                  <Input
-                                    type='number'
-                                    min={100}
-                                    max={599}
-                                    value={replacement.status_code ?? ''}
-                                    placeholder='保留上游状态码'
-                                    onChange={(event) => {
-                                      const value = event.target.value.trim()
-                                      field.onChange(
-                                        updateReplacementRuleJSON(
-                                          field.value,
-                                          monitorRule,
-                                          {
-                                            status_code:
-                                              value === ''
-                                                ? undefined
-                                                : Number(value),
-                                          }
-                                        )
-                                      )
-                                    }}
-                                  />
-                                </div>
-                              </div>
-                              <div className='mt-3 grid gap-3 md:grid-cols-3'>
-                                <div className='space-y-2'>
-                                  <Label>错误 type</Label>
-                                  <div className='grid grid-cols-[120px_minmax(0,1fr)] gap-2'>
-                                    <Select
-                                      value={
-                                        rewriteFieldModeLabel(
-                                          replacement.error_type_mode,
-                                          replacement.error_type
-                                        )
-                                      }
-                                      onValueChange={(value) =>
-                                        field.onChange(
-                                          updateReplacementRuleJSON(
-                                            field.value,
-                                            monitorRule,
-                                            { error_type_mode: value }
-                                          )
-                                        )
-                                      }
-                                    >
-                                      <SelectTrigger>
-                                        <SelectValue />
-                                      </SelectTrigger>
-                                      <SelectContent>
-                                        <SelectItem value='替换'>
-                                          替换
-                                        </SelectItem>
-                                        <SelectItem value='过滤'>
-                                          过滤
-                                        </SelectItem>
-                                        <SelectItem value='保留'>
-                                          保留
-                                        </SelectItem>
-                                      </SelectContent>
-                                    </Select>
-                                    <Input
-                                      value={replacement.error_type ?? ''}
-                                      disabled={
-                                        rewriteFieldModeLabel(
-                                          replacement.error_type_mode,
-                                          replacement.error_type
-                                        ) !== '替换'
-                                      }
-                                      placeholder='仅上游有 type 时替换'
-                                      onChange={(event) =>
-                                        field.onChange(
-                                          updateReplacementRuleJSON(
-                                            field.value,
-                                            monitorRule,
-                                            {
-                                              error_type:
-                                                event.target.value.trim() ||
-                                                undefined,
+                                        />
+                                      </div>
+                                      <div className='space-y-2'>
+                                        <Label>
+                                          {t('Returned status code')}
+                                        </Label>
+                                        <Input
+                                          type='number'
+                                          min={100}
+                                          max={599}
+                                          value={replacement.status_code ?? ''}
+                                          placeholder='保留上游状态码'
+                                          onChange={(event) => {
+                                            const value =
+                                              event.target.value.trim()
+                                            field.onChange(
+                                              updateReplacementRuleJSON(
+                                                field.value,
+                                                monitorRule,
+                                                {
+                                                  status_code:
+                                                    value === ''
+                                                      ? undefined
+                                                      : Number(value),
+                                                }
+                                              )
+                                            )
+                                          }}
+                                        />
+                                      </div>
+                                    </div>
+                                    <div className='mt-3 grid gap-3 md:grid-cols-3'>
+                                      <div className='space-y-2'>
+                                        <Label>错误 type</Label>
+                                        <div className='grid grid-cols-[120px_minmax(0,1fr)] gap-2'>
+                                          <Select
+                                            value={rewriteFieldModeLabel(
+                                              replacement.error_type_mode,
+                                              replacement.error_type
+                                            )}
+                                            onValueChange={(value) =>
+                                              field.onChange(
+                                                updateReplacementRuleJSON(
+                                                  field.value,
+                                                  monitorRule,
+                                                  {
+                                                    error_type_mode:
+                                                      value ?? undefined,
+                                                  }
+                                                )
+                                              )
                                             }
-                                          )
-                                        )
-                                      }
-                                    />
-                                  </div>
-                                </div>
-                                <div className='space-y-2'>
-                                  <Label>错误 code</Label>
-                                  <div className='grid grid-cols-[120px_minmax(0,1fr)] gap-2'>
-                                    <Select
-                                      value={
-                                        rewriteFieldModeLabel(
-                                          replacement.error_code_mode,
-                                          replacement.error_code,
-                                          '过滤'
-                                        )
-                                      }
-                                      onValueChange={(value) =>
-                                        field.onChange(
-                                          updateReplacementRuleJSON(
-                                            field.value,
-                                            monitorRule,
-                                            { error_code_mode: value }
-                                          )
-                                        )
-                                      }
-                                    >
-                                      <SelectTrigger>
-                                        <SelectValue />
-                                      </SelectTrigger>
-                                      <SelectContent>
-                                        <SelectItem value='替换'>
-                                          替换
-                                        </SelectItem>
-                                        <SelectItem value='过滤'>
-                                          过滤
-                                        </SelectItem>
-                                        <SelectItem value='保留'>
-                                          保留
-                                        </SelectItem>
-                                      </SelectContent>
-                                    </Select>
-                                    <Input
-                                      value={replacement.error_code ?? ''}
-                                      disabled={
-                                        rewriteFieldModeLabel(
-                                          replacement.error_code_mode,
-                                          replacement.error_code,
-                                          '过滤'
-                                        ) !== '替换'
-                                      }
-                                      placeholder='仅上游有 code 时替换'
-                                      onChange={(event) =>
-                                        field.onChange(
-                                          updateReplacementRuleJSON(
-                                            field.value,
-                                            monitorRule,
-                                            {
-                                              error_code:
-                                                event.target.value.trim() ||
-                                                undefined,
+                                          >
+                                            <SelectTrigger>
+                                              <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                              <SelectItem value='替换'>
+                                                替换
+                                              </SelectItem>
+                                              <SelectItem value='过滤'>
+                                                过滤
+                                              </SelectItem>
+                                              <SelectItem value='保留'>
+                                                保留
+                                              </SelectItem>
+                                            </SelectContent>
+                                          </Select>
+                                          <Input
+                                            value={replacement.error_type ?? ''}
+                                            disabled={
+                                              rewriteFieldModeLabel(
+                                                replacement.error_type_mode,
+                                                replacement.error_type
+                                              ) !== '替换'
                                             }
-                                          )
-                                        )
-                                      }
-                                    />
-                                  </div>
-                                </div>
-                                <div className='space-y-2'>
-                                  <Label>错误 param</Label>
-                                  <div className='grid grid-cols-[120px_minmax(0,1fr)] gap-2'>
-                                    <Select
-                                      value={
-                                        rewriteFieldModeLabel(
-                                          replacement.error_param_mode,
-                                          replacement.error_param,
-                                          '过滤'
-                                        )
-                                      }
-                                      onValueChange={(value) =>
-                                        field.onChange(
-                                          updateReplacementRuleJSON(
-                                            field.value,
-                                            monitorRule,
-                                            { error_param_mode: value }
-                                          )
-                                        )
-                                      }
-                                    >
-                                      <SelectTrigger>
-                                        <SelectValue />
-                                      </SelectTrigger>
-                                      <SelectContent>
-                                        <SelectItem value='替换'>
-                                          替换
-                                        </SelectItem>
-                                        <SelectItem value='过滤'>
-                                          过滤
-                                        </SelectItem>
-                                        <SelectItem value='保留'>
-                                          保留
-                                        </SelectItem>
-                                      </SelectContent>
-                                    </Select>
-                                    <Input
-                                      value={replacement.error_param ?? ''}
-                                      disabled={
-                                        rewriteFieldModeLabel(
-                                          replacement.error_param_mode,
-                                          replacement.error_param,
-                                          '过滤'
-                                        ) !== '替换'
-                                      }
-                                      placeholder='仅上游有 param 时替换'
-                                      onChange={(event) =>
-                                        field.onChange(
-                                          updateReplacementRuleJSON(
-                                            field.value,
-                                            monitorRule,
-                                            {
-                                              error_param:
-                                                event.target.value.trim() ||
-                                                undefined,
+                                            placeholder='仅上游有 type 时替换'
+                                            onChange={(event) =>
+                                              field.onChange(
+                                                updateReplacementRuleJSON(
+                                                  field.value,
+                                                  monitorRule,
+                                                  {
+                                                    error_type:
+                                                      event.target.value.trim() ||
+                                                      undefined,
+                                                  }
+                                                )
+                                              )
                                             }
-                                          )
-                                        )
-                                      }
-                                    />
+                                          />
+                                        </div>
+                                      </div>
+                                      <div className='space-y-2'>
+                                        <Label>错误 code</Label>
+                                        <div className='grid grid-cols-[120px_minmax(0,1fr)] gap-2'>
+                                          <Select
+                                            value={rewriteFieldModeLabel(
+                                              replacement.error_code_mode,
+                                              replacement.error_code,
+                                              '过滤'
+                                            )}
+                                            onValueChange={(value) =>
+                                              field.onChange(
+                                                updateReplacementRuleJSON(
+                                                  field.value,
+                                                  monitorRule,
+                                                  {
+                                                    error_code_mode:
+                                                      value ?? undefined,
+                                                  }
+                                                )
+                                              )
+                                            }
+                                          >
+                                            <SelectTrigger>
+                                              <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                              <SelectItem value='替换'>
+                                                替换
+                                              </SelectItem>
+                                              <SelectItem value='过滤'>
+                                                过滤
+                                              </SelectItem>
+                                              <SelectItem value='保留'>
+                                                保留
+                                              </SelectItem>
+                                            </SelectContent>
+                                          </Select>
+                                          <Input
+                                            value={replacement.error_code ?? ''}
+                                            disabled={
+                                              rewriteFieldModeLabel(
+                                                replacement.error_code_mode,
+                                                replacement.error_code,
+                                                '过滤'
+                                              ) !== '替换'
+                                            }
+                                            placeholder='仅上游有 code 时替换'
+                                            onChange={(event) =>
+                                              field.onChange(
+                                                updateReplacementRuleJSON(
+                                                  field.value,
+                                                  monitorRule,
+                                                  {
+                                                    error_code:
+                                                      event.target.value.trim() ||
+                                                      undefined,
+                                                  }
+                                                )
+                                              )
+                                            }
+                                          />
+                                        </div>
+                                      </div>
+                                      <div className='space-y-2'>
+                                        <Label>错误 param</Label>
+                                        <div className='grid grid-cols-[120px_minmax(0,1fr)] gap-2'>
+                                          <Select
+                                            value={rewriteFieldModeLabel(
+                                              replacement.error_param_mode,
+                                              replacement.error_param,
+                                              '过滤'
+                                            )}
+                                            onValueChange={(value) =>
+                                              field.onChange(
+                                                updateReplacementRuleJSON(
+                                                  field.value,
+                                                  monitorRule,
+                                                  {
+                                                    error_param_mode:
+                                                      value ?? undefined,
+                                                  }
+                                                )
+                                              )
+                                            }
+                                          >
+                                            <SelectTrigger>
+                                              <SelectValue />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                              <SelectItem value='替换'>
+                                                替换
+                                              </SelectItem>
+                                              <SelectItem value='过滤'>
+                                                过滤
+                                              </SelectItem>
+                                              <SelectItem value='保留'>
+                                                保留
+                                              </SelectItem>
+                                            </SelectContent>
+                                          </Select>
+                                          <Input
+                                            value={
+                                              replacement.error_param ?? ''
+                                            }
+                                            disabled={
+                                              rewriteFieldModeLabel(
+                                                replacement.error_param_mode,
+                                                replacement.error_param,
+                                                '过滤'
+                                              ) !== '替换'
+                                            }
+                                            placeholder='仅上游有 param 时替换'
+                                            onChange={(event) =>
+                                              field.onChange(
+                                                updateReplacementRuleJSON(
+                                                  field.value,
+                                                  monitorRule,
+                                                  {
+                                                    error_param:
+                                                      event.target.value.trim() ||
+                                                      undefined,
+                                                  }
+                                                )
+                                              )
+                                            }
+                                          />
+                                        </div>
+                                      </div>
+                                    </div>
                                   </div>
-                                </div>
-                              </div>
-                            </div>
-                          )
-                        })
-                      )}
-                    </div>
-                  </FormControl>
-                  <FormDescription>
-                    {t(
-                      'These filter rules are synchronized from the monitoring system. New API only configures the message and optional status code returned after a rule is matched.'
-                    )}
-                  </FormDescription>
-                  <FormMessage />
-                </div>
-              )}
-            />
-
-            <div className='grid gap-4 md:grid-cols-2'>
-              <div className='space-y-2'>
-                  <FormLabel>{t('Monitor snapshot version')}</FormLabel>
-                <Input
-                  value={diagnosticDefaults.ErrorRewriteMonitorRulesVersion}
-                  disabled
-                />
-              </div>
-              <div className='space-y-2'>
-                  <FormLabel>{t('Monitor snapshot size')}</FormLabel>
-                <Input
-                  value={diagnosticDefaults.ErrorRewriteMonitorRulesJSON.length}
-                  disabled
-                />
-              </div>
-            </div>
-
-            <FormField
-              control={form.control}
-              name='ErrorRewriteRulesURL'
-              render={({ field }) => (
-                <div className='space-y-2'>
-                  <FormLabel>监控规则拉取地址</FormLabel>
-                  <FormControl>
-                    <Input
-                      placeholder='http://38.181.57.188:8086/api/log-management/blacklist-rules/export'
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormDescription>
-                    模式 2 使用这个地址。New API 会按设置的间隔拉取黑名单规则，并保存到本地数据库。
-                  </FormDescription>
-                  <FormMessage />
-                </div>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name='ErrorRewriteSyncToken'
-              render={({ field }) => (
-                <div className='space-y-2'>
-                  <FormLabel>监控同步密钥</FormLabel>
-                  <FormControl>
-                    <Input type='password' autoComplete='new-password' {...field} />
-                  </FormControl>
-                  <FormDescription>
-                    模式 1 和模式 2 共用这个密钥，请和监控服务器的 APM_LOG_BLACKLIST_SYNC_TOKEN 保持一致。
-                  </FormDescription>
-                  <FormMessage />
-                </div>
-              )}
-            />
-
-            <div className='grid gap-4 md:grid-cols-2'>
-              <FormField
-                control={form.control}
-                name='ErrorRewriteSQLDriver'
-                render={({ field }) => (
-                  <div className='space-y-2'>
-                    <FormLabel>{t('Monitoring database driver')}</FormLabel>
-                    <Select value={field.value} onValueChange={field.onChange}>
-                      <FormControl>
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
+                                )
+                              }
+                            )
+                          })()}
+                        </div>
                       </FormControl>
-                      <SelectContent>
-                        <SelectGroup>
-                          <SelectItem value='mysql'>MySQL</SelectItem>
-                          <SelectItem value='postgres'>PostgreSQL</SelectItem>
-                          <SelectItem value='sqlite'>SQLite</SelectItem>
-                        </SelectGroup>
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </div>
-                )}
-              />
-
-              <div className='space-y-2'>
-                <FormLabel>{t('Monitoring database DSN')}</FormLabel>
-                <Input value='ERROR_REWRITE_SQL_DSN' disabled />
-                <FormDescription>
-                  {t(
-                    'Set the real database connection string with this server environment variable.'
+                      <FormDescription>
+                        {t(
+                          'These filter rules are synchronized from the monitoring system. New API only configures the message and optional status code returned after a rule is matched.'
+                        )}
+                      </FormDescription>
+                      <FormMessage />
+                    </div>
                   )}
-                </FormDescription>
+                />
+
+                <div className='grid gap-4 md:grid-cols-2'>
+                  <div className='space-y-2'>
+                    <FormLabel>{t('Monitor snapshot version')}</FormLabel>
+                    <Input
+                      value={diagnosticDefaults.ErrorRewriteMonitorRulesVersion}
+                      disabled
+                    />
+                  </div>
+                  <div className='space-y-2'>
+                    <FormLabel>{t('Monitor snapshot size')}</FormLabel>
+                    <Input
+                      value={
+                        diagnosticDefaults.ErrorRewriteMonitorRulesJSON.length
+                      }
+                      disabled
+                    />
+                  </div>
+                </div>
+
+                <FormField
+                  control={form.control}
+                  name='ErrorRewriteRulesURL'
+                  render={({ field }) => (
+                    <div className='space-y-2'>
+                      <FormLabel>监控规则拉取地址</FormLabel>
+                      <FormControl>
+                        <Input
+                          placeholder='http://38.181.57.188:8086/api/log-management/blacklist-rules/export'
+                          {...field}
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        模式 2 使用这个地址。New API
+                        会按设置的间隔拉取黑名单规则，并保存到本地数据库。
+                      </FormDescription>
+                      <FormMessage />
+                    </div>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name='ErrorRewriteSyncToken'
+                  render={({ field }) => (
+                    <div className='space-y-2'>
+                      <FormLabel>监控同步密钥</FormLabel>
+                      <FormControl>
+                        <Input
+                          type='password'
+                          autoComplete='new-password'
+                          {...field}
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        模式 1 和模式 2 共用这个密钥，请和监控服务器的
+                        APM_LOG_BLACKLIST_SYNC_TOKEN 保持一致。
+                      </FormDescription>
+                      <FormMessage />
+                    </div>
+                  )}
+                />
+
+                <div className='grid gap-4 md:grid-cols-2'>
+                  <FormField
+                    control={form.control}
+                    name='ErrorRewriteSQLDriver'
+                    render={({ field }) => (
+                      <div className='space-y-2'>
+                        <FormLabel>{t('Monitoring database driver')}</FormLabel>
+                        <Select
+                          value={field.value}
+                          onValueChange={field.onChange}
+                        >
+                          <FormControl>
+                            <SelectTrigger>
+                              <SelectValue />
+                            </SelectTrigger>
+                          </FormControl>
+                          <SelectContent>
+                            <SelectGroup>
+                              <SelectItem value='mysql'>MySQL</SelectItem>
+                              <SelectItem value='postgres'>
+                                PostgreSQL
+                              </SelectItem>
+                              <SelectItem value='sqlite'>SQLite</SelectItem>
+                            </SelectGroup>
+                          </SelectContent>
+                        </Select>
+                        <FormMessage />
+                      </div>
+                    )}
+                  />
+
+                  <div className='space-y-2'>
+                    <FormLabel>{t('Monitoring database DSN')}</FormLabel>
+                    <Input value='ERROR_REWRITE_SQL_DSN' disabled />
+                    <FormDescription>
+                      {t(
+                        'Set the real database connection string with this server environment variable.'
+                      )}
+                    </FormDescription>
+                  </div>
+                </div>
+
+                <FormField
+                  control={form.control}
+                  name='ErrorRewriteSQLQuery'
+                  render={({ field }) => (
+                    <div className='space-y-2'>
+                      <FormLabel>{t('Monitoring rules SQL')}</FormLabel>
+                      <FormControl>
+                        <Textarea rows={4} {...field} />
+                      </FormControl>
+                      <FormDescription>
+                        {t(
+                          'Return keyword and rule_type columns. Only rows with rule_type blacklist rewrite errors.'
+                        )}
+                      </FormDescription>
+                      <FormMessage />
+                    </div>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name='ErrorRewriteFallbackMessage'
+                  render={({ field }) => (
+                    <div className='space-y-2'>
+                      <FormLabel>{t('Fallback error message')}</FormLabel>
+                      <FormControl>
+                        <Textarea rows={3} {...field} />
+                      </FormControl>
+                      <FormDescription>
+                        {t(
+                          'Used when a blacklist rule matches and the monitoring response does not provide a replacement message.'
+                        )}
+                      </FormDescription>
+                      <FormMessage />
+                    </div>
+                  )}
+                />
+
+                <div className='grid gap-4 md:grid-cols-2'>
+                  <FormField
+                    control={form.control}
+                    name='ErrorRewriteRefreshSeconds'
+                    render={({ field }) => (
+                      <div className='space-y-2'>
+                        <FormLabel>拉取间隔（秒）</FormLabel>
+                        <FormControl>
+                          <Input type='number' min={1} {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </div>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name='ErrorRewriteRequestTimeoutMS'
+                    render={({ field }) => (
+                      <div className='space-y-2'>
+                        <FormLabel>{t('Rules request timeout (ms)')}</FormLabel>
+                        <FormControl>
+                          <Input type='number' min={100} {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </div>
+                    )}
+                  />
+                </div>
+
+                <div className='flex justify-end'>
+                  <Button
+                    type='button'
+                    variant='outline'
+                    onClick={pullMonitorRulesNow}
+                    disabled={isPullingMonitorRules || updateOption.isPending}
+                  >
+                    {isPullingMonitorRules ? '正在拉取...' : '手动拉取信息'}
+                  </Button>
+                </div>
+              </SettingsControlGroup>
+            </>
+          )}
+
+          {mode === 'maintenance' && (
+            <SettingsControlGroup className='space-y-3'>
+              <div>
+                <h4 className='text-sm font-medium'>
+                  {t('Clean history logs')}
+                </h4>
+                <p className='text-muted-foreground text-sm'>
+                  {t(
+                    'Remove all log entries created before the selected timestamp.'
+                  )}
+                </p>
               </div>
-            </div>
-
-            <FormField
-              control={form.control}
-              name='ErrorRewriteSQLQuery'
-              render={({ field }) => (
-                <div className='space-y-2'>
-                  <FormLabel>{t('Monitoring rules SQL')}</FormLabel>
-                  <FormControl>
-                    <Textarea rows={4} {...field} />
-                  </FormControl>
-                  <FormDescription>
-                    {t(
-                      'Return keyword and rule_type columns. Only rows with rule_type blacklist rewrite errors.'
-                    )}
-                  </FormDescription>
-                  <FormMessage />
-                </div>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name='ErrorRewriteFallbackMessage'
-              render={({ field }) => (
-                <div className='space-y-2'>
-                  <FormLabel>{t('Fallback error message')}</FormLabel>
-                  <FormControl>
-                    <Textarea rows={3} {...field} />
-                  </FormControl>
-                  <FormDescription>
-                    {t(
-                      'Used when a blacklist rule matches and the monitoring response does not provide a replacement message.'
-                    )}
-                  </FormDescription>
-                  <FormMessage />
-                </div>
-              )}
-            />
-
-            <div className='grid gap-4 md:grid-cols-2'>
-              <FormField
-                control={form.control}
-                name='ErrorRewriteRefreshSeconds'
-                render={({ field }) => (
-                  <div className='space-y-2'>
-                    <FormLabel>
-                      拉取间隔（秒）
-                    </FormLabel>
-                    <FormControl>
-                      <Input type='number' min={1} {...field} />
-                    </FormControl>
-                    <FormMessage />
-                  </div>
-                )}
-              />
-
-              <FormField
-                control={form.control}
-                name='ErrorRewriteRequestTimeoutMS'
-                render={({ field }) => (
-                  <div className='space-y-2'>
-                    <FormLabel>{t('Rules request timeout (ms)')}</FormLabel>
-                    <FormControl>
-                      <Input type='number' min={100} {...field} />
-                    </FormControl>
-                    <FormMessage />
-                  </div>
-                )}
-              />
-            </div>
-
-            <div className='flex justify-end'>
-              <Button
-                type='button'
-                variant='outline'
-                onClick={pullMonitorRulesNow}
-                disabled={isPullingMonitorRules || updateOption.isPending}
-              >
-                {isPullingMonitorRules
-                  ? '正在拉取...'
-                  : '手动拉取信息'}
-              </Button>
-            </div>
-          </SettingsControlGroup>
-
-          <SettingsControlGroup className='space-y-3'>
-            <div>
-              <h4 className='text-sm font-medium'>{t('Clean history logs')}</h4>
-              <p className='text-muted-foreground text-sm'>
-                {t(
-                  'Remove all log entries created before the selected timestamp.'
-                )}
-              </p>
-            </div>
-            <DateTimePicker value={purgeDate} onChange={setPurgeDate} />
-            <div className='flex flex-wrap gap-3'>
-              {quickSelectOptions.map((option) => (
+              <DateTimePicker value={purgeDate} onChange={setPurgeDate} />
+              <div className='flex flex-wrap gap-3'>
+                {quickSelectOptions.map((option) => (
+                  <Button
+                    key={option.label}
+                    type='button'
+                    variant='outline'
+                    onClick={() => setPurgeDate(option.getValue())}
+                  >
+                    {t(option.label)}
+                  </Button>
+                ))}
                 <Button
-                  key={option.label}
                   type='button'
-                  variant='outline'
-                  onClick={() => setPurgeDate(option.getValue())}
+                  variant='destructive'
+                  onClick={handleRequestCleanLogs}
+                  disabled={isStartingLogCleanup || logCleanupActive}
                 >
-                  {t(option.label)}
+                  {isStartingLogCleanup || logCleanupActive
+                    ? t('Cleaning...')
+                    : t('Clean logs')}
                 </Button>
-              ))}
-              <Button
-                type='button'
-                variant='destructive'
-                onClick={handleRequestCleanLogs}
-                disabled={isStartingLogCleanup || logCleanupActive}
-              >
-                {isStartingLogCleanup || logCleanupActive
-                  ? t('Cleaning...')
-                  : t('Clean logs')}
-              </Button>
-            </div>
-            {logCleanupTask && (
-              <div className='rounded-md border p-3'>
-                <div className='mb-2 flex items-center justify-between gap-3 text-sm'>
-                  <span className='font-medium'>
-                    {t('Log cleanup progress')}
-                  </span>
-                  <span className='text-muted-foreground tabular-nums'>
-                    {logCleanupProgress}%
-                  </span>
-                </div>
-                <Progress value={logCleanupProgress} />
-                <div className='text-muted-foreground mt-2 text-xs'>
-                  {t('{{processed}} of {{total}} log entries processed.', {
-                    processed: logCleanupProcessed,
-                    total: logCleanupTotal,
-                  })}
-                </div>
-                {logCleanupTask.status === 'failed' && logCleanupTask.error && (
-                  <div className='text-destructive mt-2 text-xs'>
-                    {logCleanupTask.error}
-                  </div>
-                )}
               </div>
-            )}
-          </SettingsControlGroup>
+              {logCleanupTask && (
+                <div className='rounded-md border p-3'>
+                  <div className='mb-2 flex items-center justify-between gap-3 text-sm'>
+                    <span className='font-medium'>
+                      {t('Log cleanup progress')}
+                    </span>
+                    <span className='text-muted-foreground tabular-nums'>
+                      {logCleanupProgress}%
+                    </span>
+                  </div>
+                  <Progress value={logCleanupProgress} />
+                  <div className='text-muted-foreground mt-2 text-xs'>
+                    {t('{{processed}} of {{total}} log entries processed.', {
+                      processed: logCleanupProcessed,
+                      total: logCleanupTotal,
+                    })}
+                  </div>
+                  {logCleanupTask.status === 'failed' &&
+                    logCleanupTask.error && (
+                      <div className='text-destructive mt-2 text-xs'>
+                        {logCleanupTask.error}
+                      </div>
+                    )}
+                </div>
+              )}
+            </SettingsControlGroup>
+          )}
         </SettingsForm>
       </Form>
 
-      <Separator />
+      {mode === 'maintenance' && (
+        <>
+          <Separator />
 
-      <div className='space-y-4'>
-        <div>
-          <h4 className='font-medium'>{t('Server Log Management')}</h4>
-          <p className='text-muted-foreground mt-1 text-xs'>
-            {t(
-              'Manage server log files. Log files accumulate over time; regular cleanup is recommended to free disk space.'
-            )}
-          </p>
-        </div>
-
-        {serverLogInfo !== null &&
-          (serverLogInfo.enabled ? (
-            <div className='space-y-4'>
-              <div className='rounded-lg border p-4'>
-                <div className='grid grid-cols-2 gap-2 text-sm md:grid-cols-4'>
-                  <div>
-                    <span className='text-muted-foreground'>
-                      {t('Log Directory')}:
-                    </span>{' '}
-                    <span className='font-mono text-xs'>
-                      {serverLogInfo.log_dir}
-                    </span>
-                  </div>
-                  <div>
-                    <span className='text-muted-foreground'>
-                      {t('Log File Count')}:
-                    </span>{' '}
-                    {serverLogInfo.file_count}
-                  </div>
-                  <div>
-                    <span className='text-muted-foreground'>
-                      {t('Total Log Size')}:
-                    </span>{' '}
-                    {formatBytes(serverLogInfo.total_size)}
-                  </div>
-                  {serverLogInfo.oldest_time && serverLogInfo.newest_time && (
-                    <div>
-                      <span className='text-muted-foreground'>
-                        {t('Date Range')}:
-                      </span>{' '}
-                      {dayjs(serverLogInfo.oldest_time).format('YYYY-MM-DD')} ~{' '}
-                      {dayjs(serverLogInfo.newest_time).format('YYYY-MM-DD')}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              <div className='flex flex-wrap items-end gap-3'>
-                <div className='grid gap-1.5'>
-                  <Label className='text-xs'>{t('Cleanup Mode')}</Label>
-                  <Select
-                    items={[
-                      { value: 'by_count', label: t('Retain last N files') },
-                      { value: 'by_days', label: t('Retain last N days') },
-                    ]}
-                    value={serverLogCleanupMode}
-                    onValueChange={(value) =>
-                      value !== null && setServerLogCleanupMode(value)
-                    }
-                  >
-                    <SelectTrigger className='w-[160px]'>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent alignItemWithTrigger={false}>
-                      <SelectGroup>
-                        <SelectItem value='by_count'>
-                          {t('Retain last N files')}
-                        </SelectItem>
-                        <SelectItem value='by_days'>
-                          {t('Retain last N days')}
-                        </SelectItem>
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className='grid gap-1.5'>
-                  <Label className='text-xs'>
-                    {serverLogCleanupMode === 'by_count'
-                      ? t('Files to Retain')
-                      : t('Days to Retain')}
-                  </Label>
-                  <Input
-                    type='number'
-                    min={1}
-                    max={serverLogCleanupMode === 'by_count' ? 1000 : 3650}
-                    value={serverLogCleanupValue}
-                    onChange={(event) =>
-                      setServerLogCleanupValue(Number(event.target.value))
-                    }
-                    className='w-[120px]'
-                  />
-                </div>
-                <AlertDialog>
-                  <AlertDialogTrigger
-                    render={
-                      <Button
-                        type='button'
-                        variant='destructive'
-                        size='sm'
-                        disabled={serverLogCleanupLoading}
-                      />
-                    }
-                  >
-                    {serverLogCleanupLoading
-                      ? t('Cleaning...')
-                      : t('Clean Up Log Files')}
-                  </AlertDialogTrigger>
-                  <AlertDialogContent>
-                    <AlertDialogHeader>
-                      <AlertDialogTitle>
-                        {t('Confirm log file cleanup?')}
-                      </AlertDialogTitle>
-                      <AlertDialogDescription>
-                        {serverLogCleanupMode === 'by_count'
-                          ? t(
-                              'Only the last {{value}} log files will be retained; the rest will be deleted.',
-                              {
-                                value: serverLogCleanupValue,
-                              }
-                            )
-                          : t(
-                              'Log files older than {{value}} days will be deleted.',
-                              {
-                                value: serverLogCleanupValue,
-                              }
-                            )}
-                      </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel>{t('Cancel')}</AlertDialogCancel>
-                      <AlertDialogAction
-                        variant='destructive'
-                        onClick={cleanupServerLogFiles}
-                      >
-                        {t('Confirm Cleanup')}
-                      </AlertDialogAction>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
-              </div>
-            </div>
-          ) : (
-            <Alert>
-              <AlertDescription>
+          <div className='space-y-4'>
+            <div>
+              <h4 className='font-medium'>{t('Server Log Management')}</h4>
+              <p className='text-muted-foreground mt-1 text-xs'>
                 {t(
-                  'Server logging is not enabled (log directory not configured)'
+                  'Manage server log files. Log files accumulate over time; regular cleanup is recommended to free disk space.'
                 )}
-              </AlertDescription>
-            </Alert>
-          ))}
-      </div>
+              </p>
+            </div>
 
-      <AlertDialog open={showConfirmDialog} onOpenChange={setShowConfirmDialog}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{t('Confirm log cleanup')}</AlertDialogTitle>
-            <AlertDialogDescription>
-              {formattedPurgeDate
-                ? t(
-                    'This will permanently remove all log entries created before {{date}}.',
-                    { date: formattedPurgeDate }
-                  )
-                : t(
-                    'This will permanently remove log entries before the selected timestamp.'
-                  )}{' '}
-              {t('This action cannot be undone.')}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={isStartingLogCleanup}>
-              {t('Cancel')}
-            </AlertDialogCancel>
-            <AlertDialogAction
-              variant='destructive'
-              onClick={handleCleanLogs}
-              disabled={isStartingLogCleanup}
-            >
-              {isStartingLogCleanup ? t('Cleaning...') : t('Delete logs')}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+            {serverLogInfo !== null &&
+              (serverLogInfo.enabled ? (
+                <div className='space-y-4'>
+                  <div className='rounded-lg border p-4'>
+                    <div className='grid grid-cols-2 gap-2 text-sm md:grid-cols-4'>
+                      <div>
+                        <span className='text-muted-foreground'>
+                          {t('Log Directory')}:
+                        </span>{' '}
+                        <span className='font-mono text-xs'>
+                          {serverLogInfo.log_dir}
+                        </span>
+                      </div>
+                      <div>
+                        <span className='text-muted-foreground'>
+                          {t('Log File Count')}:
+                        </span>{' '}
+                        {serverLogInfo.file_count}
+                      </div>
+                      <div>
+                        <span className='text-muted-foreground'>
+                          {t('Total Log Size')}:
+                        </span>{' '}
+                        {formatBytes(serverLogInfo.total_size)}
+                      </div>
+                      {serverLogInfo.oldest_time &&
+                        serverLogInfo.newest_time && (
+                          <div>
+                            <span className='text-muted-foreground'>
+                              {t('Date Range')}:
+                            </span>{' '}
+                            {dayjs(serverLogInfo.oldest_time).format(
+                              'YYYY-MM-DD'
+                            )}{' '}
+                            ~{' '}
+                            {dayjs(serverLogInfo.newest_time).format(
+                              'YYYY-MM-DD'
+                            )}
+                          </div>
+                        )}
+                    </div>
+                  </div>
+
+                  <div className='flex flex-wrap items-end gap-3'>
+                    <div className='grid gap-1.5'>
+                      <Label className='text-xs'>{t('Cleanup Mode')}</Label>
+                      <Select
+                        items={[
+                          {
+                            value: 'by_count',
+                            label: t('Retain last N files'),
+                          },
+                          { value: 'by_days', label: t('Retain last N days') },
+                        ]}
+                        value={serverLogCleanupMode}
+                        onValueChange={(value) =>
+                          value !== null && setServerLogCleanupMode(value)
+                        }
+                      >
+                        <SelectTrigger className='w-[160px]'>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent alignItemWithTrigger={false}>
+                          <SelectGroup>
+                            <SelectItem value='by_count'>
+                              {t('Retain last N files')}
+                            </SelectItem>
+                            <SelectItem value='by_days'>
+                              {t('Retain last N days')}
+                            </SelectItem>
+                          </SelectGroup>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className='grid gap-1.5'>
+                      <Label className='text-xs'>
+                        {serverLogCleanupMode === 'by_count'
+                          ? t('Files to Retain')
+                          : t('Days to Retain')}
+                      </Label>
+                      <Input
+                        type='number'
+                        min={1}
+                        max={serverLogCleanupMode === 'by_count' ? 1000 : 3650}
+                        value={serverLogCleanupValue}
+                        onChange={(event) =>
+                          setServerLogCleanupValue(Number(event.target.value))
+                        }
+                        className='w-[120px]'
+                      />
+                    </div>
+                    <AlertDialog>
+                      <AlertDialogTrigger
+                        render={
+                          <Button
+                            type='button'
+                            variant='destructive'
+                            size='sm'
+                            disabled={serverLogCleanupLoading}
+                          />
+                        }
+                      >
+                        {serverLogCleanupLoading
+                          ? t('Cleaning...')
+                          : t('Clean Up Log Files')}
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>
+                            {t('Confirm log file cleanup?')}
+                          </AlertDialogTitle>
+                          <AlertDialogDescription>
+                            {serverLogCleanupMode === 'by_count'
+                              ? t(
+                                  'Only the last {{value}} log files will be retained; the rest will be deleted.',
+                                  {
+                                    value: serverLogCleanupValue,
+                                  }
+                                )
+                              : t(
+                                  'Log files older than {{value}} days will be deleted.',
+                                  {
+                                    value: serverLogCleanupValue,
+                                  }
+                                )}
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>{t('Cancel')}</AlertDialogCancel>
+                          <AlertDialogAction
+                            variant='destructive'
+                            onClick={cleanupServerLogFiles}
+                          >
+                            {t('Confirm Cleanup')}
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
+                  </div>
+                </div>
+              ) : (
+                <Alert>
+                  <AlertDescription>
+                    {t(
+                      'Server logging is not enabled (log directory not configured)'
+                    )}
+                  </AlertDescription>
+                </Alert>
+              ))}
+          </div>
+        </>
+      )}
+
+      {mode === 'maintenance' && (
+        <AlertDialog
+          open={showConfirmDialog}
+          onOpenChange={setShowConfirmDialog}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>{t('Confirm log cleanup')}</AlertDialogTitle>
+              <AlertDialogDescription>
+                {formattedPurgeDate
+                  ? t(
+                      'This will permanently remove all log entries created before {{date}}.',
+                      { date: formattedPurgeDate }
+                    )
+                  : t(
+                      'This will permanently remove log entries before the selected timestamp.'
+                    )}{' '}
+                {t('This action cannot be undone.')}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={isStartingLogCleanup}>
+                {t('Cancel')}
+              </AlertDialogCancel>
+              <AlertDialogAction
+                variant='destructive'
+                onClick={handleCleanLogs}
+                disabled={isStartingLogCleanup}
+              >
+                {isStartingLogCleanup ? t('Cleaning...') : t('Delete logs')}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      )}
     </SettingsSection>
   )
 }

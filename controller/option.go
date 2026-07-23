@@ -310,6 +310,59 @@ func UpdateOption(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"success": false, "message": "诊断日志 body 上限必须是大于 0 的数字"})
 			return
 		}
+	case service.DiagnosticCaptureTempDirKey:
+		if strings.TrimSpace(option.Value.(string)) == "" {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": "diagnostic capture temporary directory cannot be empty"})
+			return
+		}
+	case service.DiagnosticCaptureTempRetentionMinutesKey:
+		minutes, parseErr := strconv.Atoi(strings.TrimSpace(option.Value.(string)))
+		if parseErr != nil || minutes < 1 || minutes > 24*365*10*60 {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": "diagnostic capture temporary file retention must be between 1 and 5256000 minutes"})
+			return
+		}
+	case service.DiagnosticCaptureMaxStorageBytesKey:
+		maxStorageBytes, parseErr := strconv.ParseInt(strings.TrimSpace(option.Value.(string)), 10, 64)
+		if parseErr != nil || maxStorageBytes < 0 || maxStorageBytes > int64(10)<<40 {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": "diagnostic capture storage limit must be between 0 and 10 TB"})
+			return
+		}
+	case service.DiagnosticCaptureCleanupPercentKey:
+		percent, parseErr := strconv.Atoi(strings.TrimSpace(option.Value.(string)))
+		if parseErr != nil || percent < 0 || percent > 90 {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": "diagnostic capture cleanup percentage must be between 0 and 90"})
+			return
+		}
+	case service.DiagnosticCaptureCleanupRateMBKey:
+		rateMB, parseErr := strconv.Atoi(strings.TrimSpace(option.Value.(string)))
+		if parseErr != nil || rateMB < 0 || rateMB > 10240 {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": "diagnostic capture cleanup rate must be between 0 and 10240 MB/s"})
+			return
+		}
+	case service.DiagnosticCaptureMinRetentionMinutesKey:
+		minutes, parseErr := strconv.Atoi(strings.TrimSpace(option.Value.(string)))
+		if parseErr != nil || minutes < 0 || minutes > 24*365*10*60 {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": "diagnostic capture minimum retention must be between 0 and 5256000 minutes"})
+			return
+		}
+	case service.DiagnosticCaptureIncompleteTimeoutMinutesKey:
+		minutes, parseErr := strconv.Atoi(strings.TrimSpace(option.Value.(string)))
+		if parseErr != nil || minutes < 0 || minutes > 24*365*10*60 {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": "diagnostic capture incomplete timeout must be between 0 and 5256000 minutes"})
+			return
+		}
+	case service.DiagnosticCaptureMinRetentionHoursKey:
+		hours, parseErr := strconv.Atoi(strings.TrimSpace(option.Value.(string)))
+		if parseErr != nil || hours < 0 || hours > 24*365*10 {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": "diagnostic capture minimum retention must be between 0 and 87600 hours"})
+			return
+		}
+	case service.DiagnosticCaptureIncompleteTimeoutHoursKey:
+		hours, parseErr := strconv.Atoi(strings.TrimSpace(option.Value.(string)))
+		if parseErr != nil || hours < 0 || hours > 24*365*10 {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": "diagnostic capture incomplete timeout must be between 0 and 87600 hours"})
+			return
+		}
 	case service.ErrorRewriteRulesJSONKey:
 		if _, parseErr := service.ParseErrorRewriteRulesJSON(option.Value.(string)); parseErr != nil {
 			c.JSON(http.StatusOK, gin.H{"success": false, "message": "error rewrite rules JSON is invalid: " + parseErr.Error()})

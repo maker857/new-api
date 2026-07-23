@@ -350,7 +350,11 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	applyHeaderOverrideToRequest(req, headerOverride)
 	outboundBody, diagnosticFlow := service.PrepareDiagnosticOutboundRequest(c, info, req.Method, req.URL.String(), req.Header, req.Body)
 	if outboundBody != nil {
-		req.Body = io.NopCloser(outboundBody)
+		if closer, ok := outboundBody.(io.ReadCloser); ok {
+			req.Body = closer
+		} else {
+			req.Body = io.NopCloser(outboundBody)
+		}
 	}
 	resp, err := doRequest(c, req, info)
 	if err != nil {
@@ -387,7 +391,11 @@ func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBod
 	applyHeaderOverrideToRequest(req, headerOverride)
 	outboundBody, diagnosticFlow := service.PrepareDiagnosticOutboundRequest(c, info, req.Method, req.URL.String(), req.Header, req.Body)
 	if outboundBody != nil {
-		req.Body = io.NopCloser(outboundBody)
+		if closer, ok := outboundBody.(io.ReadCloser); ok {
+			req.Body = closer
+		} else {
+			req.Body = io.NopCloser(outboundBody)
+		}
 	}
 	resp, err := doRequest(c, req, info)
 	if err != nil {
@@ -583,7 +591,11 @@ func DoTaskApiRequest(a TaskAdaptor, c *gin.Context, info *common.RelayInfo, req
 	applyHeaderOverrideToRequest(req, headerOverride)
 	outboundBody, diagnosticFlow := service.PrepareDiagnosticOutboundRequest(c, info, req.Method, req.URL.String(), req.Header, req.Body)
 	if outboundBody != nil {
-		req.Body = io.NopCloser(outboundBody)
+		if closer, ok := outboundBody.(io.ReadCloser); ok {
+			req.Body = closer
+		} else {
+			req.Body = io.NopCloser(outboundBody)
+		}
 	}
 	resp, err := doRequest(c, req, info)
 	if err != nil {

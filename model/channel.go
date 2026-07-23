@@ -76,7 +76,7 @@ func (c ChannelInfo) IsErrorRewriteEnabled() bool {
 }
 
 func (c ChannelInfo) IsDiagnosticCaptureEnabled() bool {
-	return c.DiagnosticCaptureEnabled == nil || *c.DiagnosticCaptureEnabled
+	return c.DiagnosticCaptureEnabled != nil && *c.DiagnosticCaptureEnabled
 }
 
 type ChannelSortOptions struct {

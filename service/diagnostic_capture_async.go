@@ -488,6 +488,8 @@ var diagnosticCaptureTempJanitor struct {
 	running map[string]bool
 }
 
+var diagnosticCaptureTempCleanupMu sync.Mutex
+
 var diagnosticCaptureCleanupLoop sync.Once
 
 func prepareDiagnosticCaptureTempDir(cfg DiagnosticCaptureConfig) {
@@ -524,7 +526,6 @@ func prepareDiagnosticCaptureTempDir(cfg DiagnosticCaptureConfig) {
 			diagnosticCaptureTempJanitor.Unlock()
 		}()
 		deletedCount, freedBytes := cleanupDiagnosticCaptureTempFilesAtRate(tempDir, cutoff, cfg.CleanupRateBytesPerSecond)
-		removeEmptyDiagnosticCaptureTempTree(tempDir)
 		recordDiagnosticCaptureTempCleanup(deletedCount, freedBytes)
 		recordDiagnosticCaptureTempStorageDeletion(cfg, freedBytes)
 	}()
@@ -798,6 +799,7 @@ func retryDiagnosticCaptureFailures(cfg DiagnosticCaptureConfig) {
 		if size, err := diagnosticCaptureDirectorySize(failureDir); err == nil {
 			if os.RemoveAll(failureDir) == nil {
 				enforceDiagnosticCaptureStorage(cfg, "", size, 0)
+				removeEmptyDiagnosticCaptureDirectories(cfg.FailureDir, filepath.Dir(failureDir))
 			}
 		}
 		return filepath.SkipDir
@@ -855,6 +857,14 @@ func cleanupDiagnosticCaptureTempFiles(tempDir string, cutoff time.Time) (int64,
 }
 
 func cleanupDiagnosticCaptureTempFilesAtRate(tempDir string, cutoff time.Time, rateBytesPerSecond int64) (int64, int64) {
+	// Both the periodic janitor and capacity cleanup can request this scan.
+	// Let the active scan finish instead of traversing and deleting the same
+	// temporary tree concurrently.
+	if !diagnosticCaptureTempCleanupMu.TryLock() {
+		return 0, 0
+	}
+	defer diagnosticCaptureTempCleanupMu.Unlock()
+
 	var deletedCount int64
 	var freedBytes int64
 	batchFreedBytes := int64(0)
@@ -945,47 +955,7 @@ func removeDiagnosticCaptureTempFile(cfg DiagnosticCaptureConfig, state *diagnos
 	if err := os.Remove(state.tempPath); err == nil {
 		enforceDiagnosticCaptureStorage(cfg, "", state.savedSize, 0)
 		recordDiagnosticCaptureTempBytesChange(cfg, -state.savedSize)
-		removeEmptyDiagnosticCaptureTempDirectories(cfg.TempDir, filepath.Dir(state.tempPath))
-	}
-}
-
-// removeEmptyDiagnosticCaptureTempDirectories clears the request-scoped spool
-// directory after its final part has been merged into the formal capture.
-func removeEmptyDiagnosticCaptureTempDirectories(tempRoot, dir string) {
-	tempRoot = filepath.Clean(tempRoot)
-	if tempRoot == "." || tempRoot == "" {
-		return
-	}
-	for current := filepath.Clean(dir); strings.HasPrefix(current, tempRoot+string(os.PathSeparator)); current = filepath.Dir(current) {
-		if err := os.Remove(current); err != nil {
-			return
-		}
-	}
-}
-
-func removeEmptyDiagnosticCaptureTempTree(tempRoot string) {
-	tempRoot = filepath.Clean(tempRoot)
-	dirs := make([]string, 0)
-	if err := filepath.WalkDir(tempRoot, func(path string, entry os.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if entry.IsDir() {
-			dirs = append(dirs, path)
-		}
-		return nil
-	}); err != nil {
-		return
-	}
-	sort.Slice(dirs, func(i, j int) bool { return len(dirs[i]) > len(dirs[j]) })
-	for _, dir := range dirs {
-		if filepath.Clean(dir) == tempRoot {
-			continue
-		}
-		if hasDiagnosticActiveTempPathUnder(dir) {
-			continue
-		}
-		_ = os.Remove(dir)
+		removeEmptyDiagnosticCaptureDirectories(cfg.TempDir, filepath.Dir(state.tempPath))
 	}
 }
 

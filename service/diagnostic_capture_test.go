@@ -450,7 +450,17 @@ func TestRemoveDiagnosticCaptureTempFileRemovesEmptySpoolDirectories(t *testing.
 	})
 
 	require.NoDirExists(t, spoolDir)
-	require.NoDirExists(t, tempRoot)
+	require.DirExists(t, tempRoot)
+}
+
+func TestRemoveEmptyDiagnosticCaptureTempTreeRemovesLegacyEmptyDirectories(t *testing.T) {
+	tempRoot := t.TempDir()
+	legacyDir := filepath.Join(tempRoot, "2026-07-24", "legacy-request")
+	require.NoError(t, os.MkdirAll(legacyDir, 0o700))
+
+	removeEmptyDiagnosticCaptureTempTree(tempRoot)
+
+	require.DirExists(t, tempRoot)
 }
 
 func TestDiagnosticCaptureChannelEnabledReturnsFalseWhenChannelLookupFails(t *testing.T) {

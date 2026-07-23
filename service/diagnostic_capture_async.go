@@ -524,6 +524,7 @@ func prepareDiagnosticCaptureTempDir(cfg DiagnosticCaptureConfig) {
 			diagnosticCaptureTempJanitor.Unlock()
 		}()
 		deletedCount, freedBytes := cleanupDiagnosticCaptureTempFilesAtRate(tempDir, cutoff, cfg.CleanupRateBytesPerSecond)
+		removeEmptyDiagnosticCaptureTempTree(tempDir)
 		recordDiagnosticCaptureTempCleanup(deletedCount, freedBytes)
 		recordDiagnosticCaptureTempStorageDeletion(cfg, freedBytes)
 	}()
@@ -955,13 +956,36 @@ func removeEmptyDiagnosticCaptureTempDirectories(tempRoot, dir string) {
 	if tempRoot == "." || tempRoot == "" {
 		return
 	}
-	for current := filepath.Clean(dir); current == tempRoot || strings.HasPrefix(current, tempRoot+string(os.PathSeparator)); current = filepath.Dir(current) {
+	for current := filepath.Clean(dir); strings.HasPrefix(current, tempRoot+string(os.PathSeparator)); current = filepath.Dir(current) {
 		if err := os.Remove(current); err != nil {
 			return
 		}
-		if current == tempRoot {
-			return
+	}
+}
+
+func removeEmptyDiagnosticCaptureTempTree(tempRoot string) {
+	tempRoot = filepath.Clean(tempRoot)
+	dirs := make([]string, 0)
+	if err := filepath.WalkDir(tempRoot, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return nil
 		}
+		if entry.IsDir() {
+			dirs = append(dirs, path)
+		}
+		return nil
+	}); err != nil {
+		return
+	}
+	sort.Slice(dirs, func(i, j int) bool { return len(dirs[i]) > len(dirs[j]) })
+	for _, dir := range dirs {
+		if filepath.Clean(dir) == tempRoot {
+			continue
+		}
+		if hasDiagnosticActiveTempPathUnder(dir) {
+			continue
+		}
+		_ = os.Remove(dir)
 	}
 }
 

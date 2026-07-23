@@ -380,7 +380,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   system_prompt: '',
   system_prompt_override: false,
   error_rewrite_enabled: true,
-  diagnostic_capture_enabled: true,
+  diagnostic_capture_enabled: false,
   // Type-specific settings
   is_enterprise_account: false,
   vertex_key_type: 'json',
@@ -413,8 +413,8 @@ export function transformChannelToFormDefaults(
 ): ChannelFormValues {
   // Parse channel extra settings from setting field
   const errorRewriteEnabled = channel.channel_info?.error_rewrite_enabled !== false
-  const diagnosticCaptureEnabled =
-    channel.channel_info?.diagnostic_capture_enabled !== false
+	const diagnosticCaptureEnabled =
+		channel.channel_info?.diagnostic_capture_enabled === true
   let extraSettings = {
     force_format: false,
     thinking_to_content: false,
@@ -736,7 +736,7 @@ export function transformFormDataToCreatePayload(formData: ChannelFormValues): {
       multi_key_polling_index: 0,
       multi_key_mode: formData.multi_key_type || 'random',
       error_rewrite_enabled: formData.error_rewrite_enabled !== false,
-      diagnostic_capture_enabled: formData.diagnostic_capture_enabled !== false,
+		diagnostic_capture_enabled: formData.diagnostic_capture_enabled === true,
     },
   }
 
@@ -791,7 +791,7 @@ export function transformFormDataToUpdatePayload(
       multi_key_polling_index: 0,
       multi_key_mode: formData.multi_key_type || 'random',
       error_rewrite_enabled: formData.error_rewrite_enabled !== false,
-      diagnostic_capture_enabled: formData.diagnostic_capture_enabled !== false,
+		diagnostic_capture_enabled: formData.diagnostic_capture_enabled === true,
     },
   }
 

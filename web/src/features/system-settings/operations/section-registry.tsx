@@ -26,6 +26,72 @@ import { UpdateCheckerSection } from '../maintenance/update-checker-section'
 import type { OperationsSettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
 
+function buildLogSettingsSection(
+  settings: OperationsSettings,
+  mode: 'maintenance' | 'capture'
+) {
+  return (
+    <LogSettingsSection
+      mode={mode}
+      defaultEnabled={Boolean(settings.LogConsumeEnabled)}
+      diagnosticDefaults={{
+        DiagnosticCaptureEnabled: Boolean(settings.DiagnosticCaptureEnabled),
+        DiagnosticCaptureMode: settings.DiagnosticCaptureMode ?? 'full',
+        DiagnosticCaptureDir: settings.DiagnosticCaptureDir ?? 'captures',
+        DiagnosticCaptureTempDir:
+          settings.DiagnosticCaptureTempDir ?? 'diagnostic-capture-temp',
+        DiagnosticCaptureTempRetentionMinutes:
+          settings.DiagnosticCaptureTempRetentionMinutes ?? 60,
+        DiagnosticCaptureAutoCleanupEnabled: Boolean(
+          settings.DiagnosticCaptureAutoCleanupEnabled
+        ),
+        DiagnosticCaptureMaxStorageBytes:
+          settings.DiagnosticCaptureMaxStorageBytes ?? 0,
+        DiagnosticCaptureCleanupPercent:
+          settings.DiagnosticCaptureCleanupPercent ?? 0,
+        DiagnosticCaptureCleanupRateMB:
+          settings.DiagnosticCaptureCleanupRateMB ?? 0,
+        DiagnosticCaptureMinRetentionMinutes:
+          settings.DiagnosticCaptureMinRetentionMinutes === 0 &&
+          (settings.DiagnosticCaptureMinRetentionHours ?? 0) > 0
+            ? (settings.DiagnosticCaptureMinRetentionHours ?? 0) * 60
+            : (settings.DiagnosticCaptureMinRetentionMinutes ?? 0),
+        DiagnosticCaptureIncompleteTimeoutMinutes:
+          settings.DiagnosticCaptureIncompleteTimeoutMinutes === 1440 &&
+          (settings.DiagnosticCaptureIncompleteTimeoutHours ?? 24) !== 24
+            ? (settings.DiagnosticCaptureIncompleteTimeoutHours ?? 24) * 60
+            : (settings.DiagnosticCaptureIncompleteTimeoutMinutes ?? 1440),
+        DiagnosticCaptureMinRetentionHours:
+          settings.DiagnosticCaptureMinRetentionHours ?? 0,
+        DiagnosticCaptureIncompleteTimeoutHours:
+          settings.DiagnosticCaptureIncompleteTimeoutHours ?? 24,
+        DiagnosticCapturePaths: settings.DiagnosticCapturePaths ?? '',
+        ErrorRewriteEnabled: Boolean(settings.ErrorRewriteEnabled),
+        ErrorRewriteSource: settings.ErrorRewriteSource ?? 'local',
+        ErrorRewriteRulesJSON: settings.ErrorRewriteRulesJSON ?? '[]',
+        ErrorRewriteMonitorRulesJSON:
+          settings.ErrorRewriteMonitorRulesJSON ?? '[]',
+        ErrorRewriteMonitorRulesVersion:
+          settings.ErrorRewriteMonitorRulesVersion ?? '0',
+        ErrorRewriteMonitorLastPullAt:
+          settings.ErrorRewriteMonitorLastPullAt ?? '0',
+        ErrorRewriteSyncToken: settings.ErrorRewriteSyncToken ?? '',
+        ErrorRewriteRulesURL: settings.ErrorRewriteRulesURL ?? '',
+        ErrorRewriteFallbackMessage:
+          settings.ErrorRewriteFallbackMessage ??
+          'request blocked by monitoring system',
+        ErrorRewriteRefreshSeconds: settings.ErrorRewriteRefreshSeconds ?? 60,
+        ErrorRewriteRequestTimeoutMS:
+          settings.ErrorRewriteRequestTimeoutMS ?? 3000,
+        ErrorRewriteSQLDriver: settings.ErrorRewriteSQLDriver ?? 'mysql',
+        ErrorRewriteSQLQuery:
+          settings.ErrorRewriteSQLQuery ??
+          'SELECT keyword, rule_type, message FROM error_rewrite_rules WHERE enabled = 1',
+      }}
+    />
+  )
+}
+
 const OPERATIONS_SECTIONS = [
   {
     id: 'behavior',
@@ -95,43 +161,14 @@ const OPERATIONS_SECTIONS = [
   {
     id: 'logs',
     titleKey: 'Log Maintenance',
-    build: (settings: OperationsSettings) => (
-      <LogSettingsSection
-        defaultEnabled={Boolean(settings.LogConsumeEnabled)}
-        diagnosticDefaults={{
-          DiagnosticCaptureEnabled: Boolean(
-            settings.DiagnosticCaptureEnabled
-          ),
-          DiagnosticCaptureMode: settings.DiagnosticCaptureMode ?? 'full',
-          DiagnosticCaptureDir: settings.DiagnosticCaptureDir ?? 'captures',
-          DiagnosticCaptureMaxBodyMB:
-            settings.DiagnosticCaptureMaxBodyMB ?? 10,
-          DiagnosticCapturePaths: settings.DiagnosticCapturePaths ?? '',
-          ErrorRewriteEnabled: Boolean(settings.ErrorRewriteEnabled),
-          ErrorRewriteSource: settings.ErrorRewriteSource ?? 'local',
-          ErrorRewriteRulesJSON: settings.ErrorRewriteRulesJSON ?? '[]',
-          ErrorRewriteMonitorRulesJSON:
-            settings.ErrorRewriteMonitorRulesJSON ?? '[]',
-          ErrorRewriteMonitorRulesVersion:
-            settings.ErrorRewriteMonitorRulesVersion ?? '0',
-          ErrorRewriteMonitorLastPullAt:
-            settings.ErrorRewriteMonitorLastPullAt ?? '0',
-          ErrorRewriteSyncToken: settings.ErrorRewriteSyncToken ?? '',
-          ErrorRewriteRulesURL: settings.ErrorRewriteRulesURL ?? '',
-          ErrorRewriteFallbackMessage:
-            settings.ErrorRewriteFallbackMessage ??
-            'request blocked by monitoring system',
-          ErrorRewriteRefreshSeconds:
-            settings.ErrorRewriteRefreshSeconds ?? 60,
-          ErrorRewriteRequestTimeoutMS:
-            settings.ErrorRewriteRequestTimeoutMS ?? 3000,
-          ErrorRewriteSQLDriver: settings.ErrorRewriteSQLDriver ?? 'mysql',
-          ErrorRewriteSQLQuery:
-            settings.ErrorRewriteSQLQuery ??
-            'SELECT keyword, rule_type, message FROM error_rewrite_rules WHERE enabled = 1',
-        }}
-      />
-    ),
+    build: (settings: OperationsSettings) =>
+      buildLogSettingsSection(settings, 'maintenance'),
+  },
+  {
+    id: 'capture',
+    titleKey: 'Log Capture',
+    build: (settings: OperationsSettings) =>
+      buildLogSettingsSection(settings, 'capture'),
   },
   {
     id: 'performance',

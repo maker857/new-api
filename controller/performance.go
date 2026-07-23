@@ -13,6 +13,8 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 )
 
@@ -262,6 +264,98 @@ func GetLogFiles(c *gin.Context) {
 		resp.NewestTime = &newest
 	}
 	common.ApiSuccess(c, resp)
+}
+
+func GetDiagnosticCaptureStorage(c *gin.Context) {
+	status, err := service.GetDiagnosticCaptureStorageStatus()
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, status)
+}
+
+// DiagnosticCaptureSettingsRequest contains the complete set of options that
+// control diagnostic capture. Keeping this as one request prevents a partially
+// saved capture configuration when validation or persistence fails.
+type DiagnosticCaptureSettingsRequest struct {
+	Enabled                  bool   `json:"enabled"`
+	CaptureDir               string `json:"capture_dir"`
+	TempDir                  string `json:"temp_dir"`
+	TempRetentionMinutes     int64  `json:"temp_retention_minutes"`
+	AutoCleanupEnabled       bool   `json:"auto_cleanup_enabled"`
+	MaxStorageBytes          int64  `json:"max_storage_bytes"`
+	CleanupPercent           int64  `json:"cleanup_percent"`
+	CleanupRateMB            int64  `json:"cleanup_rate_mb"`
+	MinRetentionMinutes      int64  `json:"min_retention_minutes"`
+	IncompleteTimeoutMinutes int64  `json:"incomplete_timeout_minutes"`
+	Paths                    string `json:"paths"`
+}
+
+func UpdateDiagnosticCaptureSettings(c *gin.Context) {
+	var request DiagnosticCaptureSettingsRequest
+	if err := common.DecodeJson(c.Request.Body, &request); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	const maxRetentionMinutes = int64(24 * 365 * 10 * 60)
+	if strings.TrimSpace(request.CaptureDir) == "" {
+		common.ApiErrorMsg(c, "diagnostic capture directory cannot be empty")
+		return
+	}
+	if strings.TrimSpace(request.TempDir) == "" {
+		common.ApiErrorMsg(c, "diagnostic capture temporary directory cannot be empty")
+		return
+	}
+	if request.TempRetentionMinutes < 1 || request.TempRetentionMinutes > maxRetentionMinutes {
+		common.ApiErrorMsg(c, "diagnostic capture temporary file retention must be between 1 and 5256000 minutes")
+		return
+	}
+	if request.MaxStorageBytes < 0 || request.MaxStorageBytes > int64(10)<<40 {
+		common.ApiErrorMsg(c, "diagnostic capture storage limit must be between 0 and 10 TB")
+		return
+	}
+	if request.CleanupPercent < 0 || request.CleanupPercent > 90 {
+		common.ApiErrorMsg(c, "diagnostic capture cleanup percentage must be between 0 and 90")
+		return
+	}
+	if request.CleanupRateMB < 0 || request.CleanupRateMB > 10240 {
+		common.ApiErrorMsg(c, "diagnostic capture cleanup rate must be between 0 and 10240 MB/s")
+		return
+	}
+	if request.MinRetentionMinutes < 0 || request.MinRetentionMinutes > maxRetentionMinutes {
+		common.ApiErrorMsg(c, "diagnostic capture minimum retention must be between 0 and 5256000 minutes")
+		return
+	}
+	if request.IncompleteTimeoutMinutes < 0 || request.IncompleteTimeoutMinutes > maxRetentionMinutes {
+		common.ApiErrorMsg(c, "diagnostic capture incomplete timeout must be between 0 and 5256000 minutes")
+		return
+	}
+
+	values := map[string]string{
+		service.DiagnosticCaptureEnabledKey:                  strconv.FormatBool(request.Enabled),
+		service.DiagnosticCaptureModeKey:                     "full",
+		service.DiagnosticCaptureDirKey:                      strings.TrimSpace(request.CaptureDir),
+		service.DiagnosticCaptureTempDirKey:                  strings.TrimSpace(request.TempDir),
+		service.DiagnosticCaptureTempRetentionMinutesKey:     strconv.FormatInt(request.TempRetentionMinutes, 10),
+		service.DiagnosticCaptureAutoCleanupEnabledKey:       strconv.FormatBool(request.AutoCleanupEnabled),
+		service.DiagnosticCaptureMaxStorageBytesKey:          strconv.FormatInt(request.MaxStorageBytes, 10),
+		service.DiagnosticCaptureCleanupPercentKey:           strconv.FormatInt(request.CleanupPercent, 10),
+		service.DiagnosticCaptureCleanupRateMBKey:            strconv.FormatInt(request.CleanupRateMB, 10),
+		service.DiagnosticCaptureMinRetentionMinutesKey:      strconv.FormatInt(request.MinRetentionMinutes, 10),
+		service.DiagnosticCaptureIncompleteTimeoutMinutesKey: strconv.FormatInt(request.IncompleteTimeoutMinutes, 10),
+		service.DiagnosticCaptureMinRetentionHoursKey:        strconv.FormatInt(request.MinRetentionMinutes/60, 10),
+		service.DiagnosticCaptureIncompleteTimeoutHoursKey:   strconv.FormatInt(request.IncompleteTimeoutMinutes/60, 10),
+		service.DiagnosticCapturePathsKey:                    strings.TrimSpace(request.Paths),
+	}
+	if err := model.UpdateOptionsBulk(values); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	recordManageAudit(c, "diagnostic_capture.settings.update", nil)
+	common.ApiSuccess(c, request)
 }
 
 // CleanupLogFiles 清理过期日志文件

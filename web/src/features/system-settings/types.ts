@@ -39,6 +39,20 @@ export type UpdateOptionResponse = {
   message: string
 }
 
+export type DiagnosticCaptureSettingsRequest = {
+  enabled: boolean
+  capture_dir: string
+  temp_dir: string
+  temp_retention_minutes: number
+  auto_cleanup_enabled: boolean
+  max_storage_bytes: number
+  cleanup_percent: number
+  cleanup_rate_mb: number
+  min_retention_minutes: number
+  incomplete_timeout_minutes: number
+  paths: string
+}
+
 export type ConfirmPaymentComplianceResponse = {
   success: boolean
   message: string
@@ -350,7 +364,16 @@ export type OperationsSettings = {
   DiagnosticCaptureEnabled: boolean
   DiagnosticCaptureMode: string
   DiagnosticCaptureDir: string
-  DiagnosticCaptureMaxBodyMB: number
+  DiagnosticCaptureTempDir: string
+  DiagnosticCaptureTempRetentionMinutes: number
+  DiagnosticCaptureAutoCleanupEnabled: boolean
+  DiagnosticCaptureMaxStorageBytes: number
+  DiagnosticCaptureCleanupPercent: number
+  DiagnosticCaptureCleanupRateMB: number
+  DiagnosticCaptureMinRetentionMinutes: number
+  DiagnosticCaptureIncompleteTimeoutMinutes: number
+  DiagnosticCaptureMinRetentionHours: number
+  DiagnosticCaptureIncompleteTimeoutHours: number
   DiagnosticCapturePaths: string
   ErrorRewriteEnabled: boolean
   ErrorRewriteSource: string

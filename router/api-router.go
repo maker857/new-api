@@ -225,6 +225,8 @@ func SetApiRouter(router *gin.Engine) {
 			performanceRoute.POST("/reset_stats", controller.ResetPerformanceStats)
 			performanceRoute.POST("/gc", controller.ForceGC)
 			performanceRoute.GET("/logs", controller.GetLogFiles)
+			performanceRoute.GET("/diagnostic-capture-storage", controller.GetDiagnosticCaptureStorage)
+			performanceRoute.PUT("/diagnostic-capture-settings", controller.UpdateDiagnosticCaptureSettings)
 			performanceRoute.DELETE("/logs", controller.CleanupLogFiles)
 		}
 		apiRouter.POST("/error-rewrite/monitor-rules/sync", controller.SyncErrorRewriteMonitorRules)

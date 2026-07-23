@@ -1009,6 +1009,7 @@ func cleanupDiagnosticCaptureStorageByRoots(totalBytes int64, cfg DiagnosticCapt
 			}
 		}
 		_ = dir.Close()
+		removeEmptyDiagnosticCaptureDirectories(filepath.Dir(filepath.Dir(day.path)), day.path)
 	}
 	if batchCount > 0 && cfg.CleanupRateBytesPerSecond > 0 {
 		expected := diagnosticCaptureRateDuration(batchFreedBytes, cfg.CleanupRateBytesPerSecond)
@@ -1017,6 +1018,22 @@ func cleanupDiagnosticCaptureStorageByRoots(totalBytes int64, cfg DiagnosticCapt
 		}
 	}
 	return totalBytes, deletedCount, freedBytes, lastDeletedAt
+}
+
+// removeEmptyDiagnosticCaptureDirectories removes empty directories below root
+// while preserving the configured root itself. It is used after deleting a
+// request-scoped directory so retention cleanup does not leave empty channel or
+// date directories behind.
+func removeEmptyDiagnosticCaptureDirectories(root, dir string) {
+	root = filepath.Clean(root)
+	if root == "." || root == "" {
+		return
+	}
+	for current := filepath.Clean(dir); strings.HasPrefix(current, root+string(os.PathSeparator)); current = filepath.Dir(current) {
+		if err := os.Remove(current); err != nil {
+			return
+		}
+	}
 }
 
 func diagnosticCaptureDayDirs(captureDir string) ([]diagnosticCaptureDayDir, error) {

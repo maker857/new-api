@@ -471,6 +471,22 @@ func TestRemoveDiagnosticCaptureTempFileRemovesEmptySpoolDirectories(t *testing.
 	require.DirExists(t, tempRoot)
 }
 
+func TestMoveDiagnosticCaptureFragmentRemovesSource(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "capture-temp", "part.part")
+	destination := filepath.Join(root, "diagnostic-capture-failures", "000.part")
+	require.NoError(t, os.MkdirAll(filepath.Dir(source), 0o700))
+	require.NoError(t, os.MkdirAll(filepath.Dir(destination), 0o700))
+	require.NoError(t, os.WriteFile(source, []byte("captured body"), 0o600))
+
+	require.NoError(t, moveDiagnosticCaptureFragment(source, destination))
+	_, err := os.Stat(source)
+	require.True(t, os.IsNotExist(err))
+	body, err := os.ReadFile(destination)
+	require.NoError(t, err)
+	require.Equal(t, []byte("captured body"), body)
+}
+
 func TestDiagnosticCaptureChannelEnabledReturnsFalseWhenChannelLookupFails(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())

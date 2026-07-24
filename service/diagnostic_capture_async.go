@@ -3,6 +3,7 @@ package service
 import (
 	"bufio"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -652,7 +654,7 @@ func persistDiagnosticCaptureFailure(cfg DiagnosticCaptureConfig, flow *Diagnost
 			continue
 		}
 		destination := filepath.Join(dir, partName)
-		if err := os.Rename(state.tempPath, destination); err != nil {
+		if err := moveDiagnosticCaptureFragment(state.tempPath, destination); err != nil {
 			return err
 		}
 		movedBytes += state.savedSize
@@ -661,6 +663,45 @@ func persistDiagnosticCaptureFailure(cfg DiagnosticCaptureConfig, flow *Diagnost
 		state.tempPath = destination
 	}
 	return nil
+}
+
+// moveDiagnosticCaptureFragment keeps retry data available when the temporary
+// and failure directories are separate filesystem mounts. os.Rename is the
+// normal fast path; Docker volume mounts require copy-and-remove instead.
+func moveDiagnosticCaptureFragment(source, destination string) error {
+	if err := os.Rename(source, destination); err == nil {
+		return nil
+	} else if !errors.Is(err, syscall.EXDEV) {
+		return err
+	}
+
+	if _, err := os.Stat(destination); err == nil {
+		return fmt.Errorf("diagnostic capture fragment destination already exists: %s", destination)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	sourceFile, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+	temporaryFile, err := os.CreateTemp(filepath.Dir(destination), ".capture-fragment-*.tmp")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporaryFile.Name()
+	defer os.Remove(temporaryPath)
+	if _, err = io.CopyBuffer(temporaryFile, sourceFile, make([]byte, diagnosticCaptureChunkSize)); err != nil {
+		_ = temporaryFile.Close()
+		return err
+	}
+	if err = temporaryFile.Close(); err != nil {
+		return err
+	}
+	if err = os.Rename(temporaryPath, destination); err != nil {
+		return err
+	}
+	return os.Remove(source)
 }
 
 // writeDiagnosticCaptureFailureRecord protects the retry index independently
@@ -774,7 +815,7 @@ func retryDiagnosticCaptureFailures(cfg DiagnosticCaptureConfig) {
 				return filepath.SkipDir
 			}
 			destination := filepath.Join(failureDir, filepath.Base(part.FileName))
-			if err := os.Rename(tempPath, destination); err != nil {
+			if err := moveDiagnosticCaptureFragment(tempPath, destination); err != nil {
 				record.Retryable = false
 				record.LastError = "capture retry stopped: failed to restore retained body fragment: " + err.Error()
 				record.LastAttemptAt = time.Now().UnixNano()

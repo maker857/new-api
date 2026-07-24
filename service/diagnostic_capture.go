@@ -409,21 +409,32 @@ func StartDiagnosticCapture(c *gin.Context) {
 }
 
 func PrepareDiagnosticOutboundRequest(c *gin.Context, info *relaycommon.RelayInfo, method, url string, headers http.Header, body io.Reader) (io.Reader, *DiagnosticExchange) {
-	cfg := DiagnosticCaptureConfigFromOptions()
-	if !cfg.Enabled || c == nil || c.Request == nil || !cfg.shouldCapturePath(c.Request.URL.Path) {
+	if c == nil || c.Request == nil {
 		return body, nil
+	}
+	flowValue, _ := c.Get("diagnostic_flow")
+	flow, _ := flowValue.(*DiagnosticFlow)
+	if flow == nil || flow.session == nil {
+		cfg := DiagnosticCaptureConfigFromOptions()
+		if !cfg.Enabled || !cfg.shouldCapturePath(c.Request.URL.Path) {
+			return body, nil
+		}
+		channelID := 0
+		if info != nil && info.ChannelMeta != nil {
+			channelID = info.ChannelMeta.ChannelId
+		}
+		if !diagnosticCaptureChannelEnabled(c, channelID) {
+			return body, nil
+		}
+		StartDiagnosticCapture(c)
+		flow = getOrCreateDiagnosticFlow(c)
+		if flow.session == nil {
+			return body, nil
+		}
 	}
 	channelID := 0
 	if info != nil && info.ChannelMeta != nil {
 		channelID = info.ChannelMeta.ChannelId
-	}
-	if !diagnosticCaptureChannelEnabled(c, channelID) {
-		return body, nil
-	}
-	StartDiagnosticCapture(c)
-	flow := getOrCreateDiagnosticFlow(c)
-	if flow.session == nil {
-		return body, nil
 	}
 	channel := ""
 	if info != nil && info.ChannelMeta != nil {
@@ -442,7 +453,7 @@ func PrepareDiagnosticOutboundRequest(c *gin.Context, info *relaycommon.RelayInf
 		"url":         url,
 		"headers":     redactHeaders(headers),
 	})
-	if cfg.Mode == "full" && body != nil {
+	if flow.session.cfg.Mode == "full" && body != nil {
 		body = newDiagnosticCaptureStream(body, flow.session, partID)
 	} else {
 		flow.session.endPart(partID, nil, 0, true)
@@ -455,13 +466,6 @@ func WrapDiagnosticOutboundResponse(c *gin.Context, resp *http.Response, exchang
 		return
 	}
 	flow := exchange.Flow
-	cfg := DiagnosticCaptureConfigFromOptions()
-	if !cfg.Enabled {
-		return
-	}
-	if !diagnosticCaptureChannelEnabled(c, exchange.ChannelID) {
-		return
-	}
 	if flow.session == nil {
 		return
 	}
@@ -473,7 +477,7 @@ func WrapDiagnosticOutboundResponse(c *gin.Context, resp *http.Response, exchang
 		"duration_ms": time.Since(exchange.Started).Milliseconds(),
 		"headers":     redactHeaders(resp.Header),
 	})
-	if cfg.Mode != "full" || resp.Body == nil {
+	if flow.session.cfg.Mode != "full" || resp.Body == nil {
 		flow.session.endPart(partID, nil, 0, true)
 		return
 	}

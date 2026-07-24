@@ -271,10 +271,13 @@ func getChatDetail(a *Adaptor, c *gin.Context, info *relaycommon.RelayInfo) (*ht
 	if err != nil {
 		return nil, fmt.Errorf("setup request header failed: %w", err)
 	}
+	diagnosticFlow := service.PrepareDiagnosticHTTPOutboundRequest(c, info, req)
 	resp, err := doRequest(req, info)
 	if err != nil {
+		service.RecordDiagnosticOutboundFailure(diagnosticFlow, err)
 		return nil, fmt.Errorf("do request failed: %w", err)
 	}
+	service.WrapDiagnosticOutboundResponse(c, resp, diagnosticFlow)
 	return resp, nil
 }
 

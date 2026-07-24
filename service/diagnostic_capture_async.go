@@ -780,6 +780,11 @@ func retryDiagnosticCaptureFailures(cfg DiagnosticCaptureConfig) {
 			_ = updateDiagnosticCaptureFailureRecord(cfg, path, record)
 			return filepath.SkipDir
 		}
+		// A retry writes a formal record for an older request. Keep that request
+		// out of capacity cleanup until the retry either completes or records its
+		// updated failure state.
+		markDiagnosticCaptureActive(record.TraceID)
+		defer markDiagnosticCaptureInactive(record.TraceID)
 		flow := &DiagnosticFlow{TraceID: record.TraceID, Channel: record.Channel, Started: time.Unix(0, record.StartedAt)}
 		parts := make([]*diagnosticCapturePartState, 0, len(record.Parts))
 		for _, part := range record.Parts {
@@ -799,6 +804,10 @@ func retryDiagnosticCaptureFailures(cfg DiagnosticCaptureConfig) {
 			parts = append(parts, state)
 		}
 		failureDir := filepath.Dir(path)
+		// Recovery can race the temporary-file janitor after a restart, when
+		// no in-memory activity marker exists yet. Claim and move each retained
+		// fragment under the same lock used by the janitor.
+		diagnosticCaptureTempCleanupMu.Lock()
 		for index, part := range record.Parts {
 			if index >= len(parts) || part.FileName == "" {
 				continue
@@ -808,6 +817,7 @@ func retryDiagnosticCaptureFailures(cfg DiagnosticCaptureConfig) {
 			}
 			tempPath := diagnosticCaptureFailureTempPartPath(cfg, flow, part)
 			if tempPath == "" {
+				diagnosticCaptureTempCleanupMu.Unlock()
 				record.Retryable = false
 				record.LastError = "capture retry stopped: retained body fragment is missing"
 				record.LastAttemptAt = time.Now().UnixNano()
@@ -816,6 +826,8 @@ func retryDiagnosticCaptureFailures(cfg DiagnosticCaptureConfig) {
 			}
 			destination := filepath.Join(failureDir, filepath.Base(part.FileName))
 			if err := moveDiagnosticCaptureFragment(tempPath, destination); err != nil {
+				markDiagnosticTempFileInactive(tempPath)
+				diagnosticCaptureTempCleanupMu.Unlock()
 				record.Retryable = false
 				record.LastError = "capture retry stopped: failed to restore retained body fragment: " + err.Error()
 				record.LastAttemptAt = time.Now().UnixNano()
@@ -826,6 +838,7 @@ func retryDiagnosticCaptureFailures(cfg DiagnosticCaptureConfig) {
 			recordDiagnosticCaptureTempBytesChange(cfg, -parts[index].savedSize)
 			parts[index].tempPath = destination
 		}
+		diagnosticCaptureTempCleanupMu.Unlock()
 		record.AttemptCount++
 		record.LastAttemptAt = now.UnixNano()
 		if err := writeDiagnosticCaptureSession(cfg, flow, parts); err != nil {
@@ -881,6 +894,7 @@ func diagnosticCaptureFailureTempPartPath(cfg DiagnosticCaptureConfig, flow *Dia
 	if part.TempFileName != "" {
 		candidate := filepath.Join(dir, filepath.Base(part.TempFileName))
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			markDiagnosticTempFileActive(candidate)
 			return candidate
 		}
 	}
@@ -893,7 +907,9 @@ func diagnosticCaptureFailureTempPartPath(cfg DiagnosticCaptureConfig, flow *Dia
 		if entry.IsDir() || !strings.HasPrefix(entry.Name(), prefix) || !strings.HasSuffix(entry.Name(), ".part") {
 			continue
 		}
-		return filepath.Join(dir, entry.Name())
+		candidate := filepath.Join(dir, entry.Name())
+		markDiagnosticTempFileActive(candidate)
+		return candidate
 	}
 	return ""
 }

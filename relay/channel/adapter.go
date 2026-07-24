@@ -81,3 +81,9 @@ type TaskAdaptor interface {
 type OpenAIVideoConverter interface {
 	ConvertToOpenAIVideo(originTask *model.Task) ([]byte, error)
 }
+
+// DiagnosticTaskFetcher is implemented by task channels that issue a live
+// upstream status request while handling a downstream task query.
+type DiagnosticTaskFetcher interface {
+	FetchTaskWithDiagnosticCapture(c *gin.Context, baseURL, key string, body map[string]any, proxy string) (*http.Response, error)
+}

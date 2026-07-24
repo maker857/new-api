@@ -505,29 +505,41 @@ func (m *Message) readPayload(buf *bytes.Buffer) error {
 }
 
 func ReceiveMessage(conn *websocket.Conn) (*Message, error) {
+	message, _, err := ReceiveMessageFrame(conn)
+	return message, err
+}
+
+// ReceiveMessageFrame returns both the decoded protocol message and the exact
+// WebSocket payload used to create it. Callers that need diagnostic capture can
+// retain the original upstream frame without changing its decoding behavior.
+func ReceiveMessageFrame(conn *websocket.Conn) (*Message, []byte, error) {
 	mt, frame, err := conn.ReadMessage()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if mt != websocket.BinaryMessage && mt != websocket.TextMessage {
-		return nil, fmt.Errorf("unexpected Websocket message type: %d", mt)
+		return nil, nil, fmt.Errorf("unexpected Websocket message type: %d", mt)
 	}
 	msg, err := NewMessageFromBytes(frame)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return msg, nil
+	return msg, frame, nil
 }
 
 func FullClientRequest(conn *websocket.Conn, payload []byte) error {
-	msg, err := NewMessage(MsgTypeFullClientRequest, MsgTypeFlagNoSeq)
-	if err != nil {
-		return err
-	}
-	msg.Payload = payload
-	frame, err := msg.Marshal()
+	frame, err := FullClientRequestFrame(payload)
 	if err != nil {
 		return err
 	}
 	return conn.WriteMessage(websocket.BinaryMessage, frame)
+}
+
+func FullClientRequestFrame(payload []byte) ([]byte, error) {
+	msg, err := NewMessage(MsgTypeFullClientRequest, MsgTypeFlagNoSeq)
+	if err != nil {
+		return nil, err
+	}
+	msg.Payload = payload
+	return msg.Marshal()
 }

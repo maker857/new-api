@@ -98,12 +98,15 @@ func uploadDifyFile(c *gin.Context, info *relaycommon.RelayInfo, user string, me
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", info.ApiKey))
 
 		// Send request
+		diagnosticFlow := service.PrepareDiagnosticHTTPOutboundRequest(c, info, req)
 		client := service.GetHttpClient()
 		resp, err := client.Do(req)
 		if err != nil {
+			service.RecordDiagnosticOutboundFailure(diagnosticFlow, err)
 			common.SysLog("failed to send request: " + err.Error())
 			return nil
 		}
+		service.WrapDiagnosticOutboundResponse(c, resp, diagnosticFlow)
 		defer resp.Body.Close()
 
 		// Parse response

@@ -148,6 +148,10 @@ func newDiagnosticCaptureSession(cfg DiagnosticCaptureConfig, flow *DiagnosticFl
 	}
 	session.spoolDir = filepath.Join(tempRoot, flow.Started.Format("2006-01-02"), session.activeTraceID)
 	markDiagnosticCaptureActive(session.activeTraceID)
+	// The janitor also removes empty request directories. Mark the directory
+	// before the first part file exists so it cannot win the small race between
+	// MkdirAll and CreateTemp below.
+	markDiagnosticTempFileActive(session.spoolDir)
 	go session.dispatch()
 	go session.run()
 	return session
@@ -296,6 +300,7 @@ func (s *diagnosticCaptureSession) cancel(flow *DiagnosticFlow) {
 
 func (s *diagnosticCaptureSession) run() {
 	defer markDiagnosticCaptureInactive(s.activeTraceID)
+	defer markDiagnosticTempFileInactive(s.spoolDir)
 	parts := make(map[string]*diagnosticCapturePartState)
 	orderedParts := make([]*diagnosticCapturePartState, 0, 4)
 	for event := range s.events {
@@ -936,11 +941,12 @@ func isDiagnosticTempFileActive(path string) bool {
 }
 
 func hasDiagnosticActiveTempPathUnder(path string) bool {
-	prefix := filepath.Clean(path) + string(os.PathSeparator)
+	path = filepath.Clean(path)
+	prefix := path + string(os.PathSeparator)
 	diagnosticActiveTempFiles.RLock()
 	defer diagnosticActiveTempFiles.RUnlock()
 	for activePath := range diagnosticActiveTempFiles.paths {
-		if strings.HasPrefix(activePath, prefix) {
+		if activePath == path || strings.HasPrefix(activePath, prefix) {
 			return true
 		}
 	}

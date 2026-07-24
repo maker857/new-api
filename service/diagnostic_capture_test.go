@@ -443,6 +443,18 @@ func TestCleanupDiagnosticCaptureTempFilesKeepsActiveFiles(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestCleanupDiagnosticCaptureTempFilesKeepsActiveRequestDirectory(t *testing.T) {
+	tempRoot := t.TempDir()
+	spoolDir := filepath.Join(tempRoot, "2026-07-24", "active-request")
+	require.NoError(t, os.MkdirAll(spoolDir, 0o700))
+	markDiagnosticTempFileActive(spoolDir)
+	t.Cleanup(func() { markDiagnosticTempFileInactive(spoolDir) })
+
+	cleanupDiagnosticCaptureTempFiles(tempRoot, time.Now())
+
+	require.DirExists(t, spoolDir)
+}
+
 func TestRemoveDiagnosticCaptureTempFileRemovesEmptySpoolDirectories(t *testing.T) {
 	tempRoot := t.TempDir()
 	spoolDir := filepath.Join(tempRoot, "2026-07-24", "request-id")

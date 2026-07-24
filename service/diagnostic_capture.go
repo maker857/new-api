@@ -334,11 +334,27 @@ func DiagnosticCaptureMiddleware() gin.HandlerFunc {
 // selected. This is deliberately later than the global middleware: a disabled
 // channel must not cause any request/response byte copying or spool I/O.
 func StartDiagnosticCapture(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	channelID := common.GetContextKeyInt(c, constant.ContextKeyChannelId)
+	channelName := common.GetContextKeyString(c, constant.ContextKeyChannelName)
+	startDiagnosticCaptureForChannel(c, channelID, channelName)
+}
+
+// StartDiagnosticCaptureForChannel starts a capture for a request path that
+// resolves its channel outside the normal distributor flow, such as a task
+// status fetch. It honors the same global and per-channel switches.
+func StartDiagnosticCaptureForChannel(c *gin.Context, channelID int, channelName string) {
+	startDiagnosticCaptureForChannel(c, channelID, channelName)
+}
+
+func startDiagnosticCaptureForChannel(c *gin.Context, channelID int, channelName string) {
 	if c == nil || c.Request == nil {
 		return
 	}
 	cfg := DiagnosticCaptureConfigFromOptions()
-	if !cfg.Enabled || !cfg.shouldCapturePath(c.Request.URL.Path) || !diagnosticCaptureChannelEnabled(c, 0) {
+	if !cfg.Enabled || !cfg.shouldCapturePath(c.Request.URL.Path) || !diagnosticCaptureChannelEnabled(c, channelID) {
 		return
 	}
 	if existing, ok := c.Get("diagnostic_flow"); ok {
@@ -349,7 +365,7 @@ func StartDiagnosticCapture(c *gin.Context) {
 	flow := &DiagnosticFlow{
 		TraceID:      diagnosticTraceIDFromContext(c),
 		ProxyTraceID: strings.TrimSpace(c.GetHeader(DiagnosticTraceHeader)),
-		Channel:      safeCaptureName(common.GetContextKeyString(c, constant.ContextKeyChannelName), "unknown"),
+		Channel:      safeCaptureName(channelName, "unknown"),
 		Started:      time.Now(),
 	}
 	flow.session = newDiagnosticCaptureSession(cfg, flow)
@@ -426,7 +442,11 @@ func PrepareDiagnosticOutboundRequest(c *gin.Context, info *relaycommon.RelayInf
 		if !diagnosticCaptureChannelEnabled(c, channelID) {
 			return body, nil
 		}
-		StartDiagnosticCapture(c)
+		channelName := ""
+		if info != nil && info.ChannelMeta != nil {
+			channelName = info.ChannelMeta.ChannelName
+		}
+		StartDiagnosticCaptureForChannel(c, channelID, channelName)
 		flow = getOrCreateDiagnosticFlow(c)
 		if flow.session == nil {
 			return body, nil
@@ -443,7 +463,9 @@ func PrepareDiagnosticOutboundRequest(c *gin.Context, info *relaycommon.RelayInf
 	if channel == "" {
 		channel = c.GetString("channel_name")
 	}
-	flow.Channel = safeCaptureName(channel, "unknown")
+	if channel != "" {
+		flow.Channel = safeCaptureName(channel, "unknown")
+	}
 	sequence := nextDiagnosticSequence()
 	partID := fmt.Sprintf("outbound-%06d-request", sequence)
 	flow.session.startPart(partID, sequence, "outbound", "request", map[string]any{
@@ -459,6 +481,27 @@ func PrepareDiagnosticOutboundRequest(c *gin.Context, info *relaycommon.RelayInf
 		flow.session.endPart(partID, nil, 0, true)
 	}
 	return body, &DiagnosticExchange{Flow: flow, Sequence: sequence, Started: time.Now(), ChannelID: channelID}
+}
+
+// PrepareDiagnosticHTTPOutboundRequest applies the same sidecar capture to a
+// channel's auxiliary HTTP request (uploads, polling, and similar calls) as
+// it does to its primary relay request. It only wraps the body when capture is
+// enabled for the already-selected channel, so it never changes the request
+// bytes or makes the request wait for diagnostic I/O.
+func PrepareDiagnosticHTTPOutboundRequest(c *gin.Context, info *relaycommon.RelayInfo, req *http.Request) *DiagnosticExchange {
+	if req == nil {
+		return nil
+	}
+	body, exchange := PrepareDiagnosticOutboundRequest(c, info, req.Method, req.URL.String(), req.Header, req.Body)
+	if body == nil {
+		return exchange
+	}
+	if closer, ok := body.(io.ReadCloser); ok {
+		req.Body = closer
+	} else {
+		req.Body = io.NopCloser(body)
+	}
+	return exchange
 }
 
 func WrapDiagnosticOutboundResponse(c *gin.Context, resp *http.Response, exchange *DiagnosticExchange) {
@@ -482,6 +525,99 @@ func WrapDiagnosticOutboundResponse(c *gin.Context, resp *http.Response, exchang
 		return
 	}
 	resp.Body = newDiagnosticCaptureStream(resp.Body, flow.session, partID)
+}
+
+// RecordDiagnosticOutboundFailure records transport failures for an exchange
+// that never produced an HTTP response, such as DNS, TLS, or connection errors.
+func RecordDiagnosticOutboundFailure(exchange *DiagnosticExchange, requestErr error) {
+	if exchange == nil || exchange.Flow == nil || exchange.Flow.session == nil || requestErr == nil {
+		return
+	}
+	flow := exchange.Flow
+	partID := fmt.Sprintf("outbound-%06d-response", exchange.Sequence)
+	flow.session.startPart(partID, exchange.Sequence, "outbound", "response", map[string]any{
+		"captured_at": time.Now().UTC().Format(time.RFC3339Nano),
+		"role":        "outbound",
+		"duration_ms": time.Since(exchange.Started).Milliseconds(),
+		"error":       requestErr.Error(),
+	})
+	flow.session.endPart(partID, nil, 0, true)
+}
+
+// RecordDiagnosticOutboundResponseMetadata completes an exchange that has a
+// protocol-level response but no HTTP body to read, such as a WebSocket 101
+// handshake.
+func RecordDiagnosticOutboundResponseMetadata(exchange *DiagnosticExchange, status int, headers http.Header) {
+	if exchange == nil || exchange.Flow == nil || exchange.Flow.session == nil {
+		return
+	}
+	flow := exchange.Flow
+	partID := fmt.Sprintf("outbound-%06d-response", exchange.Sequence)
+	flow.session.startPart(partID, exchange.Sequence, "outbound", "response", map[string]any{
+		"captured_at": time.Now().UTC().Format(time.RFC3339Nano),
+		"role":        "outbound",
+		"status_code": status,
+		"duration_ms": time.Since(exchange.Started).Milliseconds(),
+		"headers":     redactHeaders(headers),
+	})
+	flow.session.endPart(partID, nil, 0, true)
+}
+
+// RecordDiagnosticWebSocketFrame stores one already-read WebSocket message as
+// an auxiliary upstream exchange. The caller records only byte slices it has
+// already received or is about to send, keeping this sidecar operation out of
+// the WebSocket forwarding path.
+func RecordDiagnosticWebSocketFrame(c *gin.Context, upstreamURL, direction string, payload []byte) {
+	if c == nil {
+		return
+	}
+	flowValue, _ := c.Get("diagnostic_flow")
+	flow, _ := flowValue.(*DiagnosticFlow)
+	if flow == nil || flow.session == nil {
+		return
+	}
+	part := "response"
+	if direction == "request" {
+		part = "request"
+	}
+	sequence := nextDiagnosticSequence()
+	partID := fmt.Sprintf("outbound-%06d-%s", sequence, part)
+	meta := map[string]any{
+		"captured_at": time.Now().UTC().Format(time.RFC3339Nano),
+		"role":        "outbound",
+		"transport":   "websocket",
+	}
+	if part == "request" {
+		meta["method"] = "WEBSOCKET"
+		meta["url"] = upstreamURL
+	}
+	flow.session.startPart(partID, sequence, "outbound", part, meta)
+	flow.session.writeChunk(partID, payload)
+	flow.session.endPart(partID, nil, int64(len(payload)), true)
+}
+
+// RecordDiagnosticWebSocketFailure stores a transport error that happened
+// after a WebSocket connection was established. It is intentionally sidecar
+// only: callers record the original error before returning it unchanged.
+func RecordDiagnosticWebSocketFailure(c *gin.Context, upstreamURL string, transportErr error) {
+	if c == nil || transportErr == nil {
+		return
+	}
+	flowValue, _ := c.Get("diagnostic_flow")
+	flow, _ := flowValue.(*DiagnosticFlow)
+	if flow == nil || flow.session == nil {
+		return
+	}
+	sequence := nextDiagnosticSequence()
+	partID := fmt.Sprintf("outbound-%06d-response", sequence)
+	flow.session.startPart(partID, sequence, "outbound", "response", map[string]any{
+		"captured_at":  time.Now().UTC().Format(time.RFC3339Nano),
+		"role":         "outbound",
+		"transport":    "websocket",
+		"upstream_url": upstreamURL,
+		"error":        transportErr.Error(),
+	})
+	flow.session.endPart(partID, nil, 0, true)
 }
 
 func getOrCreateDiagnosticFlow(c *gin.Context) *DiagnosticFlow {
@@ -825,10 +961,18 @@ func recordDiagnosticCaptureStorageChange(cfg DiagnosticCaptureConfig, activePat
 	diagnosticCaptureStorageState.lastAttempt = now
 	totalBytes := diagnosticCaptureStorageState.totalBytes
 	diagnosticCaptureStorageState.Unlock()
+	go cleanupDiagnosticCaptureStorage(cfg, filepath.Clean(activePath), totalBytes, now)
+}
 
-	// Cleanup can take a long time when rate-limited. Keep it off the storage
-	// accounting lock so capture workers can continue recording byte deltas.
-	diagnosticCaptureCleanupMu.Lock()
+// cleanupDiagnosticCaptureStorage runs independently of body spooling. A
+// rate-limited cleanup may take hours; blocking the capture worker here would
+// turn a disk-maintenance delay into an unbounded pending-event backlog.
+func cleanupDiagnosticCaptureStorage(cfg DiagnosticCaptureConfig, activePath string, totalBytes int64, now time.Time) {
+	// A single cleanup owns the deletion rate. Later triggers are satisfied by
+	// the running pass or the next periodic check instead of queueing workers.
+	if !diagnosticCaptureCleanupMu.TryLock() {
+		return
+	}
 	defer diagnosticCaptureCleanupMu.Unlock()
 
 	tempFreedBytes := int64(0)
@@ -855,7 +999,7 @@ func recordDiagnosticCaptureStorageChange(cfg DiagnosticCaptureConfig, activePat
 	remainingBytes, deletedCount, freedBytes, lastDeletedAt := cleanupDiagnosticCaptureStorageByDate(
 		totalBytes,
 		cfg,
-		filepath.Clean(activePath),
+		activePath,
 		targetBytes,
 		cutoff,
 		incompleteCutoff,
@@ -863,12 +1007,21 @@ func recordDiagnosticCaptureStorageChange(cfg DiagnosticCaptureConfig, activePat
 	diagnosticCaptureStorageState.Lock()
 	// Concurrent capture workers may have appended bytes while cleanup ran.
 	// Deduct only what this cleanup actually removed from their latest total.
-	diagnosticCaptureStorageState.totalBytes -= (totalBytes - remainingBytes) + tempFreedBytes
-	if diagnosticCaptureStorageState.totalBytes < 0 {
-		diagnosticCaptureStorageState.totalBytes = 0
+	sameConfig := diagnosticCaptureStorageState.initialized &&
+		diagnosticCaptureStorageState.captureDir == cfg.CaptureDir &&
+		diagnosticCaptureStorageState.tempDir == cfg.TempDir &&
+		diagnosticCaptureStorageState.failureDir == cfg.FailureDir
+	if sameConfig {
+		diagnosticCaptureStorageState.totalBytes -= (totalBytes - remainingBytes) + tempFreedBytes
+		if diagnosticCaptureStorageState.totalBytes < 0 {
+			diagnosticCaptureStorageState.totalBytes = 0
+		}
 	}
 	currentBytes := diagnosticCaptureStorageState.totalBytes
 	diagnosticCaptureStorageState.Unlock()
+	if !sameConfig {
+		return
+	}
 
 	status := "completed"
 	if currentBytes > targetBytes {
@@ -1614,13 +1767,33 @@ func safeCaptureName(value string, fallback string) string {
 func redactHeaders(headers http.Header) map[string][]string {
 	result := make(map[string][]string, len(headers))
 	for key, values := range headers {
-		lower := strings.ToLower(key)
-		switch lower {
+		switch strings.ToLower(key) {
 		case "authorization", "cookie", "set-cookie", "proxy-authorization", "x-api-key", "x-goog-api-key":
-			result[key] = []string{"[REDACTED]"}
+			result[key] = make([]string, len(values))
+			for index, value := range values {
+				result[key][index] = partiallyRedactDiagnosticHeader(value)
+			}
 		default:
-			result[key] = values
+			// Copy the slice so later request-header mutations cannot alter the
+			// asynchronous record.
+			result[key] = append([]string(nil), values...)
 		}
 	}
 	return result
+}
+
+func partiallyRedactDiagnosticHeader(value string) string {
+	const visibleCharacters = 6
+	runes := []rune(value)
+	if len(runes) == 0 {
+		return "<redacted>"
+	}
+	visible := visibleCharacters
+	if maximumVisible := (len(runes) - 1) / 2; visible > maximumVisible {
+		visible = maximumVisible
+	}
+	if visible == 0 {
+		visible = 1
+	}
+	return string(runes[:visible]) + "..." + string(runes[len(runes)-visible:])
 }

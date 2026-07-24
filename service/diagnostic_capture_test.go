@@ -2,6 +2,7 @@ package service
 
 import (
 	"bufio"
+	"errors"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -46,6 +47,20 @@ func TestDiagnosticCaptureChannelEnabledRequiresResolvedChannel(t *testing.T) {
 
 func TestDiagnosticCaptureChannelDefaultIsDisabled(t *testing.T) {
 	require.False(t, (model.ChannelInfo{}).IsDiagnosticCaptureEnabled())
+}
+
+func TestDiagnosticCaptureHeadersRedactCredentials(t *testing.T) {
+	headers := map[string][]string{
+		"Authorization": {"Bearer diagnostic-token"},
+		"X-Api-Key":     {"channel-secret-key"},
+		"User-Agent":    {"diagnostic-test"},
+	}
+
+	captured := redactHeaders(headers)
+	require.Equal(t, []string{"Bearer...-token"}, captured["Authorization"])
+	require.Equal(t, []string{"channe...et-key"}, captured["X-Api-Key"])
+	require.Equal(t, []string{"diagnostic-test"}, captured["User-Agent"])
+	require.Equal(t, "shor...-key", partiallyRedactDiagnosticHeader("short-key"))
 }
 
 func TestCleanupDiagnosticCaptureCandidatesRespectsRetention(t *testing.T) {
@@ -332,6 +347,78 @@ func TestWriteDiagnosticCaptureSessionStoresBodyInSingleJSONFile(t *testing.T) {
 	require.Len(t, entries, 2)
 }
 
+func TestDiagnosticCaptureOutboundTransportFailureIsRecorded(t *testing.T) {
+	captureDir := t.TempDir()
+	flow := &DiagnosticFlow{
+		TraceID: "transport-failure-trace",
+		Channel: "channel",
+		Started: time.Date(2026, 7, 24, 10, 0, 0, 0, time.Local),
+	}
+	flow.session = newDiagnosticCaptureSession(DiagnosticCaptureConfig{
+		Enabled:    true,
+		Mode:       "full",
+		CaptureDir: captureDir,
+		TempDir:    filepath.Join(t.TempDir(), "temp"),
+	}, flow)
+	require.NotNil(t, flow.session)
+
+	RecordDiagnosticOutboundFailure(&DiagnosticExchange{
+		Flow:     flow,
+		Sequence: 7,
+		Started:  time.Now().Add(-time.Second),
+	}, errors.New("dial tcp: connection refused"))
+	flow.session.close(flow)
+
+	path := filepath.Join(captureDir, "channel", "2026-07-24", "transport-failure-trace", "request-log.json")
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(path)
+		return err == nil
+	}, time.Second, 10*time.Millisecond)
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var combined diagnosticCombinedCPAJSON
+	require.NoError(t, common.Unmarshal(data, &combined))
+	require.Len(t, combined.APIResponses, 1)
+	require.Equal(t, int64(7), combined.APIResponses[0].Sequence)
+	require.Equal(t, "dial tcp: connection refused", combined.APIResponses[0].Error)
+	require.Equal(t, "empty", combined.APIResponses[0].Body.Encoding)
+}
+
+func TestDiagnosticCaptureWebSocketFailureIsRecorded(t *testing.T) {
+	captureDir := t.TempDir()
+	flow := &DiagnosticFlow{
+		TraceID: "websocket-failure-trace",
+		Channel: "channel",
+		Started: time.Date(2026, 7, 24, 10, 0, 0, 0, time.Local),
+	}
+	flow.session = newDiagnosticCaptureSession(DiagnosticCaptureConfig{
+		Enabled:    true,
+		Mode:       "full",
+		CaptureDir: captureDir,
+		TempDir:    filepath.Join(t.TempDir(), "temp"),
+	}, flow)
+	require.NotNil(t, flow.session)
+
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Set("diagnostic_flow", flow)
+	RecordDiagnosticWebSocketFailure(c, "wss://upstream.example/realtime", errors.New("broken pipe"))
+	flow.session.close(flow)
+
+	path := filepath.Join(captureDir, "channel", "2026-07-24", "websocket-failure-trace", "request-log.json")
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(path)
+		return err == nil
+	}, time.Second, 10*time.Millisecond)
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var combined diagnosticCombinedCPAJSON
+	require.NoError(t, common.Unmarshal(data, &combined))
+	require.Len(t, combined.APIResponses, 1)
+	require.Equal(t, "broken pipe", combined.APIResponses[0].Error)
+	require.Equal(t, "empty", combined.APIResponses[0].Body.Encoding)
+}
+
 func TestDiagnosticCaptureFailureIsRetriedWithoutDiscardingBody(t *testing.T) {
 	root := t.TempDir()
 	tempDir := filepath.Join(root, "temp")
@@ -419,6 +506,25 @@ func TestDiagnosticCaptureRetryRestoresFragmentFromRequestScopedTempDirectory(t 
 	require.FileExists(t, filepath.Join(cfg.CaptureDir, "channel", "2026-07-23", "restore-trace", "request-log.json"))
 	require.NoFileExists(t, tempPartPath)
 	require.NoDirExists(t, filepath.Dir(failurePath))
+}
+
+func TestDiagnosticCaptureFailureTempPartPathKeepsFragmentActive(t *testing.T) {
+	tempDir := t.TempDir()
+	flow := &DiagnosticFlow{
+		TraceID: "active-retry-trace",
+		Started: time.Date(2026, 7, 23, 10, 0, 0, 0, time.Local),
+	}
+	partPath := filepath.Join(tempDir, "2026-07-23", "active-retry-trace", "inbound-request-recover.part")
+	require.NoError(t, os.MkdirAll(filepath.Dir(partPath), 0o700))
+	require.NoError(t, os.WriteFile(partPath, []byte("body"), 0o600))
+
+	path := diagnosticCaptureFailureTempPartPath(DiagnosticCaptureConfig{TempDir: tempDir}, flow, diagnosticCaptureFailurePart{
+		PartID:       "inbound-request",
+		TempFileName: filepath.Base(partPath),
+	})
+	require.Equal(t, partPath, path)
+	require.True(t, isDiagnosticTempFileActive(path))
+	t.Cleanup(func() { markDiagnosticTempFileInactive(path) })
 }
 
 func TestDiagnosticCaptureRateDurationAvoidsDurationOverflow(t *testing.T) {

@@ -358,6 +358,7 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	}
 	resp, err := doRequest(c, req, info)
 	if err != nil {
+		service.RecordDiagnosticOutboundFailure(diagnosticFlow, err)
 		return nil, fmt.Errorf("do request failed: %w", err)
 	}
 	service.WrapDiagnosticOutboundResponse(c, resp, diagnosticFlow)
@@ -399,6 +400,7 @@ func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBod
 	}
 	resp, err := doRequest(c, req, info)
 	if err != nil {
+		service.RecordDiagnosticOutboundFailure(diagnosticFlow, err)
 		return nil, fmt.Errorf("do request failed: %w", err)
 	}
 	service.WrapDiagnosticOutboundResponse(c, resp, diagnosticFlow)
@@ -428,10 +430,18 @@ func DoWssRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		targetHeader.Set(key, value)
 	}
 	targetHeader.Set("Content-Type", c.Request.Header.Get("Content-Type"))
-	targetConn, _, err := websocket.DefaultDialer.Dial(fullRequestURL, targetHeader)
+	_, diagnosticFlow := service.PrepareDiagnosticOutboundRequest(c, info, http.MethodGet, fullRequestURL, targetHeader, nil)
+	targetConn, handshakeResponse, err := websocket.DefaultDialer.Dial(fullRequestURL, targetHeader)
 	if err != nil {
+		service.RecordDiagnosticOutboundFailure(diagnosticFlow, err)
 		return nil, fmt.Errorf("dial failed to %s: %w", common.SanitizeURLForLog(fullRequestURL), err)
 	}
+	if handshakeResponse != nil {
+		service.RecordDiagnosticOutboundResponseMetadata(diagnosticFlow, handshakeResponse.StatusCode, handshakeResponse.Header)
+	} else {
+		service.RecordDiagnosticOutboundResponseMetadata(diagnosticFlow, http.StatusSwitchingProtocols, nil)
+	}
+	c.Set("diagnostic_websocket_upstream_url", fullRequestURL)
 	// send request body
 	//all, err := io.ReadAll(requestBody)
 	//err = service.WssString(c, targetConn, string(all))
@@ -514,7 +524,14 @@ func sendPingData(c *gin.Context, mutex *sync.Mutex) error {
 }
 
 func DoRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http.Response, error) {
-	return doRequest(c, req, info)
+	diagnosticFlow := service.PrepareDiagnosticHTTPOutboundRequest(c, info, req)
+	resp, err := doRequest(c, req, info)
+	if err != nil {
+		service.RecordDiagnosticOutboundFailure(diagnosticFlow, err)
+		return nil, err
+	}
+	service.WrapDiagnosticOutboundResponse(c, resp, diagnosticFlow)
+	return resp, nil
 }
 func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http.Response, error) {
 	var client *http.Client
@@ -599,6 +616,7 @@ func DoTaskApiRequest(a TaskAdaptor, c *gin.Context, info *common.RelayInfo, req
 	}
 	resp, err := doRequest(c, req, info)
 	if err != nil {
+		service.RecordDiagnosticOutboundFailure(diagnosticFlow, err)
 		return nil, fmt.Errorf("do request failed: %w", err)
 	}
 	service.WrapDiagnosticOutboundResponse(c, resp, diagnosticFlow)

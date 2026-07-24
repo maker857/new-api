@@ -1259,6 +1259,13 @@ func GetDiagnosticCaptureStorageStatus() (DiagnosticCaptureStorageStatus, error)
 	diagnosticCaptureStorageState.Unlock()
 	common.OptionMapRWMutex.RLock()
 	defer common.OptionMapRWMutex.RUnlock()
+	lastCleanupStatus := common.OptionMap[DiagnosticCaptureLastCleanupStatusKey]
+	// A retention-limited result describes the previous cleanup run. Once the
+	// current usage is back below the configured trigger, it is no longer an
+	// active restriction and should not remain as a stale warning in the UI.
+	if lastCleanupStatus == "retention_limited" && cfg.MaxStorageBytes > 0 && currentBytes <= cfg.MaxStorageBytes {
+		lastCleanupStatus = ""
+	}
 	return DiagnosticCaptureStorageStatus{
 		CurrentBytes:         currentBytes,
 		TemporaryBytes:       temporaryBytes,
@@ -1266,7 +1273,7 @@ func GetDiagnosticCaptureStorageStatus() (DiagnosticCaptureStorageStatus, error)
 		LastCleanupCutoff:    diagnosticCaptureOptionInt64(DiagnosticCaptureLastCleanupCutoffKey),
 		LastDeletedCount:     diagnosticCaptureOptionInt64(DiagnosticCaptureLastCleanupDeletedCountKey),
 		LastFreedBytes:       diagnosticCaptureOptionInt64(DiagnosticCaptureLastCleanupFreedBytesKey),
-		LastCleanupStatus:    common.OptionMap[DiagnosticCaptureLastCleanupStatusKey],
+		LastCleanupStatus:    lastCleanupStatus,
 		LastTempCleanupAt:    diagnosticCaptureOptionInt64(DiagnosticCaptureLastTempCleanupAtKey),
 		LastTempDeletedCount: diagnosticCaptureOptionInt64(DiagnosticCaptureLastTempDeletedCountKey),
 		LastTempFreedBytes:   diagnosticCaptureOptionInt64(DiagnosticCaptureLastTempFreedBytesKey),

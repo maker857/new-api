@@ -219,7 +219,8 @@ func TestDiagnosticCaptureStorageStatusUsesCachedUsage(t *testing.T) {
 		DiagnosticCaptureAutoCleanupEnabledKey: "true",
 		DiagnosticCaptureDirKey:                captureDir,
 		DiagnosticCaptureTempDirKey:            tempDir,
-		DiagnosticCaptureMaxStorageBytesKey:    "1",
+		DiagnosticCaptureMaxStorageBytesKey:    "1000",
+		DiagnosticCaptureLastCleanupStatusKey:  "retention_limited",
 	}
 	common.OptionMapRWMutex.Unlock()
 	t.Cleanup(func() {
@@ -259,6 +260,7 @@ func TestDiagnosticCaptureStorageStatusUsesCachedUsage(t *testing.T) {
 	status, err := GetDiagnosticCaptureStorageStatus()
 	require.NoError(t, err)
 	require.EqualValues(t, 777, status.CurrentBytes)
+	require.Empty(t, status.LastCleanupStatus)
 	require.FileExists(t, filepath.Join(capturePath, "request-log.json"))
 }
 

@@ -1297,30 +1297,36 @@ func writeDiagnosticCaptureBody(w *diagnosticCaptureJSONWriter, cfg DiagnosticCa
 	truncated := !state.complete || state.originalSize != state.savedSize
 	w.raw(`{"mode":`)
 	w.value(cfg.Mode)
+	encoding := "empty"
+	jsonBody := false
+	if cfg.Mode != "full" {
+		encoding = "metadata-only"
+	} else if state.tempPath != "" && state.savedSize > 0 {
+		var err error
+		jsonBody, err = diagnosticCaptureJSONFile(state.tempPath)
+		if err != nil {
+			w.err = err
+			return
+		}
+		if jsonBody {
+			encoding = "json"
+		} else {
+			encoding = "base64"
+		}
+	}
+	w.raw(`,"encoding":`)
+	w.value(encoding)
 	w.raw(`,"original_size":`)
 	w.value(state.originalSize)
 	w.raw(`,"saved_size":`)
 	w.value(state.savedSize)
 	w.raw(`,"truncated":`)
 	w.value(truncated)
-	if cfg.Mode != "full" {
-		w.raw(`,"encoding":"metadata-only"}`)
-		return
-	}
-	if state.tempPath == "" || state.savedSize == 0 {
-		w.raw(`,"encoding":"empty"}`)
-		return
-	}
-	jsonBody, err := diagnosticCaptureJSONFile(state.tempPath)
-	if err != nil {
-		w.err = err
-		return
-	}
 	if jsonBody {
-		w.raw(`,"encoding":"json","json":`)
+		w.raw(`,"json":`)
 		streamDiagnosticCaptureFile(w, state.tempPath)
-	} else {
-		w.raw(`,"encoding":"base64","base64":"`)
+	} else if encoding == "base64" {
+		w.raw(`,"base64":"`)
 		streamDiagnosticCaptureFileBase64(w, state.tempPath)
 		w.raw(`"`)
 	}
@@ -1349,7 +1355,20 @@ func streamDiagnosticCaptureFile(w *diagnosticCaptureJSONWriter, path string) {
 		return
 	}
 	defer file.Close()
-	_, w.err = io.CopyBuffer(w.writer, file, make([]byte, diagnosticCaptureChunkSize))
+	buffer := make([]byte, diagnosticCaptureChunkSize)
+	for w.err == nil {
+		count, err := file.Read(buffer)
+		if count > 0 {
+			w.bytes(buffer[:count])
+		}
+		if err == io.EOF {
+			return
+		}
+		if err != nil {
+			w.err = err
+			return
+		}
+	}
 }
 
 func streamDiagnosticCaptureFileBase64(w *diagnosticCaptureJSONWriter, path string) {

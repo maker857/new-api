@@ -2,6 +2,8 @@ package service
 
 import (
 	"bufio"
+	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"net/http/httptest"
 	"os"
@@ -178,6 +180,75 @@ func TestCleanupDiagnosticCaptureStorageAlsoRemovesExpiredFailureRecords(t *test
 	require.DirExists(t, failureDir)
 }
 
+func TestCleanupDiagnosticCaptureStorageKeepsRetryableFailureRecord(t *testing.T) {
+	root := t.TempDir()
+	failureDir := filepath.Join(root, "diagnostic-capture-failures")
+	failurePath := filepath.Join(failureDir, "channel", "2026-07-23", "retrying")
+	require.NoError(t, os.MkdirAll(failurePath, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(failurePath, "fragment.part"), []byte("body"), 0o600))
+	now := time.Now()
+	require.NoError(t, writeDiagnosticCaptureFailureRecord(filepath.Join(failurePath, "capture-failure.json"), diagnosticCaptureFailureRecord{
+		TraceID:       "retrying",
+		Channel:       "channel",
+		StartedAt:     now.Add(-time.Minute).UnixNano(),
+		FirstFailedAt: now.Add(-time.Minute).UnixNano(),
+		Retryable:     true,
+	}))
+	require.NoError(t, os.WriteFile(filepath.Join(failurePath, ".capture-created-at"), []byte(strconv.FormatInt(now.Add(-time.Hour).UnixNano(), 10)), 0o600))
+
+	totalBytes, err := diagnosticCaptureDirectorySize(failureDir)
+	require.NoError(t, err)
+	remaining, deletedCount, freedBytes, _ := cleanupDiagnosticCaptureStorageByDate(
+		totalBytes,
+		DiagnosticCaptureConfig{CaptureDir: filepath.Join(root, "captures"), FailureDir: failureDir},
+		"",
+		0,
+		now,
+		now,
+	)
+
+	require.Equal(t, totalBytes, remaining)
+	require.Zero(t, deletedCount)
+	require.Zero(t, freedBytes)
+	require.DirExists(t, failurePath)
+}
+
+func TestCleanupDiagnosticCaptureStorageDeletesOldestAcrossChannels(t *testing.T) {
+	root := t.TempDir()
+	captureDir := filepath.Join(root, "captures")
+	now := time.Now()
+	newer := filepath.Join(captureDir, "a-channel", "2026-07-23", "newer")
+	older := filepath.Join(captureDir, "z-channel", "2026-07-23", "older")
+	for _, candidate := range []struct {
+		dir        string
+		capturedAt time.Time
+	}{
+		{dir: newer, capturedAt: now.Add(-2 * time.Hour)},
+		{dir: older, capturedAt: now.Add(-3 * time.Hour)},
+	} {
+		require.NoError(t, os.MkdirAll(candidate.dir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(candidate.dir, "request-log.json"), []byte("1234"), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(candidate.dir, ".capture-created-at"), []byte(strconv.FormatInt(candidate.capturedAt.UnixNano(), 10)), 0o600))
+		require.NoError(t, os.WriteFile(filepath.Join(candidate.dir, ".capture-complete"), nil, 0o600))
+	}
+
+	totalBytes, err := diagnosticCaptureDirectorySize(captureDir)
+	require.NoError(t, err)
+	remaining, deletedCount, _, _ := cleanupDiagnosticCaptureStorageByDate(
+		totalBytes,
+		DiagnosticCaptureConfig{CaptureDir: captureDir},
+		"",
+		totalBytes-1,
+		now,
+		time.Time{},
+	)
+
+	require.Less(t, remaining, totalBytes)
+	require.EqualValues(t, 1, deletedCount)
+	require.NoDirExists(t, older)
+	require.DirExists(t, newer)
+}
+
 func TestScanDiagnosticCaptureStorageOnlyReturnsMarkedCaptureDirectories(t *testing.T) {
 	dir := t.TempDir()
 	marked := filepath.Join(dir, "channel", "2026-07-23", "marked")
@@ -317,6 +388,7 @@ func TestWriteDiagnosticCaptureSessionStoresBodyInSingleJSONFile(t *testing.T) {
 		originalSize: int64(len(`{"message":"complete"}`)),
 		savedSize:    int64(len(`{"message":"complete"}`)),
 		complete:     true,
+		jsonBody:     true,
 	}
 
 	require.NoError(t, writeDiagnosticCaptureSession(DiagnosticCaptureConfig{
@@ -335,11 +407,10 @@ func TestWriteDiagnosticCaptureSessionStoresBodyInSingleJSONFile(t *testing.T) {
 	require.Equal(t, "json", combined.RequestBody.Encoding)
 	require.Empty(t, combined.RequestBody.Text)
 	require.Equal(t, map[string]any{"message": "complete"}, combined.RequestBody.JSON)
-	require.Contains(t, string(data), "\n  \"request_body\": {")
-	require.Contains(t, string(data), "\n    \"encoding\": \"json\",")
-	require.Contains(t, string(data), "\"original_size\": 22")
-	require.Contains(t, string(data), "\"truncated\": false")
-	require.Contains(t, string(data), "\n      \"message\": \"complete\"\n")
+	require.Contains(t, string(data), `"request_body":{"mode":"full","encoding":"json"`)
+	require.Contains(t, string(data), `"original_size":22`)
+	require.Contains(t, string(data), `"truncated":false`)
+	require.Contains(t, string(data), `"message":"complete"`)
 	require.NotContains(t, string(data), `"text"`)
 	require.NotContains(t, string(data), `"body_original_size"`)
 	entries, err := os.ReadDir(filepath.Dir(path))
@@ -371,7 +442,7 @@ func TestDiagnosticCaptureOutboundTransportFailureIsRecorded(t *testing.T) {
 
 	path := filepath.Join(captureDir, "channel", "2026-07-24", "transport-failure-trace", "request-log.json")
 	require.Eventually(t, func() bool {
-		_, err := os.Stat(path)
+		_, err := os.Stat(filepath.Join(filepath.Dir(path), ".capture-complete"))
 		return err == nil
 	}, time.Second, 10*time.Millisecond)
 	data, err := os.ReadFile(path)
@@ -419,6 +490,114 @@ func TestDiagnosticCaptureWebSocketFailureIsRecorded(t *testing.T) {
 	require.Equal(t, "empty", combined.APIResponses[0].Body.Encoding)
 }
 
+func TestDiagnosticCaptureWebSocketFramesUseGroupedSpoolFiles(t *testing.T) {
+	root := t.TempDir()
+	captureDir := filepath.Join(root, "captures")
+	tempDir := filepath.Join(root, "capture-temp")
+	flow := &DiagnosticFlow{
+		TraceID: "websocket-frame-trace",
+		Channel: "channel",
+		Started: time.Date(2026, 7, 24, 10, 0, 0, 0, time.Local),
+	}
+	flow.session = newDiagnosticCaptureSession(DiagnosticCaptureConfig{
+		Enabled:    true,
+		Mode:       "full",
+		CaptureDir: captureDir,
+		TempDir:    tempDir,
+	}, flow)
+	require.NotNil(t, flow.session)
+
+	gin.SetMode(gin.TestMode)
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Set("diagnostic_flow", flow)
+	RecordDiagnosticWebSocketFrame(c, "wss://upstream.example/realtime", "request", []byte(`{"type":"start"}`))
+	RecordDiagnosticWebSocketFrame(c, "wss://upstream.example/realtime", "request", nil)
+	RecordDiagnosticWebSocketFrame(c, "wss://upstream.example/realtime", "response", []byte(`{"type":"delta"}`))
+	RecordDiagnosticWebSocketFrame(c, "wss://upstream.example/realtime", "response", []byte{0x01, 0x02, 0x03})
+	flow.session.close(flow)
+
+	path := filepath.Join(captureDir, "channel", "2026-07-24", "websocket-frame-trace", "request-log.json")
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(filepath.Join(filepath.Dir(path), ".capture-complete"))
+		return err == nil
+	}, time.Second, 10*time.Millisecond)
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var combined diagnosticCombinedCPAJSON
+	require.NoError(t, common.Unmarshal(data, &combined))
+	require.Len(t, combined.APIRequests, 1)
+	require.Len(t, combined.APIRequests[0].WebSocketFrames, 2)
+	require.Len(t, combined.APIResponses, 1)
+	require.Len(t, combined.APIResponses[0].WebSocketFrames, 2)
+
+	decoded, err := base64.StdEncoding.DecodeString(combined.APIRequests[0].WebSocketFrames[0].Body.Base64)
+	require.NoError(t, err)
+	require.Equal(t, []byte(`{"type":"start"}`), decoded)
+	require.Empty(t, combined.APIRequests[0].WebSocketFrames[1].Body.Base64)
+	decoded, err = base64.StdEncoding.DecodeString(combined.APIResponses[0].WebSocketFrames[1].Body.Base64)
+	require.NoError(t, err)
+	require.Equal(t, []byte{0x01, 0x02, 0x03}, decoded)
+
+	requestDir := filepath.Join(tempDir, "2026-07-24", "websocket-frame-trace")
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(requestDir)
+		return os.IsNotExist(err)
+	}, time.Second, 10*time.Millisecond)
+}
+
+func TestDiagnosticCaptureWebSocketFrameRestoresSegmentsAcrossSpoolFiles(t *testing.T) {
+	root := t.TempDir()
+	firstPath := filepath.Join(root, "first.part")
+	secondPath := filepath.Join(root, "second.part")
+	writeSegment := func(path string, payload []byte, flags uint64) {
+		file, err := os.Create(path)
+		require.NoError(t, err)
+		defer file.Close()
+		var header [diagnosticWebSocketFrameHeaderBytes]byte
+		binary.BigEndian.PutUint64(header[0:8], 7)
+		binary.BigEndian.PutUint64(header[8:16], uint64(time.Date(2026, 7, 25, 12, 0, 0, 0, time.UTC).UnixNano()))
+		binary.BigEndian.PutUint64(header[16:24], 5)
+		binary.BigEndian.PutUint64(header[24:32], uint64(len(payload)))
+		binary.BigEndian.PutUint64(header[32:40], flags)
+		_, err = file.Write(header[:])
+		require.NoError(t, err)
+		_, err = file.Write(payload)
+		require.NoError(t, err)
+	}
+	writeSegment(firstPath, []byte("he"), diagnosticWebSocketFrameStart)
+	writeSegment(secondPath, []byte("llo"), diagnosticWebSocketFrameEnd)
+
+	flow := &DiagnosticFlow{TraceID: "segmented-websocket", Channel: "channel", Started: time.Date(2026, 7, 25, 12, 0, 0, 0, time.Local)}
+	state := &diagnosticCapturePartState{
+		partID:          "websocket-request-000007",
+		sequence:        7,
+		role:            "outbound",
+		part:            "request",
+		complete:        true,
+		webSocketFrames: true,
+		tempPath:        firstPath,
+		tempPaths:       []string{firstPath, secondPath},
+		meta: map[string]any{
+			"captured_at":            "2026-07-25T12:00:00Z",
+			"upstream_url":           "wss://upstream.example/realtime",
+			"websocket_frames":       true,
+			"websocket_frame_format": diagnosticWebSocketFrameFormat,
+		},
+	}
+	cfg := DiagnosticCaptureConfig{Enabled: true, Mode: "full", CaptureDir: filepath.Join(root, "captures")}
+	require.NoError(t, writeDiagnosticCaptureSession(cfg, flow, []*diagnosticCapturePartState{state}))
+
+	data, err := os.ReadFile(filepath.Join(cfg.CaptureDir, "channel", "2026-07-25", "segmented-websocket", "request-log.json"))
+	require.NoError(t, err)
+	var combined diagnosticCombinedCPAJSON
+	require.NoError(t, common.Unmarshal(data, &combined))
+	require.Len(t, combined.APIRequests, 1)
+	require.Len(t, combined.APIRequests[0].WebSocketFrames, 1)
+	decoded, err := base64.StdEncoding.DecodeString(combined.APIRequests[0].WebSocketFrames[0].Body.Base64)
+	require.NoError(t, err)
+	require.Equal(t, []byte("hello"), decoded)
+}
+
 func TestDiagnosticCaptureFailureIsRetriedWithoutDiscardingBody(t *testing.T) {
 	root := t.TempDir()
 	tempDir := filepath.Join(root, "temp")
@@ -460,6 +639,41 @@ func TestDiagnosticCaptureFailureIsRetriedWithoutDiscardingBody(t *testing.T) {
 	retryDiagnosticCaptureFailures(cfg)
 	require.FileExists(t, filepath.Join(cfg.CaptureDir, "channel", "2026-07-23", "retry-trace", "request-log.json"))
 	require.NoDirExists(t, filepath.Dir(failurePath))
+}
+
+func TestDiagnosticCaptureRetrySkipsArchivedFailures(t *testing.T) {
+	root := t.TempDir()
+	cfg := DiagnosticCaptureConfig{
+		Enabled:    true,
+		Mode:       "full",
+		CaptureDir: filepath.Join(root, "captures"),
+		TempDir:    filepath.Join(root, "temp"),
+	}
+	cfg.FailureDir = diagnosticCaptureFailureDir(cfg.CaptureDir)
+	flow := &DiagnosticFlow{
+		TraceID: "archived-trace",
+		Channel: "channel",
+		Started: time.Date(2026, 7, 23, 10, 0, 0, 0, time.Local),
+	}
+	failurePath := filepath.Join(
+		cfg.FailureDir,
+		flow.Channel,
+		flow.Started.Format("2006-01-02"),
+		".abandoned-"+flow.TraceID,
+		"capture-failure.json",
+	)
+	require.NoError(t, os.MkdirAll(filepath.Dir(failurePath), 0o700))
+	require.NoError(t, writeDiagnosticCaptureFailureRecord(failurePath, diagnosticCaptureFailureRecord{
+		TraceID:   flow.TraceID,
+		Channel:   flow.Channel,
+		StartedAt: flow.Started.UnixNano(),
+		Retryable: true,
+	}))
+
+	retryDiagnosticCaptureFailures(cfg)
+
+	require.FileExists(t, failurePath)
+	require.NoFileExists(t, filepath.Join(cfg.CaptureDir, flow.Channel, "2026-07-23", flow.TraceID, "request-log.json"))
 }
 
 func TestDiagnosticCaptureRetryRestoresFragmentFromRequestScopedTempDirectory(t *testing.T) {
@@ -525,6 +739,26 @@ func TestDiagnosticCaptureFailureTempPartPathKeepsFragmentActive(t *testing.T) {
 	require.Equal(t, partPath, path)
 	require.True(t, isDiagnosticTempFileActive(path))
 	t.Cleanup(func() { markDiagnosticTempFileInactive(path) })
+}
+
+func TestDiagnosticCaptureFailureTempPartPathDoesNotSubstituteNamedFragment(t *testing.T) {
+	tempDir := t.TempDir()
+	flow := &DiagnosticFlow{
+		TraceID: "missing-fragment-trace",
+		Started: time.Date(2026, 7, 23, 10, 0, 0, 0, time.Local),
+	}
+	dir := filepath.Join(tempDir, "2026-07-23", "missing-fragment-trace")
+	replacement := filepath.Join(dir, "websocket-request-000001-other.part")
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	require.NoError(t, os.WriteFile(replacement, []byte("another segment"), 0o600))
+
+	path := diagnosticCaptureFailureTempPartPath(DiagnosticCaptureConfig{TempDir: tempDir}, flow, diagnosticCaptureFailurePart{
+		PartID:       "websocket-request-000001",
+		TempFileName: "websocket-request-000001-missing.part",
+	})
+
+	require.Empty(t, path)
+	require.False(t, isDiagnosticTempFileActive(replacement))
 }
 
 func TestDiagnosticCaptureRateDurationAvoidsDurationOverflow(t *testing.T) {
@@ -604,6 +838,35 @@ func TestDiagnosticCaptureChannelEnabledReturnsFalseWhenChannelLookupFails(t *te
 	})
 
 	require.False(t, diagnosticCaptureChannelEnabled(c, 999999))
+}
+
+func TestValidateDiagnosticCaptureDirectoriesRejectsOverlaps(t *testing.T) {
+	root := t.TempDir()
+	tests := []struct {
+		name       string
+		captureDir string
+		tempDir    string
+	}{
+		{name: "same directory", captureDir: filepath.Join(root, "captures"), tempDir: filepath.Join(root, "captures")},
+		{name: "temporary inside formal", captureDir: filepath.Join(root, "captures"), tempDir: filepath.Join(root, "captures", "temp")},
+		{name: "formal inside temporary", captureDir: filepath.Join(root, "temp", "captures"), tempDir: filepath.Join(root, "temp")},
+		{name: "temporary equals failure", captureDir: filepath.Join(root, "captures"), tempDir: filepath.Join(root, "diagnostic-capture-failures")},
+		{name: "formal equals derived failure", captureDir: filepath.Join(root, "diagnostic-capture-failures"), tempDir: filepath.Join(root, "temp")},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			require.Error(t, ValidateDiagnosticCaptureDirectories(test.captureDir, test.tempDir))
+		})
+	}
+}
+
+func TestValidateDiagnosticCaptureDirectoriesAllowsSiblingDirectories(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, ValidateDiagnosticCaptureDirectories(
+		filepath.Join(root, "captures"),
+		filepath.Join(root, "capture-temp"),
+	))
 }
 
 func TestDiagnosticCaptureChannelEnabledRespectsChannelSwitch(t *testing.T) {

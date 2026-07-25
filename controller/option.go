@@ -310,9 +310,21 @@ func UpdateOption(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"success": false, "message": "诊断日志 body 上限必须是大于 0 的数字"})
 			return
 		}
-	case service.DiagnosticCaptureTempDirKey:
-		if strings.TrimSpace(option.Value.(string)) == "" {
-			c.JSON(http.StatusOK, gin.H{"success": false, "message": "diagnostic capture temporary directory cannot be empty"})
+	case service.DiagnosticCaptureDirKey, service.DiagnosticCaptureTempDirKey:
+		cfg := service.DiagnosticCaptureConfigFromOptions()
+		captureDir := cfg.CaptureDir
+		tempDir := cfg.TempDir
+		if option.Key == service.DiagnosticCaptureDirKey {
+			captureDir = strings.TrimSpace(option.Value.(string))
+		} else {
+			tempDir = strings.TrimSpace(option.Value.(string))
+		}
+		if captureDir == "" || tempDir == "" {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": "diagnostic capture directories cannot be empty"})
+			return
+		}
+		if err := service.ValidateDiagnosticCaptureDirectories(captureDir, tempDir); err != nil {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
 			return
 		}
 	case service.DiagnosticCaptureTempRetentionMinutesKey:
@@ -440,10 +452,29 @@ func UpdateOption(c *gin.Context) {
 			return
 		}
 	}
-	err = model.UpdateOption(option.Key, option.Value.(string))
+	cleanupSettingsChanged := false
+	switch option.Key {
+	case service.DiagnosticCaptureAutoCleanupEnabledKey,
+		service.DiagnosticCaptureMaxStorageBytesKey,
+		service.DiagnosticCaptureCleanupPercentKey,
+		service.DiagnosticCaptureMinRetentionMinutesKey,
+		service.DiagnosticCaptureIncompleteTimeoutMinutesKey,
+		service.DiagnosticCaptureMinRetentionHoursKey,
+		service.DiagnosticCaptureIncompleteTimeoutHoursKey:
+		cleanupSettingsChanged = true
+		err = model.UpdateOptionsBulk(map[string]string{
+			option.Key: option.Value.(string),
+			service.DiagnosticCaptureNextCleanupEligibleAtKey: "0",
+		})
+	default:
+		err = model.UpdateOption(option.Key, option.Value.(string))
+	}
 	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	if cleanupSettingsChanged {
+		service.NotifyDiagnosticCaptureCleanupSettingsChanged()
 	}
 	// 出于安全考虑只记录被修改的配置项名称，不记录配置值（可能含密钥等敏感信息）。
 	recordManageAudit(c, "option.update", map[string]interface{}{

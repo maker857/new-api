@@ -835,6 +835,16 @@ export function LogSettingsSection({
         incomplete_timeout_minutes:
           values.DiagnosticCaptureIncompleteTimeoutMinutes,
         paths: values.DiagnosticCapturePaths,
+        error_rewrite_enabled: values.ErrorRewriteEnabled,
+        error_rewrite_source: values.ErrorRewriteSource,
+        error_rewrite_sync_token: values.ErrorRewriteSyncToken,
+        error_rewrite_rules_json: values.ErrorRewriteRulesJSON,
+        error_rewrite_rules_url: values.ErrorRewriteRulesURL,
+        error_rewrite_fallback_message: values.ErrorRewriteFallbackMessage,
+        error_rewrite_refresh_seconds: values.ErrorRewriteRefreshSeconds,
+        error_rewrite_request_timeout_ms: values.ErrorRewriteRequestTimeoutMS,
+        error_rewrite_sql_driver: values.ErrorRewriteSQLDriver,
+        error_rewrite_sql_query: values.ErrorRewriteSQLQuery,
       })
       if (!result.success) {
         throw new Error(result.message || t('Failed to update setting'))

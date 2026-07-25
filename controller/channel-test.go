@@ -863,8 +863,8 @@ func TestChannel(c *gin.Context) {
 		if result.newAPIError != nil {
 			service.RewriteNewAPIErrorWithGinContext(result.newAPIError, result.context)
 			message = result.newAPIError.Error()
-		} else {
-			message = service.RewriteUpstreamErrorMessage(message)
+		} else if result.context != nil {
+			message = service.RewriteUpstreamErrorMessageWithGinContext(message, result.context)
 		}
 		resp := gin.H{
 			"success": false,

@@ -30,7 +30,7 @@ export const channelInfoSchema = z.object({
   multi_key_disabled_time: z.record(z.string(), z.number()).optional(),
   multi_key_polling_index: z.number().default(0),
   multi_key_mode: z.enum(['random', 'polling']).default('random'),
-  error_rewrite_enabled: z.boolean().default(true),
+  error_rewrite_enabled: z.boolean().default(false),
   diagnostic_capture_enabled: z.boolean().default(false),
 })
 
@@ -71,7 +71,7 @@ export const channelSchema = z.object({
     multi_key_size: 0,
     multi_key_polling_index: 0,
     multi_key_mode: 'random',
-    error_rewrite_enabled: true,
+    error_rewrite_enabled: false,
     diagnostic_capture_enabled: false,
   }),
   settings: z.string().default('{}'), // other_settings JSON

@@ -51,6 +51,16 @@ export type DiagnosticCaptureSettingsRequest = {
   min_retention_minutes: number
   incomplete_timeout_minutes: number
   paths: string
+  error_rewrite_enabled: boolean
+  error_rewrite_source: 'local' | 'http' | 'sql'
+  error_rewrite_sync_token: string
+  error_rewrite_rules_json: string
+  error_rewrite_rules_url: string
+  error_rewrite_fallback_message: string
+  error_rewrite_refresh_seconds: number
+  error_rewrite_request_timeout_ms: number
+  error_rewrite_sql_driver: 'mysql' | 'postgres' | 'sqlite'
+  error_rewrite_sql_query: string
 }
 
 export type ConfirmPaymentComplianceResponse = {

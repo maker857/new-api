@@ -3,11 +3,15 @@ package service
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/types"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRewriteUpstreamErrorMessageBlacklist(t *testing.T) {
@@ -226,11 +230,15 @@ func TestRewriteUpstreamErrorMessageMonitorRuleFields(t *testing.T) {
 	errorRewriteCache.fetchedAt = time.Now()
 	errorRewriteCache.Unlock()
 
+	channelRewriteEnabled := true
 	ctx := ErrorRewriteMatchContext{
 		StatusCode: http.StatusBadGateway,
 		ChannelID:  7,
 		GroupScope: "vip",
 		ModelName:  "gpt-5",
+		ChannelInfo: &model.ChannelInfo{
+			ErrorRewriteEnabled: &channelRewriteEnabled,
+		},
 	}
 	replacement, ok := rewriteUpstreamError("aws account quota exceeded, request_id=aws-abcdefabcdefabcdefabcdefabcdefabcdef", ctx)
 	if !ok || replacement.Message != "masked quota error" {
@@ -241,5 +249,95 @@ func TestRewriteUpstreamErrorMessageMonitorRuleFields(t *testing.T) {
 	replacement, ok = rewriteUpstreamError("aws account quota exceeded", ctx)
 	if ok || replacement.Message != "" {
 		t.Fatalf("expected channel mismatch to skip rewrite, got ok=%v rewritten=%q", ok, replacement.Message)
+	}
+}
+
+func TestRewriteUpstreamErrorRequiresGlobalAndChannelSwitches(t *testing.T) {
+	common.OptionMapRWMutex.Lock()
+	originalOptions := common.OptionMap
+	common.OptionMap = map[string]string{
+		ErrorRewriteEnabledKey:         "true",
+		ErrorRewriteFallbackMessageKey: "fallback monitoring error",
+		ErrorRewriteRulesJSONKey:       `[]`,
+	}
+	common.OptionMapRWMutex.Unlock()
+	t.Cleanup(func() {
+		common.OptionMapRWMutex.Lock()
+		common.OptionMap = originalOptions
+		common.OptionMapRWMutex.Unlock()
+	})
+
+	errorRewriteCache.Lock()
+	originalRules := errorRewriteCache.rules
+	originalFetchedAt := errorRewriteCache.fetchedAt
+	errorRewriteCache.rules = ErrorRewriteRules{
+		Rules: []ErrorRewriteRule{{ContentContains: "aws", Type: "blacklist"}},
+	}
+	errorRewriteCache.fetchedAt = time.Now()
+	errorRewriteCache.Unlock()
+	t.Cleanup(func() {
+		errorRewriteCache.Lock()
+		errorRewriteCache.rules = originalRules
+		errorRewriteCache.fetchedAt = originalFetchedAt
+		errorRewriteCache.Unlock()
+	})
+
+	enabled := true
+	disabled := false
+	message := "upstream aws credential error"
+	tests := []struct {
+		name     string
+		global   bool
+		matchCtx ErrorRewriteMatchContext
+		expected string
+	}{
+		{
+			name:     "global switch disabled",
+			global:   false,
+			matchCtx: ErrorRewriteMatchContext{ChannelID: 7, ChannelInfo: &model.ChannelInfo{ErrorRewriteEnabled: &enabled}},
+			expected: message,
+		},
+		{
+			name:     "channel switch missing",
+			global:   true,
+			matchCtx: ErrorRewriteMatchContext{ChannelID: 7},
+			expected: message,
+		},
+		{
+			name:     "channel switch disabled",
+			global:   true,
+			matchCtx: ErrorRewriteMatchContext{ChannelID: 7, ChannelInfo: &model.ChannelInfo{ErrorRewriteEnabled: &disabled}},
+			expected: message,
+		},
+		{
+			name:     "both switches enabled",
+			global:   true,
+			matchCtx: ErrorRewriteMatchContext{ChannelID: 7, ChannelInfo: &model.ChannelInfo{ErrorRewriteEnabled: &enabled}},
+			expected: "fallback monitoring error",
+		},
+		{
+			name:     "global helper without channel",
+			global:   true,
+			matchCtx: ErrorRewriteMatchContext{},
+			expected: "fallback monitoring error",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			common.OptionMapRWMutex.Lock()
+			require.NotNil(t, common.OptionMap)
+			common.OptionMap[ErrorRewriteEnabledKey] = strconv.FormatBool(test.global)
+			common.OptionMapRWMutex.Unlock()
+
+			replacement, ok := rewriteUpstreamError(message, test.matchCtx)
+			if test.expected == message {
+				assert.False(t, ok)
+				assert.Empty(t, replacement.Message)
+				return
+			}
+			require.True(t, ok)
+			assert.Equal(t, test.expected, replacement.Message)
+		})
 	}
 }

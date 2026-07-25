@@ -72,11 +72,22 @@ type ChannelInfo struct {
 }
 
 func (c ChannelInfo) IsErrorRewriteEnabled() bool {
-	return c.ErrorRewriteEnabled == nil || *c.ErrorRewriteEnabled
+	return c.ErrorRewriteEnabled != nil && *c.ErrorRewriteEnabled
 }
 
 func (c ChannelInfo) IsDiagnosticCaptureEnabled() bool {
 	return c.DiagnosticCaptureEnabled != nil && *c.DiagnosticCaptureEnabled
+}
+
+func (channel *Channel) NormalizeDefaults() {
+	if channel.ChannelInfo.ErrorRewriteEnabled == nil {
+		errorRewriteDisabled := false
+		channel.ChannelInfo.ErrorRewriteEnabled = &errorRewriteDisabled
+	}
+	if channel.ChannelInfo.DiagnosticCaptureEnabled == nil {
+		diagnosticCaptureDisabled := false
+		channel.ChannelInfo.DiagnosticCaptureEnabled = &diagnosticCaptureDisabled
+	}
 }
 
 type ChannelSortOptions struct {
@@ -437,6 +448,9 @@ func BatchInsertChannels(channels []Channel) error {
 	if len(channels) == 0 {
 		return nil
 	}
+	for index := range channels {
+		channels[index].NormalizeDefaults()
+	}
 	tx := DB.Begin()
 	if tx.Error != nil {
 		return tx.Error
@@ -530,6 +544,7 @@ func (channel *Channel) GetStatusCodeMapping() string {
 }
 
 func (channel *Channel) Insert() error {
+	channel.NormalizeDefaults()
 	var err error
 	err = DB.Create(channel).Error
 	if err != nil {
@@ -540,6 +555,7 @@ func (channel *Channel) Insert() error {
 }
 
 func (channel *Channel) Update() error {
+	channel.NormalizeDefaults()
 	// If this is a multi-key channel, recalculate MultiKeySize based on the current key list to avoid inconsistency after editing keys
 	if channel.ChannelInfo.IsMultiKey {
 		var keyStr string

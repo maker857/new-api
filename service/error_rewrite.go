@@ -152,12 +152,22 @@ func RewriteUpstreamErrorMessage(message string) string {
 	return replacement.Message
 }
 
+func RewriteUpstreamErrorMessageWithGinContext(message string, c *gin.Context) string {
+	replacement, ok := rewriteUpstreamError(message, errorRewriteMatchContextFromGin(nil, c))
+	if !ok {
+		return message
+	}
+	return replacement.Message
+}
+
 func rewriteUpstreamError(message string, matchCtx ErrorRewriteMatchContext) (errorRewriteReplacement, bool) {
 	if strings.TrimSpace(message) == "" || !optionBool(ErrorRewriteEnabledKey) {
 		return errorRewriteReplacement{}, false
 	}
-	if matchCtx.ChannelInfo != nil && !matchCtx.ChannelInfo.IsErrorRewriteEnabled() {
-		return errorRewriteReplacement{}, false
+	if matchCtx.ChannelID > 0 {
+		if matchCtx.ChannelInfo == nil || !matchCtx.ChannelInfo.IsErrorRewriteEnabled() {
+			return errorRewriteReplacement{}, false
+		}
 	}
 	monitorRules := currentErrorRewriteRules()
 	localRules, err := ErrorRewriteRulesFromOptions()

@@ -66,3 +66,35 @@ func TestAdvancedCustomChannelRequiresModelListRouteOnlyWhenUpdateChecksEnabled(
 		})
 	}
 }
+
+func TestChannelOptionalFeaturesDefaultToExplicitlyDisabled(t *testing.T) {
+	channel := &Channel{}
+
+	channel.NormalizeDefaults()
+
+	require.NotNil(t, channel.ChannelInfo.ErrorRewriteEnabled)
+	assert.False(t, *channel.ChannelInfo.ErrorRewriteEnabled)
+	assert.False(t, channel.ChannelInfo.IsErrorRewriteEnabled())
+	require.NotNil(t, channel.ChannelInfo.DiagnosticCaptureEnabled)
+	assert.False(t, *channel.ChannelInfo.DiagnosticCaptureEnabled)
+	assert.False(t, channel.ChannelInfo.IsDiagnosticCaptureEnabled())
+}
+
+func TestChannelOptionalFeatureExplicitEnablesArePreserved(t *testing.T) {
+	enabled := true
+	channel := &Channel{
+		ChannelInfo: ChannelInfo{
+			ErrorRewriteEnabled:      &enabled,
+			DiagnosticCaptureEnabled: &enabled,
+		},
+	}
+
+	channel.NormalizeDefaults()
+
+	require.NotNil(t, channel.ChannelInfo.ErrorRewriteEnabled)
+	assert.True(t, *channel.ChannelInfo.ErrorRewriteEnabled)
+	assert.True(t, channel.ChannelInfo.IsErrorRewriteEnabled())
+	require.NotNil(t, channel.ChannelInfo.DiagnosticCaptureEnabled)
+	assert.True(t, *channel.ChannelInfo.DiagnosticCaptureEnabled)
+	assert.True(t, channel.ChannelInfo.IsDiagnosticCaptureEnabled())
+}

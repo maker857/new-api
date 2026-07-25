@@ -1391,22 +1391,23 @@ func removeDiagnosticCaptureTempFile(cfg DiagnosticCaptureConfig, state *diagnos
 }
 
 type diagnosticCaptureJSONWriter struct {
-	writer *bufio.Writer
-	err    error
+	writer    *bufio.Writer
+	formatter *diagnosticCaptureJSONFormatter
+	err       error
 }
 
 func (w *diagnosticCaptureJSONWriter) raw(value string) {
 	if w.err != nil {
 		return
 	}
-	_, w.err = w.writer.WriteString(value)
+	_, w.err = w.formatter.Write([]byte(value))
 }
 
 func (w *diagnosticCaptureJSONWriter) bytes(value []byte) {
 	if w.err != nil {
 		return
 	}
-	_, w.err = w.writer.Write(value)
+	_, w.err = w.formatter.Write(value)
 }
 
 func (w *diagnosticCaptureJSONWriter) finish() {
@@ -1425,6 +1426,123 @@ func (w *diagnosticCaptureJSONWriter) value(value any) {
 		return
 	}
 	w.bytes(data)
+}
+
+// diagnosticCaptureJSONFormatter emits readable JSON while keeping the capture
+// stream bounded: it never keeps the completed log, request body, or WebSocket
+// payload in memory. JSON strings are copied unchanged, so large base64 payloads
+// remain streamed directly to disk.
+type diagnosticCaptureJSONFormatter struct {
+	writer    *bufio.Writer
+	depth     int
+	inString  bool
+	escaped   bool
+	lineStart bool
+}
+
+func (f *diagnosticCaptureJSONFormatter) Write(data []byte) (int, error) {
+	for _, value := range data {
+		if f.inString {
+			if err := f.writeByte(value); err != nil {
+				return 0, err
+			}
+			if f.escaped {
+				f.escaped = false
+				continue
+			}
+			if value == '\\' {
+				f.escaped = true
+			} else if value == '"' {
+				f.inString = false
+			}
+			continue
+		}
+
+		switch value {
+		case ' ', '\n', '\r', '\t':
+			continue
+		case '"':
+			if err := f.writeByte(value); err != nil {
+				return 0, err
+			}
+			f.inString = true
+		case '{', '[':
+			if err := f.writeByte(value); err != nil {
+				return 0, err
+			}
+			f.depth++
+			if err := f.writeNewline(); err != nil {
+				return 0, err
+			}
+		case '}', ']':
+			f.depth--
+			if f.lineStart {
+				if err := f.writeIndent(); err != nil {
+					return 0, err
+				}
+			} else if err := f.writeNewline(); err != nil {
+				return 0, err
+			} else if err := f.writeIndent(); err != nil {
+				return 0, err
+			}
+			if err := f.writer.WriteByte(value); err != nil {
+				return 0, err
+			}
+			f.lineStart = false
+		case ',':
+			if err := f.writeByte(value); err != nil {
+				return 0, err
+			}
+			if err := f.writeNewline(); err != nil {
+				return 0, err
+			}
+		case ':':
+			if err := f.writeByte(value); err != nil {
+				return 0, err
+			}
+			if err := f.writer.WriteByte(' '); err != nil {
+				return 0, err
+			}
+		default:
+			if err := f.writeByte(value); err != nil {
+				return 0, err
+			}
+		}
+	}
+	return len(data), nil
+}
+
+func (f *diagnosticCaptureJSONFormatter) writeByte(value byte) error {
+	if f.lineStart {
+		if err := f.writeIndent(); err != nil {
+			return err
+		}
+	}
+	if err := f.writer.WriteByte(value); err != nil {
+		return err
+	}
+	f.lineStart = false
+	return nil
+}
+
+func (f *diagnosticCaptureJSONFormatter) writeNewline() error {
+	if !f.lineStart {
+		if err := f.writer.WriteByte('\n'); err != nil {
+			return err
+		}
+	}
+	f.lineStart = true
+	return nil
+}
+
+func (f *diagnosticCaptureJSONFormatter) writeIndent() error {
+	for index := 0; index < f.depth; index++ {
+		if _, err := f.writer.WriteString("  "); err != nil {
+			return err
+		}
+	}
+	f.lineStart = false
+	return nil
 }
 
 func writeDiagnosticCaptureSession(cfg DiagnosticCaptureConfig, flow *DiagnosticFlow, parts []*diagnosticCapturePartState) error {
@@ -1487,7 +1605,11 @@ func writeDiagnosticCaptureSession(cfg DiagnosticCaptureConfig, flow *Diagnostic
 	temporaryPath := temporaryFile.Name()
 	defer os.Remove(temporaryPath)
 	file := temporaryFile
-	stream := &diagnosticCaptureJSONWriter{writer: bufio.NewWriterSize(file, diagnosticCaptureChunkSize)}
+	bufferedWriter := bufio.NewWriterSize(file, diagnosticCaptureChunkSize)
+	stream := &diagnosticCaptureJSONWriter{
+		writer:    bufferedWriter,
+		formatter: &diagnosticCaptureJSONFormatter{writer: bufferedWriter},
+	}
 	stream.raw(`{"format":"cpa-sections-json","version":1`)
 	if flow.ProxyTraceID != "" {
 		stream.raw(`,"proxy_trace_id":`)
@@ -1711,7 +1833,7 @@ func writeDiagnosticWebSocketFrameGroup(w *diagnosticCaptureJSONWriter, cfg Diag
 		w.raw(`,"saved_size":`)
 		w.value(int64(payloadSize))
 		w.raw(`,"truncated":false,"base64":"`)
-		encoder := base64.NewEncoder(base64.StdEncoding, w.writer)
+		encoder := base64.NewEncoder(base64.StdEncoding, w.formatter)
 		_, copyErr := io.CopyN(encoder, file, int64(payloadSize))
 		closeErr := encoder.Close()
 		if copyErr != nil {
@@ -1832,7 +1954,7 @@ func writeDiagnosticSegmentedWebSocketFrameGroup(w *diagnosticCaptureJSONWriter,
 		w.raw(`,"saved_size":`)
 		w.value(int64(totalSize))
 		w.raw(`,"truncated":false,"base64":"`)
-		encoder := base64.NewEncoder(base64.StdEncoding, w.writer)
+		encoder := base64.NewEncoder(base64.StdEncoding, w.formatter)
 		copiedSize := int64(0)
 		for {
 			if copyErr := copySegment(int64(segmentSize), encoder); copyErr != nil {
@@ -1985,7 +2107,7 @@ func streamDiagnosticCaptureFileBase64(w *diagnosticCaptureJSONWriter, path stri
 		return
 	}
 	defer file.Close()
-	encoder := base64.NewEncoder(base64.StdEncoding, w.writer)
+	encoder := base64.NewEncoder(base64.StdEncoding, w.formatter)
 	_, w.err = io.CopyBuffer(encoder, file, make([]byte, diagnosticCaptureChunkSize))
 	if closeErr := encoder.Close(); w.err == nil {
 		w.err = closeErr

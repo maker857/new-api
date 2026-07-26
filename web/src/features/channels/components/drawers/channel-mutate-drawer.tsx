@@ -189,6 +189,7 @@ import {
   ChannelBasicSection,
   ChannelEditorLoadingState,
   ChannelModelsSection,
+  VolcEngineTTSSection,
 } from './sections'
 
 type ChannelMutateDrawerProps = {
@@ -3283,6 +3284,13 @@ export function ChannelMutateDrawer({
                         </div>
                       </ChannelApiAccessSection>
                     </div>
+
+                    {currentType === 45 && (
+                      <VolcEngineTTSSection
+                        form={form}
+                        disabled={sensitiveLocked}
+                      />
+                    )}
 
                     {/* ── Models & Groups ── */}
                     <div

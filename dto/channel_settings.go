@@ -33,6 +33,71 @@ const (
 	AwsKeyTypeApiKey AwsKeyType = "api_key"
 )
 
+const (
+	VolcTTSProtocolV1WsBinary    = "v1_ws_binary"
+	VolcTTSProtocolV3WsUni       = "v3_ws_uni"
+	VolcTTSProtocolV3HTTPChunked = "v3_http_chunked"
+
+	VolcTTSAuthModeNewConsole = "new_console"
+	VolcTTSAuthModeLegacy     = "legacy"
+)
+
+type VolcTTSConfig struct {
+	Protocol     string `json:"protocol,omitempty"`
+	ResourceID   string `json:"resource_id,omitempty"`
+	AuthMode     string `json:"auth_mode,omitempty"`
+	RequireUsage *bool  `json:"require_usage,omitempty"`
+}
+
+func (c *VolcTTSConfig) EffectiveProtocol() string {
+	if c == nil || strings.TrimSpace(c.Protocol) == "" {
+		return VolcTTSProtocolV1WsBinary
+	}
+	return strings.TrimSpace(c.Protocol)
+}
+
+func (c *VolcTTSConfig) IsV3() bool {
+	protocol := c.EffectiveProtocol()
+	return protocol == VolcTTSProtocolV3WsUni || protocol == VolcTTSProtocolV3HTTPChunked
+}
+
+func (c *VolcTTSConfig) EffectiveAuthMode() string {
+	if c == nil || strings.TrimSpace(c.AuthMode) == "" {
+		return VolcTTSAuthModeNewConsole
+	}
+	return strings.TrimSpace(c.AuthMode)
+}
+
+func (c *VolcTTSConfig) ShouldRequireUsage() bool {
+	return c == nil || c.RequireUsage == nil || *c.RequireUsage
+}
+
+func (c *VolcTTSConfig) Validate() error {
+	if c == nil {
+		return nil
+	}
+	c.Protocol = strings.TrimSpace(c.Protocol)
+	c.ResourceID = strings.TrimSpace(c.ResourceID)
+	c.AuthMode = strings.TrimSpace(c.AuthMode)
+
+	switch c.EffectiveProtocol() {
+	case VolcTTSProtocolV1WsBinary:
+	case VolcTTSProtocolV3WsUni, VolcTTSProtocolV3HTTPChunked:
+		if c.ResourceID == "" {
+			return fmt.Errorf("volcengine tts resource_id is required for v3")
+		}
+	default:
+		return fmt.Errorf("unsupported volcengine tts protocol: %s", c.Protocol)
+	}
+
+	switch c.EffectiveAuthMode() {
+	case VolcTTSAuthModeNewConsole, VolcTTSAuthModeLegacy:
+		return nil
+	default:
+		return fmt.Errorf("unsupported volcengine tts auth mode: %s", c.AuthMode)
+	}
+}
+
 type ChannelOtherSettings struct {
 	AzureResponsesVersion                 string                `json:"azure_responses_version,omitempty"`
 	VertexKeyType                         VertexKeyType         `json:"vertex_key_type,omitempty"` // "json" or "api_key"
@@ -53,6 +118,7 @@ type ChannelOtherSettings struct {
 	UpstreamModelUpdateLastRemovedModels  []string              `json:"upstream_model_update_last_removed_models,omitempty"`  // 上次检测到的可删除模型
 	UpstreamModelUpdateIgnoredModels      []string              `json:"upstream_model_update_ignored_models,omitempty"`       // 手动忽略的模型
 	AdvancedCustom                        *AdvancedCustomConfig `json:"advanced_custom,omitempty"`
+	VolcTTS                               *VolcTTSConfig        `json:"volc_tts,omitempty"`
 }
 
 func (s *ChannelOtherSettings) IsOpenRouterEnterprise() bool {

@@ -324,7 +324,7 @@ func (m *Message) Unmarshal(data []byte) error {
 		return err
 	}
 
-	m.Serialization = SerializationBits(serializationCompression & 0b11110000)
+	m.Serialization = SerializationBits(serializationCompression >> 4)
 	m.Compression = CompressionBits(serializationCompression & 0b00001111)
 
 	headerSize := 4 * int(m.HeaderSize)
@@ -355,7 +355,7 @@ func (m *Message) Unmarshal(data []byte) error {
 
 func (m *Message) writers() (writers []func(*bytes.Buffer) error, _ error) {
 	if m.MsgTypeFlag == MsgTypeFlagWithEvent {
-		writers = append(writers, m.writeEvent, m.writeSessionID)
+		writers = append(writers, m.writeEvent, m.writeSessionID, m.writeConnectID)
 	}
 
 	switch m.MsgType {
@@ -380,7 +380,8 @@ func (m *Message) writeEvent(buf *bytes.Buffer) error {
 func (m *Message) writeSessionID(buf *bytes.Buffer) error {
 	switch m.EventType {
 	case EventType_StartConnection, EventType_FinishConnection,
-		EventType_ConnectionStarted, EventType_ConnectionFailed:
+		EventType_ConnectionStarted, EventType_ConnectionFailed,
+		EventType_ConnectionFinished:
 		return nil
 	}
 
@@ -394,6 +395,24 @@ func (m *Message) writeSessionID(buf *bytes.Buffer) error {
 	}
 
 	buf.WriteString(m.SessionID)
+	return nil
+}
+
+func (m *Message) writeConnectID(buf *bytes.Buffer) error {
+	switch m.EventType {
+	case EventType_ConnectionStarted, EventType_ConnectionFailed, EventType_ConnectionFinished:
+	default:
+		return nil
+	}
+
+	size := len(m.ConnectID)
+	if int64(size) > math.MaxUint32 {
+		return fmt.Errorf("connect ID size (%d) exceeds max(uint32)", size)
+	}
+	if err := binary.Write(buf, binary.BigEndian, uint32(size)); err != nil {
+		return err
+	}
+	buf.WriteString(m.ConnectID)
 	return nil
 }
 
@@ -420,6 +439,10 @@ func (m *Message) writePayload(buf *bytes.Buffer) error {
 }
 
 func (m *Message) readers() (readers []func(*bytes.Buffer) error, _ error) {
+	if m.MsgTypeFlag == MsgTypeFlagWithEvent {
+		readers = append(readers, m.readEvent, m.readSessionID, m.readConnectID)
+	}
+
 	switch m.MsgType {
 	case MsgTypeFullClientRequest, MsgTypeFullServerResponse, MsgTypeFrontEndResultServer, MsgTypeAudioOnlyClient, MsgTypeAudioOnlyServer:
 		if m.MsgTypeFlag == MsgTypeFlagPositiveSeq || m.MsgTypeFlag == MsgTypeFlagNegativeSeq {
@@ -431,12 +454,26 @@ func (m *Message) readers() (readers []func(*bytes.Buffer) error, _ error) {
 		return nil, fmt.Errorf("unsupported message type: %d", m.MsgType)
 	}
 
-	if m.MsgTypeFlag == MsgTypeFlagWithEvent {
-		readers = append(readers, m.readEvent, m.readSessionID, m.readConnectID)
-	}
-
 	readers = append(readers, m.readPayload)
 	return readers, nil
+}
+
+func NewEventMessage(event EventType, sessionID string, payload []byte) (*Message, error) {
+	message, err := NewMessage(MsgTypeFullClientRequest, MsgTypeFlagWithEvent)
+	if err != nil {
+		return nil, err
+	}
+	message.EventType = event
+	message.SessionID = sessionID
+	if len(payload) == 0 {
+		payload = []byte("{}")
+	}
+	message.Payload = payload
+	return message, nil
+}
+
+func ParseFrame(data []byte) (*Message, error) {
+	return NewMessageFromBytes(data)
 }
 
 func (m *Message) readEvent(buf *bytes.Buffer) error {

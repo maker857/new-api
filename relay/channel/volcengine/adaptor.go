@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/QuantumNous/new-api/common"
 	channelconstant "github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/relay/channel"
@@ -51,12 +52,28 @@ func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInf
 		return nil, errors.New("unsupported audio relay mode")
 	}
 
-	appID, token, err := parseVolcengineAuth(info.ApiKey)
-	if err != nil {
-		return nil, err
+	volcTTSConfig := info.ChannelOtherSettings.VolcTTS
+	isV3 := volcTTSConfig != nil && volcTTSConfig.IsV3()
+	appID, token := "", ""
+	var err error
+	if isV3 {
+		if err = volcTTSConfig.Validate(); err != nil {
+			return nil, err
+		}
+		if _, err = buildV3AuthHeaders(info.ApiKey, *volcTTSConfig, generateRequestID()); err != nil {
+			return nil, err
+		}
+	} else {
+		appID, token, err = parseVolcengineAuth(info.ApiKey)
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	voiceType := mapVoiceType(request.Voice)
+	voiceType := request.Voice
+	if !isV3 {
+		voiceType = mapVoiceType(request.Voice)
+	}
 	speedRatio := lo.FromPtrOr(request.Speed, 0.0)
 	encoding := mapEncoding(request.ResponseFormat)
 
@@ -86,7 +103,7 @@ func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInf
 	}
 
 	if len(request.Metadata) > 0 {
-		if err = json.Unmarshal(request.Metadata, &volcRequest); err != nil {
+		if err = common.Unmarshal(request.Metadata, &volcRequest); err != nil {
 			return nil, fmt.Errorf("error unmarshalling metadata to volcengine request: %w", err)
 		}
 	}
@@ -97,7 +114,7 @@ func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInf
 		info.IsStream = true
 	}
 
-	jsonData, err := json.Marshal(volcRequest)
+	jsonData, err := common.Marshal(volcRequest)
 	if err != nil {
 		return nil, fmt.Errorf("error marshalling volcengine request: %w", err)
 	}
@@ -274,6 +291,9 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 		case constant.RelayModeResponses:
 			return fmt.Sprintf("%s/api/v3/responses", baseUrl), nil
 		case constant.RelayModeAudioSpeech:
+			if config := info.ChannelOtherSettings.VolcTTS; config != nil && config.IsV3() {
+				return getV3TTSEndpoint(config.EffectiveProtocol())
+			}
 			if baseUrl == channelconstant.ChannelBaseURLs[channelconstant.ChannelTypeVolcEngine] {
 				return "wss://openspeech.bytedance.com/api/v1/tts/ws_binary", nil
 			}
@@ -288,6 +308,10 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, req *http.Header, info *rel
 	channel.SetupApiRequestHeader(info, c, req)
 
 	if info.RelayMode == constant.RelayModeAudioSpeech {
+		if config := info.ChannelOtherSettings.VolcTTS; config != nil && config.IsV3() {
+			req.Set("Content-Type", "application/json")
+			return nil
+		}
 		parts := strings.Split(info.ApiKey, "|")
 		if len(parts) == 2 {
 			req.Set("Authorization", "Bearer;"+parts[1])
@@ -331,6 +355,9 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 
 func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {
 	if info.RelayMode == constant.RelayModeAudioSpeech {
+		if config := info.ChannelOtherSettings.VolcTTS; config != nil && config.IsV3() {
+			return nil, nil
+		}
 		baseUrl := info.ChannelBaseUrl
 		if baseUrl == "" {
 			baseUrl = channelconstant.ChannelBaseURLs[channelconstant.ChannelTypeVolcEngine]
@@ -355,6 +382,27 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 
 	if info.RelayMode == constant.RelayModeAudioSpeech {
 		encoding := mapEncoding(c.GetString(contextKeyResponseFormat))
+		if config := info.ChannelOtherSettings.VolcTTS; config != nil && config.IsV3() {
+			volcRequestInterface, exists := c.Get(contextKeyTTSRequest)
+			if !exists {
+				return nil, types.NewErrorWithStatusCode(errors.New("volcengine TTS request not found in context"), types.ErrorCodeBadRequestBody, http.StatusInternalServerError)
+			}
+			volcRequest, ok := volcRequestInterface.(VolcengineTTSRequest)
+			if !ok {
+				return nil, types.NewErrorWithStatusCode(errors.New("invalid volcengine TTS request type"), types.ErrorCodeBadRequestBody, http.StatusInternalServerError)
+			}
+			requestURL, urlErr := a.GetRequestURL(info)
+			if urlErr != nil {
+				return nil, types.NewErrorWithStatusCode(urlErr, types.ErrorCodeBadRequestBody, http.StatusInternalServerError)
+			}
+			if config.EffectiveProtocol() == dto.VolcTTSProtocolV3WsUni {
+				return handleTTSV3WSUnidirectional(c, requestURL, volcRequest, info, encoding, *config)
+			}
+			if config.EffectiveProtocol() == dto.VolcTTSProtocolV3HTTPChunked {
+				return handleTTSV3HTTPChunked(c, requestURL, volcRequest, info, encoding, *config)
+			}
+			return nil, types.NewErrorWithStatusCode(errors.New("unsupported volcengine v3 tts transport"), types.ErrorCodeBadRequestBody, http.StatusInternalServerError)
+		}
 		if info.IsStream {
 			volcRequestInterface, exists := c.Get(contextKeyTTSRequest)
 			if !exists {

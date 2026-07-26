@@ -254,7 +254,10 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 	var modelRequest ModelRequest
 	shouldSelectChannel := true
 	var err error
-	if strings.Contains(c.Request.URL.Path, "/mj/") {
+	if strings.HasPrefix(c.Request.URL.Path, "/api/v3/tts/unidirectional") {
+		modelRequest.Model = strings.TrimSpace(c.GetHeader("X-Api-Resource-Id"))
+		c.Set("relay_mode", relayconstant.RelayModeVolcengineTTSNative)
+	} else if strings.Contains(c.Request.URL.Path, "/mj/") {
 		relayMode := relayconstant.Path2RelayModeMidjourney(c.Request.URL.Path)
 		if relayMode == relayconstant.RelayModeMidjourneyTaskFetch ||
 			relayMode == relayconstant.RelayModeMidjourneyTaskFetchByCondition ||

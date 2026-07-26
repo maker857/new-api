@@ -16,7 +16,7 @@ func TestNativeTTSRequestMetadata(t *testing.T) {
 	}
 
 	assert.Equal(t, "你好", request.GetTokenCountMeta().CombineText)
-	assert.False(t, request.IsStream(nil))
+	assert.True(t, request.IsStream(nil))
 
 	request.SetModelName("mapped-seed-tts-2.0")
 	assert.Equal(t, "mapped-seed-tts-2.0", request.Model)

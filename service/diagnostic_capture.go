@@ -543,6 +543,29 @@ func WrapDiagnosticOutboundResponse(c *gin.Context, resp *http.Response, exchang
 	resp.Body = newDiagnosticCaptureStream(resp.Body, flow.session, partID)
 }
 
+// WrapDiagnosticOutboundNDJSONResponse captures newline-delimited response
+// records after redacting configured secrets while leaving the response bytes
+// consumed by the relay unchanged.
+func WrapDiagnosticOutboundNDJSONResponse(resp *http.Response, exchange *DiagnosticExchange, maxLineSize int, secrets ...string) {
+	if resp == nil || exchange == nil || exchange.Flow == nil || exchange.Flow.session == nil {
+		return
+	}
+	flow := exchange.Flow
+	partID := fmt.Sprintf("outbound-%06d-response", exchange.Sequence)
+	flow.session.startPart(partID, exchange.Sequence, "outbound", "response", map[string]any{
+		"captured_at": time.Now().UTC().Format(time.RFC3339Nano),
+		"role":        "outbound",
+		"status_code": resp.StatusCode,
+		"duration_ms": time.Since(exchange.Started).Milliseconds(),
+		"headers":     redactHeaders(resp.Header),
+	})
+	if flow.session.cfg.Mode != "full" || resp.Body == nil {
+		flow.session.endPart(partID, nil, 0, true)
+		return
+	}
+	resp.Body = newDiagnosticNDJSONCaptureStream(resp.Body, flow.session, partID, maxLineSize, secrets...)
+}
+
 // RecordDiagnosticOutboundFailure records transport failures for an exchange
 // that never produced an HTTP response, such as DNS, TLS, or connection errors.
 func RecordDiagnosticOutboundFailure(exchange *DiagnosticExchange, requestErr error) {
@@ -1929,7 +1952,7 @@ func redactHeaders(headers http.Header) map[string][]string {
 	result := make(map[string][]string, len(headers))
 	for key, values := range headers {
 		switch strings.ToLower(key) {
-		case "authorization", "cookie", "set-cookie", "proxy-authorization", "x-api-key", "x-goog-api-key":
+		case "authorization", "cookie", "set-cookie", "proxy-authorization", "x-api-key", "x-api-access-key", "x-api-app-id", "x-goog-api-key":
 			result[key] = make([]string, len(values))
 			for index, value := range values {
 				result[key][index] = partiallyRedactDiagnosticHeader(value)

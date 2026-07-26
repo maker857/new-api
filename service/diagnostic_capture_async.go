@@ -2,6 +2,7 @@ package service
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
@@ -156,6 +157,20 @@ type diagnosticCaptureStream struct {
 	total    int64
 	finished bool
 	mu       sync.Mutex
+}
+
+type diagnosticNDJSONCaptureStream struct {
+	reader       io.Reader
+	closer       io.Closer
+	session      *diagnosticCaptureSession
+	partID       string
+	maxLineSize  int
+	secrets      []string
+	lineBuffer   []byte
+	total        int64
+	finished     bool
+	captureLimit bool
+	mu           sync.Mutex
 }
 
 func newDiagnosticCaptureSession(cfg DiagnosticCaptureConfig, flow *DiagnosticFlow) *diagnosticCaptureSession {
@@ -622,6 +637,87 @@ func newDiagnosticCaptureStream(reader io.Reader, session *diagnosticCaptureSess
 		stream.closer = closer
 	}
 	return stream
+}
+
+func newDiagnosticNDJSONCaptureStream(reader io.Reader, session *diagnosticCaptureSession, partID string, maxLineSize int, secrets ...string) *diagnosticNDJSONCaptureStream {
+	stream := &diagnosticNDJSONCaptureStream{reader: reader, session: session, partID: partID, maxLineSize: maxLineSize, secrets: secrets}
+	if closer, ok := reader.(io.Closer); ok {
+		stream.closer = closer
+	}
+	return stream
+}
+
+func (s *diagnosticNDJSONCaptureStream) Read(p []byte) (int, error) {
+	n, err := s.reader.Read(p)
+	if n > 0 {
+		s.total += int64(n)
+		s.capture(p[:n])
+	}
+	if err == io.EOF {
+		s.flushLine()
+		s.finish(true)
+	}
+	return n, err
+}
+
+func (s *diagnosticNDJSONCaptureStream) Close() error {
+	s.flushLine()
+	s.finish(false)
+	if s.closer != nil {
+		return s.closer.Close()
+	}
+	return nil
+}
+
+func (s *diagnosticNDJSONCaptureStream) capture(data []byte) {
+	if s.captureLimit {
+		return
+	}
+	for len(data) > 0 {
+		newline := bytes.IndexByte(data, '\n')
+		if newline < 0 {
+			if s.maxLineSize > 0 && len(s.lineBuffer)+len(data) > s.maxLineSize {
+				s.captureLimit = true
+				s.lineBuffer = nil
+				return
+			}
+			s.lineBuffer = append(s.lineBuffer, data...)
+			return
+		}
+		segment := data[:newline+1]
+		if s.maxLineSize > 0 && len(s.lineBuffer)+len(segment) > s.maxLineSize {
+			s.captureLimit = true
+			s.lineBuffer = nil
+			return
+		}
+		s.lineBuffer = append(s.lineBuffer, segment...)
+		s.flushLine()
+		data = data[newline+1:]
+	}
+}
+
+func (s *diagnosticNDJSONCaptureStream) flushLine() {
+	if s.captureLimit || len(s.lineBuffer) == 0 {
+		return
+	}
+	line := string(s.lineBuffer)
+	for _, secret := range s.secrets {
+		if secret != "" {
+			line = strings.ReplaceAll(line, secret, "[REDACTED]")
+		}
+	}
+	s.session.writeChunk(s.partID, []byte(line))
+	s.lineBuffer = nil
+}
+
+func (s *diagnosticNDJSONCaptureStream) finish(complete bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.finished {
+		return
+	}
+	s.finished = true
+	s.session.endPart(s.partID, nil, s.total, complete)
 }
 
 func (s *diagnosticCaptureStream) Read(p []byte) (int, error) {

@@ -28,7 +28,7 @@ func (r *VolcengineTTSNativeRequest) GetTokenCountMeta() *types.TokenCountMeta {
 }
 
 func (r *VolcengineTTSNativeRequest) IsStream(_ *gin.Context) bool {
-	return false
+	return true
 }
 
 func (r *VolcengineTTSNativeRequest) SetModelName(modelName string) {

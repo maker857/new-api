@@ -57,3 +57,22 @@ func TestAdaptorV1FallbackKeepsLegacyURLAuthAndRequestBehavior(t *testing.T) {
 	assert.Equal(t, mapVoiceType("alloy"), volcRequest.Audio.VoiceType)
 	assert.True(t, info.IsStream)
 }
+
+func TestAdaptorNativeTTSUsesOfficialHTTPChunkedEndpoint(t *testing.T) {
+	info := &relaycommon.RelayInfo{
+		RelayMode: relayconstant.RelayModeVolcengineTTSNative,
+		ChannelMeta: &relaycommon.ChannelMeta{
+			ChannelOtherSettings: dto.ChannelOtherSettings{
+				VolcTTS: &dto.VolcTTSConfig{
+					Protocol:   dto.VolcTTSProtocolV3HTTPChunked,
+					ResourceID: "seed-tts-2.0",
+					AuthMode:   dto.VolcTTSAuthModeNewConsole,
+				},
+			},
+		},
+	}
+
+	requestURL, err := (&Adaptor{}).GetRequestURL(info)
+	require.NoError(t, err)
+	assert.Equal(t, volcTTSV3HTTPChunkedEndpoint, requestURL)
+}

@@ -298,6 +298,12 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 				return "wss://openspeech.bytedance.com/api/v1/tts/ws_binary", nil
 			}
 			return fmt.Sprintf("%s/v1/audio/speech", baseUrl), nil
+		case constant.RelayModeVolcengineTTSNative:
+			config := info.ChannelOtherSettings.VolcTTS
+			if config == nil || config.EffectiveProtocol() != dto.VolcTTSProtocolV3HTTPChunked {
+				return "", errors.New("native volcengine tts requires v3 http chunked channel configuration")
+			}
+			return getV3TTSEndpoint(config.EffectiveProtocol())
 		default:
 		}
 	}

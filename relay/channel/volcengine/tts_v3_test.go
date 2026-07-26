@@ -1,14 +1,189 @@
 package volcengine
 
 import (
+	"context"
 	"math"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/types"
+	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestV3WSUnidirectionalStreamsAudioAndUsage(t *testing.T) {
+	serverErr := make(chan error, 1)
+	finished := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Api-Key") != "console-api-key" || r.Header.Get("X-Api-Resource-Id") != "seed-tts-2.0" {
+			serverErr <- assert.AnError
+			return
+		}
+		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		defer conn.Close()
+
+		startConnection, err := ReceiveMessage(conn)
+		if err != nil || startConnection.EventType != EventType_StartConnection {
+			serverErr <- err
+			return
+		}
+		if err = writeV3TestServerEvent(conn, EventType_ConnectionStarted, "", r.Header.Get("X-Api-Connect-Id"), []byte("{}")); err != nil {
+			serverErr <- err
+			return
+		}
+
+		startSession, err := ReceiveMessage(conn)
+		if err != nil || startSession.EventType != EventType_StartSession {
+			serverErr <- err
+			return
+		}
+		var payload v3StartSessionPayload
+		if err = common.Unmarshal(startSession.Payload, &payload); err != nil || payload.ReqParams.Text != "stream this text" {
+			serverErr <- err
+			return
+		}
+		if err = writeV3TestServerEvent(conn, EventType_SessionStarted, startSession.SessionID, "", []byte("{}")); err != nil {
+			serverErr <- err
+			return
+		}
+
+		finishSession, err := ReceiveMessage(conn)
+		if err != nil || finishSession.EventType != EventType_FinishSession {
+			serverErr <- err
+			return
+		}
+		if err = writeV3TestAudioEvent(conn, startSession.SessionID, []byte("audio-1")); err != nil {
+			serverErr <- err
+			return
+		}
+		if err = writeV3TestAudioEvent(conn, startSession.SessionID, []byte("audio-2")); err != nil {
+			serverErr <- err
+			return
+		}
+		usagePayload, err := common.Marshal(v3SessionResultEnvelope{Usage: &v3UsageStats{TextWords: 17}})
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		if err = writeV3TestServerEvent(conn, EventType_SessionFinished, startSession.SessionID, "", usagePayload); err != nil {
+			serverErr <- err
+			return
+		}
+
+		finishConnection, err := ReceiveMessage(conn)
+		if err != nil || finishConnection.EventType != EventType_FinishConnection {
+			serverErr <- err
+			return
+		}
+		close(finished)
+	}))
+	defer server.Close()
+
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/audio/speech", nil)
+	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ApiKey: "console-api-key"}}
+	request := VolcengineTTSRequest{
+		User:    VolcengineTTSUser{UID: "relay-user"},
+		Audio:   VolcengineTTSAudio{VoiceType: "seed-voice", Rate: 24000},
+		Request: VolcengineTTSReqInfo{Text: "stream this text", Model: "seed-tts-2.0"},
+	}
+	cfg := dto.VolcTTSConfig{Protocol: dto.VolcTTSProtocolV3WsUni, ResourceID: "seed-tts-2.0", AuthMode: dto.VolcTTSAuthModeNewConsole}
+
+	usageAny, apiErr := handleTTSV3WSUnidirectional(c, "ws"+strings.TrimPrefix(server.URL, "http"), request, info, "mp3", cfg)
+	require.Nil(t, apiErr)
+	usage, ok := usageAny.(*dto.Usage)
+	require.True(t, ok)
+	assert.Equal(t, 17, usage.PromptTokens)
+	assert.Equal(t, "audio-1audio-2", recorder.Body.String())
+	select {
+	case <-finished:
+	case err := <-serverErr:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not observe finish connection")
+	}
+}
+
+func TestV3WSCancellationReturnsWithoutUpstreamError(t *testing.T) {
+	startReceived := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := (&websocket.Upgrader{}).Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		if _, err = ReceiveMessage(conn); err != nil {
+			return
+		}
+		close(startReceived)
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer server.Close()
+
+	requestContext, cancel := context.WithCancel(context.Background())
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/audio/speech", nil).WithContext(requestContext)
+	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ApiKey: "console-api-key"}}
+	cfg := dto.VolcTTSConfig{Protocol: dto.VolcTTSProtocolV3WsUni, ResourceID: "seed-tts-2.0", AuthMode: dto.VolcTTSAuthModeNewConsole}
+	result := make(chan *types.NewAPIError, 1)
+	go func() {
+		_, apiErr := handleTTSV3WSUnidirectional(c, "ws"+strings.TrimPrefix(server.URL, "http"), VolcengineTTSRequest{}, info, "mp3", cfg)
+		result <- apiErr
+	}()
+
+	select {
+	case <-startReceived:
+		cancel()
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not receive start connection")
+	}
+	select {
+	case apiErr := <-result:
+		assert.Nil(t, apiErr)
+	case <-time.After(2 * time.Second):
+		t.Fatal("handler did not exit after cancellation")
+	}
+}
+
+func writeV3TestServerEvent(conn *websocket.Conn, event EventType, sessionID, connectID string, payload []byte) error {
+	message, _ := NewMessage(MsgTypeFullServerResponse, MsgTypeFlagWithEvent)
+	message.EventType = event
+	message.SessionID = sessionID
+	message.ConnectID = connectID
+	message.Payload = payload
+	frame, err := message.Marshal()
+	if err != nil {
+		return err
+	}
+	return conn.WriteMessage(websocket.BinaryMessage, frame)
+}
+
+func writeV3TestAudioEvent(conn *websocket.Conn, sessionID string, payload []byte) error {
+	message, _ := NewMessage(MsgTypeAudioOnlyServer, MsgTypeFlagWithEvent)
+	message.EventType = EventType_TTSResponse
+	message.SessionID = sessionID
+	message.Payload = payload
+	frame, err := message.Marshal()
+	if err != nil {
+		return err
+	}
+	return conn.WriteMessage(websocket.BinaryMessage, frame)
+}
 
 func TestV3AuthHeaders(t *testing.T) {
 	t.Run("new console api key", func(t *testing.T) {

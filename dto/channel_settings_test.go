@@ -9,6 +9,56 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestVolcTTSConfigValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  VolcTTSConfig
+		wantErr string
+	}{
+		{name: "empty keeps v1 compatibility", config: VolcTTSConfig{}},
+		{name: "explicit v1", config: VolcTTSConfig{Protocol: VolcTTSProtocolV1WsBinary}},
+		{
+			name:    "websocket v3 requires resource",
+			config:  VolcTTSConfig{Protocol: VolcTTSProtocolV3WsUni},
+			wantErr: "resource_id is required",
+		},
+		{
+			name: "http chunked accepts resource",
+			config: VolcTTSConfig{
+				Protocol:   VolcTTSProtocolV3HTTPChunked,
+				ResourceID: "seed-tts-2.0",
+				AuthMode:   VolcTTSAuthModeNewConsole,
+			},
+		},
+		{
+			name:    "unknown protocol rejected",
+			config:  VolcTTSConfig{Protocol: "v3_unknown", ResourceID: "seed-tts-2.0"},
+			wantErr: "unsupported volcengine tts protocol",
+		},
+		{
+			name: "unknown auth mode rejected",
+			config: VolcTTSConfig{
+				Protocol:   VolcTTSProtocolV3WsUni,
+				ResourceID: "seed-tts-2.0",
+				AuthMode:   "unknown",
+			},
+			wantErr: "unsupported volcengine tts auth mode",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.config.Validate()
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
 func TestAdvancedCustomValidateResponsesToChatConverterPath(t *testing.T) {
 	valid := &AdvancedCustomConfig{
 		Routes: []AdvancedCustomRoute{

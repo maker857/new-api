@@ -98,3 +98,34 @@ func TestChannelOptionalFeatureExplicitEnablesArePreserved(t *testing.T) {
 	assert.True(t, *channel.ChannelInfo.DiagnosticCaptureEnabled)
 	assert.True(t, channel.ChannelInfo.IsDiagnosticCaptureEnabled())
 }
+
+func TestChannelValidateSettingsVolcTTS(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  *dto.VolcTTSConfig
+		wantErr string
+	}{
+		{name: "empty settings preserve v1"},
+		{name: "explicit v1", config: &dto.VolcTTSConfig{Protocol: dto.VolcTTSProtocolV1WsBinary}},
+		{
+			name:    "v3 requires resource id",
+			config:  &dto.VolcTTSConfig{Protocol: dto.VolcTTSProtocolV3WsUni},
+			wantErr: "resource_id is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			channel := &Channel{Type: constant.ChannelTypeVolcEngine}
+			channel.SetOtherSettings(dto.ChannelOtherSettings{VolcTTS: tt.config})
+
+			err := channel.ValidateSettings()
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}

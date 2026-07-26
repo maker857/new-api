@@ -70,6 +70,40 @@ func TestCalculateTextQuotaSummaryUnifiedForClaudeSemantic(t *testing.T) {
 	require.Equal(t, 1488, chatSummary.Quota)
 }
 
+func TestGenerateAudioOtherInfoAddsVolcV3AuditFields(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	relayInfo := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{
+		ChannelType: constant.ChannelTypeVolcEngine,
+		ChannelOtherSettings: dto.ChannelOtherSettings{VolcTTS: &dto.VolcTTSConfig{
+			Protocol:   dto.VolcTTSProtocolV3HTTPChunked,
+			ResourceID: "seed-tts-2.0",
+		}},
+	}}
+
+	other := GenerateAudioOtherInfo(ctx, relayInfo, &dto.Usage{}, 1, 1, 1, 1, 1, 0, 1)
+
+	require.Equal(t, dto.VolcTTSProtocolV3HTTPChunked, other["volc_tts_protocol"])
+	require.Equal(t, "seed-tts-2.0", other["volc_tts_resource_id"])
+}
+
+func TestGenerateAudioOtherInfoDoesNotAddVolcAuditFieldsForOtherProviders(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	relayInfo := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{
+		ChannelType: constant.ChannelTypeOpenAI,
+		ChannelOtherSettings: dto.ChannelOtherSettings{VolcTTS: &dto.VolcTTSConfig{
+			Protocol:   dto.VolcTTSProtocolV3HTTPChunked,
+			ResourceID: "seed-tts-2.0",
+		}},
+	}}
+
+	other := GenerateAudioOtherInfo(ctx, relayInfo, &dto.Usage{}, 1, 1, 1, 1, 1, 0, 1)
+
+	require.NotContains(t, other, "volc_tts_protocol")
+	require.NotContains(t, other, "volc_tts_resource_id")
+}
+
 func TestCalculateTextQuotaSummaryUsesSplitClaudeCacheCreationRatios(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()

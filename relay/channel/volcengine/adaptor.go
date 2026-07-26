@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/QuantumNous/new-api/common"
 	channelconstant "github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/relay/channel"
@@ -51,12 +52,28 @@ func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInf
 		return nil, errors.New("unsupported audio relay mode")
 	}
 
-	appID, token, err := parseVolcengineAuth(info.ApiKey)
-	if err != nil {
-		return nil, err
+	volcTTSConfig := info.ChannelOtherSettings.VolcTTS
+	isV3 := volcTTSConfig != nil && volcTTSConfig.IsV3()
+	appID, token := "", ""
+	var err error
+	if isV3 {
+		if err = volcTTSConfig.Validate(); err != nil {
+			return nil, err
+		}
+		if _, err = buildV3AuthHeaders(info.ApiKey, *volcTTSConfig, generateRequestID()); err != nil {
+			return nil, err
+		}
+	} else {
+		appID, token, err = parseVolcengineAuth(info.ApiKey)
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	voiceType := mapVoiceType(request.Voice)
+	voiceType := request.Voice
+	if !isV3 {
+		voiceType = mapVoiceType(request.Voice)
+	}
 	speedRatio := lo.FromPtrOr(request.Speed, 0.0)
 	encoding := mapEncoding(request.ResponseFormat)
 
@@ -86,7 +103,7 @@ func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInf
 	}
 
 	if len(request.Metadata) > 0 {
-		if err = json.Unmarshal(request.Metadata, &volcRequest); err != nil {
+		if err = common.Unmarshal(request.Metadata, &volcRequest); err != nil {
 			return nil, fmt.Errorf("error unmarshalling metadata to volcengine request: %w", err)
 		}
 	}
@@ -97,7 +114,7 @@ func (a *Adaptor) ConvertAudioRequest(c *gin.Context, info *relaycommon.RelayInf
 		info.IsStream = true
 	}
 
-	jsonData, err := json.Marshal(volcRequest)
+	jsonData, err := common.Marshal(volcRequest)
 	if err != nil {
 		return nil, fmt.Errorf("error marshalling volcengine request: %w", err)
 	}

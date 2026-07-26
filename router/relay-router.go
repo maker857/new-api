@@ -172,6 +172,16 @@ func SetRelayRouter(router *gin.Engine) {
 		httpRouter.DELETE("/models/:model", controller.RelayNotImplemented)
 	}
 
+	volcengineTTSRouter := router.Group("/api/v3/tts")
+	volcengineTTSRouter.Use(middleware.RouteTag("relay"))
+	volcengineTTSRouter.Use(middleware.SystemPerformanceCheck())
+	volcengineTTSRouter.Use(middleware.TokenAuth())
+	volcengineTTSRouter.Use(middleware.ModelRequestRateLimit())
+	volcengineTTSRouter.Use(middleware.Distribute())
+	volcengineTTSRouter.POST("/unidirectional", func(c *gin.Context) {
+		controller.Relay(c, types.RelayFormatVolcengineTTSNative)
+	})
+
 	relayMjRouter := router.Group("/mj")
 	relayMjRouter.Use(middleware.RouteTag("relay"))
 	relayMjRouter.Use(middleware.SystemPerformanceCheck())

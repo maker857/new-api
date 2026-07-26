@@ -14,6 +14,7 @@ const (
 	RelayFormatOpenAIRealtime                        = "openai_realtime"
 	RelayFormatRerank                                = "rerank"
 	RelayFormatEmbedding                             = "embedding"
+	RelayFormatVolcengineTTSNative                   = "volcengine_tts_native"
 
 	RelayFormatTask    = "task"
 	RelayFormatMjProxy = "mj_proxy"

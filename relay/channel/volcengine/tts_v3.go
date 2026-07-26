@@ -91,6 +91,11 @@ func buildV3AuthHeaders(apiKey string, cfg dto.VolcTTSConfig, connectID string) 
 }
 
 func buildV3StartSessionPayload(request VolcengineTTSRequest, encoding string) ([]byte, error) {
+	payload := buildV3StartSession(request, encoding)
+	return common.Marshal(payload)
+}
+
+func buildV3StartSession(request VolcengineTTSRequest, encoding string) v3StartSessionPayload {
 	audioParams := v3AudioParams{Format: encoding}
 	if request.Audio.Rate != 0 {
 		rate := request.Audio.Rate
@@ -111,7 +116,7 @@ func buildV3StartSessionPayload(request VolcengineTTSRequest, encoding string) (
 		audioParams.SpeechRate = &speechRate
 	}
 
-	payload := v3StartSessionPayload{
+	return v3StartSessionPayload{
 		User:      &v3UserMeta{UID: request.User.UID},
 		Event:     int32(EventType_StartSession),
 		Namespace: "UnidirectionalTTS",
@@ -122,7 +127,6 @@ func buildV3StartSessionPayload(request VolcengineTTSRequest, encoding string) (
 			AudioParams: audioParams,
 		},
 	}
-	return common.Marshal(payload)
 }
 
 func parseV3Usage(payload []byte, fallback int) (*dto.Usage, error) {

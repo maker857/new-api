@@ -398,6 +398,9 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 			if config.EffectiveProtocol() == dto.VolcTTSProtocolV3WsUni {
 				return handleTTSV3WSUnidirectional(c, requestURL, volcRequest, info, encoding, *config)
 			}
+			if config.EffectiveProtocol() == dto.VolcTTSProtocolV3HTTPChunked {
+				return handleTTSV3HTTPChunked(c, requestURL, volcRequest, info, encoding, *config)
+			}
 			return nil, types.NewErrorWithStatusCode(errors.New("unsupported volcengine v3 tts transport"), types.ErrorCodeBadRequestBody, http.StatusInternalServerError)
 		}
 		if info.IsStream {

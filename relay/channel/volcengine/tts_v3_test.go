@@ -1,12 +1,16 @@
 package volcengine
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -18,6 +22,129 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestV3ChunkedFrameReaderSurvivesArbitraryReadBoundaries(t *testing.T) {
+	audioFrame := mustMarshalV3TestFrame(t, Message{
+		MsgType: MsgTypeAudioOnlyServer, MsgTypeFlag: MsgTypeFlagWithEvent,
+		EventType: EventType_TTSResponse, SessionID: "session-1", Payload: []byte("audio"),
+	})
+	finishedPayload, err := common.Marshal(v3SessionResultEnvelope{Usage: &v3UsageStats{TextWords: 8}})
+	require.NoError(t, err)
+	finishedFrame := mustMarshalV3TestFrame(t, Message{
+		MsgType: MsgTypeFullServerResponse, MsgTypeFlag: MsgTypeFlagWithEvent,
+		EventType: EventType_SessionFinished, SessionID: "session-1", Payload: finishedPayload,
+	})
+	reader := iotest.OneByteReader(bytes.NewReader(append(audioFrame, finishedFrame...)))
+
+	first, err := ReadOneV3Frame(reader)
+	require.NoError(t, err)
+	assert.Equal(t, EventType_TTSResponse, first.EventType)
+	assert.Equal(t, []byte("audio"), first.Payload)
+	second, err := ReadOneV3Frame(reader)
+	require.NoError(t, err)
+	assert.Equal(t, EventType_SessionFinished, second.EventType)
+	_, err = ReadOneV3Frame(reader)
+	assert.ErrorIs(t, err, io.EOF)
+}
+
+func TestV3HTTPChunkedStreamsFramesAndReturnsUsage(t *testing.T) {
+	audio1 := mustMarshalV3TestFrame(t, Message{MsgType: MsgTypeAudioOnlyServer, MsgTypeFlag: MsgTypeFlagWithEvent, EventType: EventType_TTSResponse, SessionID: "s", Payload: []byte("chunk-1")})
+	audio2 := mustMarshalV3TestFrame(t, Message{MsgType: MsgTypeAudioOnlyServer, MsgTypeFlag: MsgTypeFlagWithEvent, EventType: EventType_TTSResponse, SessionID: "s", Payload: []byte("chunk-2")})
+	finishedPayload, err := common.Marshal(v3SessionResultEnvelope{Usage: &v3UsageStats{TextWords: 23}})
+	require.NoError(t, err)
+	finished := mustMarshalV3TestFrame(t, Message{MsgType: MsgTypeFullServerResponse, MsgTypeFlag: MsgTypeFlagWithEvent, EventType: EventType_SessionFinished, SessionID: "s", Payload: finishedPayload})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Api-Key") != "console-api-key" {
+			http.Error(w, "bad auth", http.StatusUnauthorized)
+			return
+		}
+		body, readErr := io.ReadAll(r.Body)
+		if readErr != nil {
+			http.Error(w, readErr.Error(), http.StatusBadRequest)
+			return
+		}
+		var requestBody v3HTTPRequestBody
+		if common.Unmarshal(body, &requestBody) != nil || requestBody.ReqParams.Text != "http chunked text" {
+			http.Error(w, "bad body", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("X-Tt-Logid", "log-id-123")
+		w.WriteHeader(http.StatusOK)
+		allFrames := append(append(audio1, audio2...), finished...)
+		for start := 0; start < len(allFrames); start += 3 {
+			end := start + 3
+			if end > len(allFrames) {
+				end = len(allFrames)
+			}
+			_, _ = w.Write(allFrames[start:end])
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		}
+	}))
+	defer upstream.Close()
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/audio/speech", nil)
+	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ApiKey: "console-api-key"}}
+	request := VolcengineTTSRequest{User: VolcengineTTSUser{UID: "relay"}, Audio: VolcengineTTSAudio{VoiceType: "seed-voice", Rate: 24000}, Request: VolcengineTTSReqInfo{Text: "http chunked text", Model: "seed-tts-2.0"}}
+	cfg := dto.VolcTTSConfig{Protocol: dto.VolcTTSProtocolV3HTTPChunked, ResourceID: "seed-tts-2.0", AuthMode: dto.VolcTTSAuthModeNewConsole}
+
+	usageAny, apiErr := handleTTSV3HTTPChunked(c, upstream.URL, request, info, "mp3", cfg)
+	require.Nil(t, apiErr)
+	usage, ok := usageAny.(*dto.Usage)
+	require.True(t, ok)
+	assert.Equal(t, 23, usage.PromptTokens)
+	assert.Equal(t, "chunk-1chunk-2", recorder.Body.String())
+	assert.Equal(t, "log-id-123", recorder.Header().Get("X-Volc-Logid"))
+}
+
+func TestV3HTTPChunkedProviderErrorBecomesAPIError(t *testing.T) {
+	errorFrame := mustMarshalV3TestFrame(t, Message{MsgType: MsgTypeError, ErrorCode: 45000000, Payload: []byte(`{"message":"provider rejected request"}`)})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(errorFrame)
+	}))
+	defer upstream.Close()
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/audio/speech", nil)
+	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ApiKey: "console-api-key"}}
+	cfg := dto.VolcTTSConfig{Protocol: dto.VolcTTSProtocolV3HTTPChunked, ResourceID: "seed-tts-2.0", AuthMode: dto.VolcTTSAuthModeNewConsole}
+	_, apiErr := handleTTSV3HTTPChunked(c, upstream.URL, VolcengineTTSRequest{}, info, "mp3", cfg)
+	require.NotNil(t, apiErr)
+	assert.Contains(t, apiErr.Error(), "provider rejected request")
+}
+
+func TestV3HTTPChunkedNon200BodyIsBoundedAndCredentialsAreRedacted(t *testing.T) {
+	secret := "console-super-secret"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = fmt.Fprintf(w, "%s:%s", secret, strings.Repeat("x", 10000))
+	}))
+	defer upstream.Close()
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/audio/speech", nil)
+	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ApiKey: secret}}
+	cfg := dto.VolcTTSConfig{Protocol: dto.VolcTTSProtocolV3HTTPChunked, ResourceID: "seed-tts-2.0", AuthMode: dto.VolcTTSAuthModeNewConsole}
+	_, apiErr := handleTTSV3HTTPChunked(c, upstream.URL, VolcengineTTSRequest{}, info, "mp3", cfg)
+	require.NotNil(t, apiErr)
+	assert.NotContains(t, apiErr.Error(), secret)
+	assert.Less(t, len(apiErr.Error()), 5000)
+}
+
+func mustMarshalV3TestFrame(t *testing.T, source Message) []byte {
+	t.Helper()
+	source.Version = Version1
+	source.HeaderSize = HeaderSize4
+	source.Serialization = SerializationJSON
+	source.Compression = CompressionNone
+	frame, err := source.Marshal()
+	require.NoError(t, err)
+	return frame
+}
 
 func TestV3WSUnidirectionalStreamsAudioAndUsage(t *testing.T) {
 	serverErr := make(chan error, 1)

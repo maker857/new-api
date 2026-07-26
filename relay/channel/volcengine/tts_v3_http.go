@@ -1,9 +1,10 @@
 package volcengine
 
 import (
+	"bufio"
 	"bytes"
 	"context"
-	"encoding/binary"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -25,9 +26,9 @@ const (
 	v3HTTPDialTimeout           = 15 * time.Second
 	v3HTTPTLSHandshakeTimeout   = 10 * time.Second
 	v3HTTPResponseHeaderTimeout = 30 * time.Second
-	v3MaxFrameHeaderSize        = 64
-	v3MaxIdentifierSize         = 64 << 10
-	v3MaxPayloadSize            = 16 << 20
+	v3HTTPInitialLineBuffer     = 64 << 10
+	v3HTTPMaxLineSize           = 16 << 20
+	v3HTTPCompleteCode          = 20000000
 	v3MaxErrorBodySize          = 4096
 )
 
@@ -35,6 +36,13 @@ type v3HTTPRequestBody struct {
 	User      *v3UserMeta      `json:"user,omitempty"`
 	Namespace string           `json:"namespace"`
 	ReqParams v3StartReqParams `json:"req_params"`
+}
+
+type v3HTTPStreamResponse struct {
+	Code    int           `json:"code"`
+	Message string        `json:"message,omitempty"`
+	Data    string        `json:"data,omitempty"`
+	Usage   *v3UsageStats `json:"usage,omitempty"`
 }
 
 func handleTTSV3HTTPChunked(c *gin.Context, requestURL string, request VolcengineTTSRequest, info *relaycommon.RelayInfo, encoding string, cfg dto.VolcTTSConfig) (any, *types.NewAPIError) {
@@ -85,59 +93,71 @@ func handleTTSV3HTTPChunked(c *gin.Context, requestURL string, request Volcengin
 		return nil, types.NewErrorWithStatusCode(fmt.Errorf("volcengine v3 http status %d: %s", response.StatusCode, detail), types.ErrorCodeBadResponseStatusCode, response.StatusCode)
 	}
 
-	c.Header("Content-Type", getContentTypeByEncoding(encoding))
-	c.Header("Transfer-Encoding", "chunked")
 	wroteAudio := false
-	var usage *dto.Usage
-	for {
-		message, readErr := ReadOneV3Frame(response.Body)
-		if readErr != nil {
-			if errors.Is(readErr, io.EOF) {
-				break
+	var usageStats *v3UsageStats
+	scanner := bufio.NewScanner(response.Body)
+	scanner.Buffer(make([]byte, v3HTTPInitialLineBuffer), v3HTTPMaxLineSize)
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+
+		message := v3HTTPStreamResponse{}
+		if err = common.Unmarshal(line, &message); err != nil {
+			return nil, types.NewErrorWithStatusCode(fmt.Errorf("parse volcengine v3 http response: %w", err), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+		}
+		if message.Usage != nil {
+			usageStats = message.Usage
+		}
+		if message.Code == v3HTTPCompleteCode {
+			break
+		}
+		if message.Code != 0 {
+			detail := message.Message
+			if len(detail) > v3MaxErrorBodySize {
+				detail = detail[:v3MaxErrorBodySize]
 			}
+			return nil, types.NewErrorWithStatusCode(fmt.Errorf("volcengine v3 http provider error: code=%d message=%s", message.Code, detail), types.ErrorCodeBadResponse, http.StatusBadGateway)
+		}
+		if message.Data == "" {
+			continue
+		}
+
+		audio, decodeErr := base64.StdEncoding.DecodeString(message.Data)
+		if decodeErr != nil {
+			return nil, types.NewErrorWithStatusCode(fmt.Errorf("decode volcengine v3 http audio: %w", decodeErr), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+		}
+		if len(audio) == 0 {
+			continue
+		}
+		if !wroteAudio {
+			c.Header("Content-Type", getContentTypeByEncoding(encoding))
+			c.Header("Transfer-Encoding", "chunked")
+		}
+		if _, err = c.Writer.Write(audio); err != nil {
 			if c.Request.Context().Err() != nil {
 				return nil, nil
 			}
-			return nil, types.NewErrorWithStatusCode(fmt.Errorf("parse volcengine v3 http frame: %w", readErr), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
+			return nil, types.NewErrorWithStatusCode(fmt.Errorf("write volcengine v3 http audio: %w", err), types.ErrorCodeBadResponse, http.StatusBadGateway)
 		}
-		switch message.MsgType {
-		case MsgTypeError:
-			return nil, v3ProviderMessageError(message)
-		case MsgTypeAudioOnlyServer:
-			if message.EventType == EventType_TTSResponse && len(message.Payload) > 0 {
-				if _, err = c.Writer.Write(message.Payload); err != nil {
-					if c.Request.Context().Err() != nil {
-						return nil, nil
-					}
-					return nil, types.NewErrorWithStatusCode(fmt.Errorf("write volcengine v3 http audio: %w", err), types.ErrorCodeBadResponse, http.StatusBadGateway)
-				}
-				c.Writer.Flush()
-				wroteAudio = true
-			}
-		case MsgTypeFullServerResponse:
-			switch message.EventType {
-			case EventType_SessionFinished:
-				usage, info.QuotaClamp, err = parseV3UsageChecked(message.Payload, info.GetEstimatePromptTokens())
-				if err != nil {
-					return nil, types.NewErrorWithStatusCode(err, types.ErrorCodeBadResponseBody, http.StatusBadGateway)
-				}
-				if !wroteAudio {
-					return nil, types.NewErrorWithStatusCode(errors.New("volcengine v3 http completed without audio"), types.ErrorCodeBadResponse, http.StatusBadGateway)
-				}
-				c.Status(http.StatusOK)
-				return usage, nil
-			case EventType_SessionFailed, EventType_ConnectionFailed:
-				return nil, v3ProviderMessageError(message)
-			}
+		c.Writer.Flush()
+		wroteAudio = true
+	}
+	if err = scanner.Err(); err != nil {
+		if c.Request.Context().Err() != nil {
+			return nil, nil
 		}
+		return nil, types.NewErrorWithStatusCode(fmt.Errorf("read volcengine v3 http response: %w", err), types.ErrorCodeBadResponseBody, http.StatusBadGateway)
 	}
 	if !wroteAudio {
 		return nil, types.NewErrorWithStatusCode(errors.New("volcengine v3 http stream ended without audio"), types.ErrorCodeBadResponse, http.StatusBadGateway)
 	}
-	usage, info.QuotaClamp, err = parseV3UsageChecked(nil, info.GetEstimatePromptTokens())
+	usage, clamp, err := parseV3UsageStatsChecked(usageStats, info.GetEstimatePromptTokens())
 	if err != nil {
 		return nil, types.NewErrorWithStatusCode(err, types.ErrorCodeBadResponseBody, http.StatusBadGateway)
 	}
+	info.QuotaClamp = clamp
 	return usage, nil
 }
 
@@ -172,104 +192,6 @@ func newV3StreamingHTTPClient(proxyURL string) (*http.Client, error) {
 		CheckRedirect: baseClient.CheckRedirect,
 		Timeout:       0,
 	}, nil
-}
-
-func ReadOneV3Frame(reader io.Reader) (*Message, error) {
-	header := make([]byte, 4)
-	if _, err := io.ReadFull(reader, header); err != nil {
-		return nil, err
-	}
-	headerSize := int(header[0]&0x0f) * 4
-	if headerSize < 4 || headerSize > v3MaxFrameHeaderSize {
-		return nil, fmt.Errorf("invalid volcengine v3 frame header size: %d", headerSize)
-	}
-	frame := bytes.NewBuffer(header)
-	if err := copyV3FrameBytes(reader, frame, headerSize-4); err != nil {
-		return nil, err
-	}
-
-	messageType := MsgType(header[1] >> 4)
-	flag := MsgTypeFlagBits(header[1] & 0x0f)
-	if flag == MsgTypeFlagWithEvent {
-		eventBytes := make([]byte, 4)
-		if _, err := io.ReadFull(reader, eventBytes); err != nil {
-			return nil, err
-		}
-		frame.Write(eventBytes)
-		event := EventType(int32(binary.BigEndian.Uint32(eventBytes)))
-		if !isV3ConnectionEvent(event) {
-			if err := copyV3LengthPrefixed(reader, frame, v3MaxIdentifierSize); err != nil {
-				return nil, err
-			}
-		}
-		if isV3ConnectionResponseEvent(event) {
-			if err := copyV3LengthPrefixed(reader, frame, v3MaxIdentifierSize); err != nil {
-				return nil, err
-			}
-		}
-	}
-
-	switch messageType {
-	case MsgTypeFullClientRequest, MsgTypeFullServerResponse, MsgTypeFrontEndResultServer, MsgTypeAudioOnlyClient, MsgTypeAudioOnlyServer:
-		if flag == MsgTypeFlagPositiveSeq || flag == MsgTypeFlagNegativeSeq {
-			if err := copyV3FrameBytes(reader, frame, 4); err != nil {
-				return nil, err
-			}
-		}
-	case MsgTypeError:
-		if err := copyV3FrameBytes(reader, frame, 4); err != nil {
-			return nil, err
-		}
-	default:
-		return nil, fmt.Errorf("unsupported volcengine v3 message type: %d", messageType)
-	}
-	if err := copyV3LengthPrefixed(reader, frame, v3MaxPayloadSize); err != nil {
-		return nil, err
-	}
-	return ParseFrame(frame.Bytes())
-}
-
-func copyV3FrameBytes(reader io.Reader, frame *bytes.Buffer, size int) error {
-	if size == 0 {
-		return nil
-	}
-	data := make([]byte, size)
-	if _, err := io.ReadFull(reader, data); err != nil {
-		return err
-	}
-	_, _ = frame.Write(data)
-	return nil
-}
-
-func copyV3LengthPrefixed(reader io.Reader, frame *bytes.Buffer, maximum uint32) error {
-	sizeBytes := make([]byte, 4)
-	if _, err := io.ReadFull(reader, sizeBytes); err != nil {
-		return err
-	}
-	_, _ = frame.Write(sizeBytes)
-	size := binary.BigEndian.Uint32(sizeBytes)
-	if size > maximum {
-		return fmt.Errorf("volcengine v3 frame field exceeds limit: %d > %d", size, maximum)
-	}
-	return copyV3FrameBytes(reader, frame, int(size))
-}
-
-func isV3ConnectionEvent(event EventType) bool {
-	switch event {
-	case EventType_StartConnection, EventType_FinishConnection, EventType_ConnectionStarted, EventType_ConnectionFailed, EventType_ConnectionFinished:
-		return true
-	default:
-		return false
-	}
-}
-
-func isV3ConnectionResponseEvent(event EventType) bool {
-	switch event {
-	case EventType_ConnectionStarted, EventType_ConnectionFailed, EventType_ConnectionFinished:
-		return true
-	default:
-		return false
-	}
 }
 
 func redactV3CredentialText(text, apiKey string) string {

@@ -141,11 +141,14 @@ func parseV3UsageChecked(payload []byte, fallback int) (*dto.Usage, *common.Quot
 			return nil, nil, fmt.Errorf("parse volcengine v3 usage: %w", err)
 		}
 	}
+	return parseV3UsageStatsChecked(envelope.Usage, fallback)
+}
 
+func parseV3UsageStatsChecked(stats *v3UsageStats, fallback int) (*dto.Usage, *common.QuotaClamp, error) {
 	words := fallback
 	var clamp *common.QuotaClamp
-	if envelope.Usage != nil && envelope.Usage.TextWords > 0 {
-		words, clamp = common.QuotaFromFloatChecked(envelope.Usage.TextWords)
+	if stats != nil && stats.TextWords > 0 {
+		words, clamp = common.QuotaFromFloatChecked(stats.TextWords)
 	}
 	if words < 0 {
 		words = 0

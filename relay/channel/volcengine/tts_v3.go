@@ -30,7 +30,6 @@ type v3UserMeta struct {
 type v3StartReqParams struct {
 	Text        string        `json:"text"`
 	Speaker     string        `json:"speaker"`
-	Model       string        `json:"model,omitempty"`
 	AudioParams v3AudioParams `json:"audio_params"`
 }
 
@@ -123,7 +122,6 @@ func buildV3StartSession(request VolcengineTTSRequest, encoding string) v3StartS
 		ReqParams: v3StartReqParams{
 			Text:        request.Request.Text,
 			Speaker:     request.Audio.VoiceType,
-			Model:       request.Request.Model,
 			AudioParams: audioParams,
 		},
 	}

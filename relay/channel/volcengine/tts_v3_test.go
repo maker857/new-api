@@ -350,7 +350,7 @@ func TestV3StartSessionPayloadMapsAudioRequest(t *testing.T) {
 	assert.Equal(t, "UnidirectionalTTS", decoded.Namespace)
 	assert.Equal(t, "hello volcengine", decoded.ReqParams.Text)
 	assert.Equal(t, "zh_female_seed_voice", decoded.ReqParams.Speaker)
-	assert.Equal(t, "seed-tts-2.0", decoded.ReqParams.Model)
+	assert.NotContains(t, string(payload), `"model"`)
 	assert.Equal(t, "mp3", decoded.ReqParams.AudioParams.Format)
 	require.NotNil(t, decoded.ReqParams.AudioParams.SampleRate)
 	assert.Equal(t, 24000, *decoded.ReqParams.AudioParams.SampleRate)

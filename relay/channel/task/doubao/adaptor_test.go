@@ -1,6 +1,12 @@
 package doubao
 
-import "testing"
+import (
+	"testing"
+
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
 
 func TestBuildTaskURL(t *testing.T) {
 	tests := []struct {
@@ -32,4 +38,18 @@ func TestBuildTaskURL(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestConvertToRequestPayloadForwardsDuration(t *testing.T) {
+	adaptor := &TaskAdaptor{}
+	req := relaycommon.TaskSubmitReq{
+		Model:    "doubao-seedance-2-0-260128",
+		Prompt:   "A dress changes from black to white",
+		Duration: 4,
+	}
+
+	payload, err := adaptor.convertToRequestPayload(&req)
+	require.NoError(t, err)
+	require.NotNil(t, payload.Duration)
+	assert.Equal(t, 4, int(*payload.Duration))
 }

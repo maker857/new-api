@@ -302,8 +302,12 @@ func (a *TaskAdaptor) convertToRequestPayload(req *relaycommon.TaskSubmitReq) (*
 		return nil, errors.Wrap(err, "unmarshal metadata failed")
 	}
 
-	if sec, _ := strconv.Atoi(req.Seconds); sec > 0 {
-		r.Duration = lo.ToPtr(dto.IntValue(sec))
+	duration := req.Duration
+	if duration == 0 {
+		duration, _ = strconv.Atoi(req.Seconds)
+	}
+	if duration != 0 {
+		r.Duration = lo.ToPtr(dto.IntValue(duration))
 	}
 
 	r.Content = lo.Reject(r.Content, func(c ContentItem, _ int) bool { return c.Type == "text" })

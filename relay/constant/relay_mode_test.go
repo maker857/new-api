@@ -14,6 +14,8 @@ func TestPath2RelayMode(t *testing.T) {
 		{path: "/v1/alpha/search", want: RelayModeAlphaSearch},
 		{path: "/v1/alpha/search?foo=1", want: RelayModeAlphaSearch},
 		{path: "/api/v3/tts/unidirectional", want: RelayModeVolcengineTTSNative},
+		{path: "/api/v3/auc/bigmodel/submit", want: RelayModeVolcengineASRNative},
+		{path: "/api/v3/auc/bigmodel/query", want: RelayModeVolcengineASRNative},
 		{path: "/v1/audio/speech", want: RelayModeAudioSpeech},
 	}
 	for _, tt := range tests {

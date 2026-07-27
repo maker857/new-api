@@ -56,6 +56,7 @@ const (
 	RelayModeAlphaSearch
 
 	RelayModeVolcengineTTSNative
+	RelayModeVolcengineASRNative
 )
 
 func Path2RelayMode(path string) int {
@@ -86,6 +87,8 @@ func Path2RelayMode(path string) int {
 		relayMode = RelayModeAudioSpeech
 	} else if strings.HasPrefix(path, "/api/v3/tts/unidirectional") {
 		relayMode = RelayModeVolcengineTTSNative
+	} else if strings.HasPrefix(path, "/api/v3/auc/bigmodel/submit") || strings.HasPrefix(path, "/api/v3/auc/bigmodel/query") {
+		relayMode = RelayModeVolcengineASRNative
 	} else if strings.HasPrefix(path, "/v1/audio/transcriptions") {
 		relayMode = RelayModeAudioTranscription
 	} else if strings.HasPrefix(path, "/v1/audio/translations") {

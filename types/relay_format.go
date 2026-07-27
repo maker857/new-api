@@ -15,6 +15,7 @@ const (
 	RelayFormatRerank                                = "rerank"
 	RelayFormatEmbedding                             = "embedding"
 	RelayFormatVolcengineTTSNative                   = "volcengine_tts_native"
+	RelayFormatVolcengineASRNative                   = "volcengine_asr_native"
 
 	RelayFormatTask    = "task"
 	RelayFormatMjProxy = "mj_proxy"

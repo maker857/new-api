@@ -45,6 +45,8 @@ func relayHandler(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIErro
 		err = relay.AudioHelper(c, info)
 	case relayconstant.RelayModeVolcengineTTSNative:
 		err = relay.NativeVolcengineTTSHelper(c, info)
+	case relayconstant.RelayModeVolcengineASRNative:
+		err = relay.NativeVolcengineASRHelper(c, info)
 	case relayconstant.RelayModeRerank:
 		err = relay.RerankHelper(c, info)
 	case relayconstant.RelayModeEmbeddings:

@@ -257,6 +257,9 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 	if strings.HasPrefix(c.Request.URL.Path, "/api/v3/tts/unidirectional") {
 		modelRequest.Model = strings.TrimSpace(c.GetHeader("X-Api-Resource-Id"))
 		c.Set("relay_mode", relayconstant.RelayModeVolcengineTTSNative)
+	} else if strings.HasPrefix(c.Request.URL.Path, "/api/v3/auc/bigmodel/") {
+		modelRequest.Model = strings.TrimSpace(c.GetHeader("X-Api-Resource-Id"))
+		c.Set("relay_mode", relayconstant.RelayModeVolcengineASRNative)
 	} else if strings.Contains(c.Request.URL.Path, "/mj/") {
 		relayMode := relayconstant.Path2RelayModeMidjourney(c.Request.URL.Path)
 		if relayMode == relayconstant.RelayModeMidjourneyTaskFetch ||

@@ -40,6 +40,11 @@ const (
 
 	VolcTTSAuthModeNewConsole = "new_console"
 	VolcTTSAuthModeLegacy     = "legacy"
+
+	VolcASRProtocolV3AUC = "v3_auc"
+
+	VolcASRAuthModeNewConsole = "new_console"
+	VolcASRAuthModeLegacy     = "legacy"
 )
 
 type VolcTTSConfig struct {
@@ -98,6 +103,48 @@ func (c *VolcTTSConfig) Validate() error {
 	}
 }
 
+type VolcASRConfig struct {
+	Protocol   string `json:"protocol,omitempty"`
+	ResourceID string `json:"resource_id,omitempty"`
+	AuthMode   string `json:"auth_mode,omitempty"`
+}
+
+func (c *VolcASRConfig) EffectiveProtocol() string {
+	if c == nil || strings.TrimSpace(c.Protocol) == "" {
+		return VolcASRProtocolV3AUC
+	}
+	return strings.TrimSpace(c.Protocol)
+}
+
+func (c *VolcASRConfig) EffectiveAuthMode() string {
+	if c == nil || strings.TrimSpace(c.AuthMode) == "" {
+		return VolcASRAuthModeNewConsole
+	}
+	return strings.TrimSpace(c.AuthMode)
+}
+
+func (c *VolcASRConfig) Validate() error {
+	if c == nil {
+		return nil
+	}
+	c.Protocol = strings.TrimSpace(c.Protocol)
+	c.ResourceID = strings.TrimSpace(c.ResourceID)
+	c.AuthMode = strings.TrimSpace(c.AuthMode)
+
+	if c.EffectiveProtocol() != VolcASRProtocolV3AUC {
+		return fmt.Errorf("unsupported volcengine asr protocol: %s", c.Protocol)
+	}
+	if c.ResourceID == "" {
+		return fmt.Errorf("volcengine asr resource_id is required")
+	}
+	switch c.EffectiveAuthMode() {
+	case VolcASRAuthModeNewConsole, VolcASRAuthModeLegacy:
+		return nil
+	default:
+		return fmt.Errorf("unsupported volcengine asr auth mode: %s", c.AuthMode)
+	}
+}
+
 type ChannelOtherSettings struct {
 	AzureResponsesVersion                 string                `json:"azure_responses_version,omitempty"`
 	VertexKeyType                         VertexKeyType         `json:"vertex_key_type,omitempty"` // "json" or "api_key"
@@ -119,6 +166,7 @@ type ChannelOtherSettings struct {
 	UpstreamModelUpdateIgnoredModels      []string              `json:"upstream_model_update_ignored_models,omitempty"`       // 手动忽略的模型
 	AdvancedCustom                        *AdvancedCustomConfig `json:"advanced_custom,omitempty"`
 	VolcTTS                               *VolcTTSConfig        `json:"volc_tts,omitempty"`
+	VolcASR                               *VolcASRConfig        `json:"volc_asr,omitempty"`
 }
 
 func (s *ChannelOtherSettings) IsOpenRouterEnterprise() bool {

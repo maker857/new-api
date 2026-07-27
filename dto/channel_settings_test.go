@@ -59,6 +59,59 @@ func TestVolcTTSConfigValidate(t *testing.T) {
 	}
 }
 
+func TestVolcASRConfigValidate(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  VolcASRConfig
+		wantErr string
+	}{
+		{
+			name: "submit query requires resource",
+			config: VolcASRConfig{
+				Protocol: VolcASRProtocolV3AUC,
+			},
+			wantErr: "resource_id is required",
+		},
+		{
+			name: "native asr accepts seed asr resource",
+			config: VolcASRConfig{
+				Protocol:   VolcASRProtocolV3AUC,
+				ResourceID: "volc.seedasr.auc",
+				AuthMode:   VolcASRAuthModeNewConsole,
+			},
+		},
+		{
+			name: "unknown protocol rejected",
+			config: VolcASRConfig{
+				Protocol:   "v2",
+				ResourceID: "volc.seedasr.auc",
+			},
+			wantErr: "unsupported volcengine asr protocol",
+		},
+		{
+			name: "unknown auth mode rejected",
+			config: VolcASRConfig{
+				Protocol:   VolcASRProtocolV3AUC,
+				ResourceID: "volc.seedasr.auc",
+				AuthMode:   "unknown",
+			},
+			wantErr: "unsupported volcengine asr auth mode",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.config.Validate()
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
 func TestAdvancedCustomValidateResponsesToChatConverterPath(t *testing.T) {
 	valid := &AdvancedCustomConfig{
 		Routes: []AdvancedCustomRoute{

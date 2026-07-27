@@ -33,6 +33,12 @@ import {
   validateAdvancedCustomConfig,
 } from './advanced-custom'
 import {
+  parseVolcASRSettings,
+  serializeVolcASRSettings,
+  VOLC_ASR_AUTH_MODES,
+  VOLC_ASR_PROTOCOLS,
+} from './volcengine-asr'
+import {
   parseVolcTTSSettings,
   serializeVolcTTSSettings,
   VOLC_TTS_AUTH_MODES,
@@ -244,6 +250,10 @@ export const channelFormSchema = z
     volc_tts_resource_id: z.string().optional(),
     volc_tts_auth_mode: z.enum(VOLC_TTS_AUTH_MODES).optional(),
     volc_tts_require_usage: z.boolean().optional(),
+    volc_asr_enabled: z.boolean().optional(),
+    volc_asr_protocol: z.enum(VOLC_ASR_PROTOCOLS).optional(),
+    volc_asr_resource_id: z.string().optional(),
+    volc_asr_auth_mode: z.enum(VOLC_ASR_AUTH_MODES).optional(),
     // Field passthrough controls (stored in settings JSON)
     allow_service_tier: z.boolean().optional(), // OpenAI/Anthropic
     disable_store: z.boolean().optional(), // OpenAI only
@@ -377,6 +387,33 @@ export const channelFormSchema = z
           'New console VolcEngine TTS credentials must use a single API key'
         )
       }
+
+      if (data.volc_asr_enabled === true) {
+        if (!data.volc_asr_resource_id?.trim()) {
+          addRequiredIssue(
+            ctx,
+            'volc_asr_resource_id',
+            'Resource ID is required for VolcEngine v3 ASR'
+          )
+        }
+        if (data.volc_asr_auth_mode === 'legacy' && key) {
+          const parts = key.split('|')
+          if (parts.length !== 2 || !parts[0]?.trim() || !parts[1]?.trim()) {
+            addRequiredIssue(
+              ctx,
+              'key',
+              'Legacy VolcEngine ASR credentials must use appid|access_token'
+            )
+          }
+        }
+        if (data.volc_asr_auth_mode !== 'legacy' && key.includes('|')) {
+          addRequiredIssue(
+            ctx,
+            'key',
+            'New console VolcEngine ASR credentials must use a single API key'
+          )
+        }
+      }
     }
   })
 
@@ -430,6 +467,10 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   volc_tts_resource_id: '',
   volc_tts_auth_mode: 'new_console',
   volc_tts_require_usage: true,
+  volc_asr_enabled: false,
+  volc_asr_protocol: 'v3_auc',
+  volc_asr_resource_id: '',
+  volc_asr_auth_mode: 'new_console',
   // Field passthrough controls
   allow_service_tier: false,
   disable_store: false,
@@ -508,6 +549,7 @@ export function transformChannelToFormDefaults(
   let upstreamModelUpdateIgnoredModels = ''
   let advancedCustom = ''
   const volcTTSDefaults = parseVolcTTSSettings(channel.settings)
+  const volcASRDefaults = parseVolcASRSettings(channel.settings)
 
   if (channel.settings) {
     try {
@@ -588,6 +630,7 @@ export function transformChannelToFormDefaults(
     upstream_model_update_ignored_models: upstreamModelUpdateIgnoredModels,
     advanced_custom: advancedCustom,
     ...volcTTSDefaults,
+    ...volcASRDefaults,
   }
 }
 
@@ -735,11 +778,21 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     delete settingsObj.advanced_custom
   }
 
-  return serializeVolcTTSSettings(JSON.stringify(settingsObj), formData.type, {
-    volc_tts_protocol: formData.volc_tts_protocol,
-    volc_tts_resource_id: formData.volc_tts_resource_id,
-    volc_tts_auth_mode: formData.volc_tts_auth_mode,
-    volc_tts_require_usage: formData.volc_tts_require_usage,
+  const settingsWithTTS = serializeVolcTTSSettings(
+    JSON.stringify(settingsObj),
+    formData.type,
+    {
+      volc_tts_protocol: formData.volc_tts_protocol,
+      volc_tts_resource_id: formData.volc_tts_resource_id,
+      volc_tts_auth_mode: formData.volc_tts_auth_mode,
+      volc_tts_require_usage: formData.volc_tts_require_usage,
+    }
+  )
+  return serializeVolcASRSettings(settingsWithTTS, formData.type, {
+    volc_asr_enabled: formData.volc_asr_enabled,
+    volc_asr_protocol: formData.volc_asr_protocol,
+    volc_asr_resource_id: formData.volc_asr_resource_id,
+    volc_asr_auth_mode: formData.volc_asr_auth_mode,
   })
 }
 

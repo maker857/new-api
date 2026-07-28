@@ -70,13 +70,13 @@ POST http://<new-api-host>/v1/videos
 请求地址：
 
 ```text
-POST http://<new-api-host>/api/plan/v3/contents/generations/tasks
+POST http://<new-api-host>/api/v3/contents/generations/tasks
 ```
 
 请求体直接使用火山方舟 Seedance 的任务创建格式。示例：
 
 ```bash
-curl -X POST 'http://<new-api-host>/api/plan/v3/contents/generations/tasks' \
+curl -X POST 'http://<new-api-host>/api/v3/contents/generations/tasks' \
   -H 'Authorization: Bearer <new-api-token>' \
   -H 'Content-Type: application/json' \
   -d '{

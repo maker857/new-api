@@ -260,7 +260,7 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 	} else if strings.HasPrefix(c.Request.URL.Path, "/api/v3/auc/bigmodel/") {
 		modelRequest.Model = strings.TrimSpace(c.GetHeader("X-Api-Resource-Id"))
 		c.Set("relay_mode", relayconstant.RelayModeVolcengineASRNative)
-	} else if c.Request.URL.Path == "/api/plan/v3/contents/generations/tasks" {
+	} else if c.Request.URL.Path == "/api/v3/contents/generations/tasks" {
 		req, err := getModelFromRequest(c)
 		if err != nil {
 			return nil, false, err

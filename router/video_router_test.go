@@ -14,7 +14,7 @@ func TestSetVideoRouterRegistersNativeSeedanceTaskRoute(t *testing.T) {
 	SetVideoRouter(engine)
 
 	for _, route := range engine.Routes() {
-		if route.Method == http.MethodPost && route.Path == "/api/plan/v3/contents/generations/tasks" {
+		if route.Method == http.MethodPost && route.Path == "/api/v3/contents/generations/tasks" {
 			return
 		}
 	}

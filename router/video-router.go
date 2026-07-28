@@ -32,7 +32,7 @@ func SetVideoRouter(router *gin.Engine) {
 		videoV1Router.GET("/videos/:task_id", controller.RelayTaskFetch)
 	}
 
-	volcengineSeedanceRouter := router.Group("/api/plan/v3/contents/generations")
+	volcengineSeedanceRouter := router.Group("/api/v3/contents/generations")
 	volcengineSeedanceRouter.Use(middleware.RouteTag("relay"))
 	volcengineSeedanceRouter.Use(middleware.SystemPerformanceCheck())
 	volcengineSeedanceRouter.Use(middleware.TokenAuth())

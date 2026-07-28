@@ -28,7 +28,7 @@ func TestGetModelRequestForNativeSeedanceUsesBodyModel(t *testing.T) {
 	ctx, _ := gin.CreateTestContext(c)
 	ctx.Request = httptest.NewRequest(
 		http.MethodPost,
-		"/api/plan/v3/contents/generations/tasks",
+		"/api/v3/contents/generations/tasks",
 		strings.NewReader(`{"model":"doubao-seedance-2-0-260128","content":[{"type":"text","text":"A dress changes color"}]}`),
 	)
 	ctx.Request.Header.Set("Content-Type", "application/json")

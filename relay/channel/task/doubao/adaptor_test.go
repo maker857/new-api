@@ -198,3 +198,55 @@ func TestConvertToRequestPayloadPreventsMetadataFromOverridingSeedanceModel(t *t
 	assert.Equal(t, "doubao-seedance-2-0-fast-260128", actual["model"])
 	assert.Equal(t, "720p", actual["resolution"])
 }
+
+func TestConvertToRequestPayloadPreventsMetadataFromSettingSeedanceDuration(t *testing.T) {
+	payload, err := (&TaskAdaptor{}).convertToRequestPayload(&relaycommon.TaskSubmitReq{
+		Model:  "doubao-seedance-2-0-fast-260128",
+		Prompt: "A dress changes from black to white",
+		Metadata: map[string]any{
+			"duration":   99,
+			"resolution": "720p",
+		},
+	})
+	require.NoError(t, err)
+
+	payloadJSON, err := common.Marshal(payload)
+	require.NoError(t, err)
+	var actual map[string]any
+	require.NoError(t, common.Unmarshal(payloadJSON, &actual))
+
+	assert.NotContains(t, actual, "duration")
+	assert.Equal(t, "720p", actual["resolution"])
+}
+
+func TestConvertToRequestPayloadPreventsMetadataFromInjectingSeedanceContent(t *testing.T) {
+	payload, err := (&TaskAdaptor{}).convertToRequestPayload(&relaycommon.TaskSubmitReq{
+		Model:  "doubao-seedance-2-0-fast-260128",
+		Prompt: "A dress changes from black to white",
+		Images: []string{"https://example.com/input.png"},
+		Metadata: map[string]any{
+			"content": []any{
+				map[string]any{
+					"type":      "video_url",
+					"video_url": map[string]any{"url": "https://example.com/untrusted.mp4"},
+				},
+			},
+			"seed": 7,
+		},
+	})
+	require.NoError(t, err)
+
+	payloadJSON, err := common.Marshal(payload)
+	require.NoError(t, err)
+	var actual map[string]any
+	require.NoError(t, common.Unmarshal(payloadJSON, &actual))
+
+	assert.Equal(t, float64(7), actual["seed"])
+	content, ok := actual["content"].([]any)
+	require.True(t, ok)
+	require.Len(t, content, 2)
+	assert.Equal(t, "image_url", content[0].(map[string]any)["type"])
+	assert.Equal(t, "https://example.com/input.png", content[0].(map[string]any)["image_url"].(map[string]any)["url"])
+	assert.Equal(t, "text", content[1].(map[string]any)["type"])
+	assert.Equal(t, "A dress changes from black to white", content[1].(map[string]any)["text"])
+}

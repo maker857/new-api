@@ -62,6 +62,33 @@ type requestPayload struct {
 	Seed             *dto.IntValue  `json:"seed,omitempty"`
 	CameraFixed      *dto.BoolValue `json:"camera_fixed,omitempty"`
 	Watermark        *dto.BoolValue `json:"watermark,omitempty"`
+	Extra            map[string]any `json:"-"`
+}
+
+func (r requestPayload) MarshalJSON() ([]byte, error) {
+	type requestPayloadAlias requestPayload
+
+	payloadJSON, err := common.Marshal(requestPayloadAlias(r))
+	if err != nil {
+		return nil, err
+	}
+
+	var payload map[string]any
+	if err := common.Unmarshal(payloadJSON, &payload); err != nil {
+		return nil, err
+	}
+
+	for key, value := range r.Extra {
+		switch key {
+		case "model", "content", "duration":
+			continue
+		}
+		if _, exists := payload[key]; !exists {
+			payload[key] = value
+		}
+	}
+
+	return common.Marshal(payload)
 }
 
 type responsePayload struct {
@@ -300,6 +327,58 @@ func (a *TaskAdaptor) convertToRequestPayload(req *relaycommon.TaskSubmitReq) (*
 	metadata := req.Metadata
 	if err := taskcommon.UnmarshalMetadata(metadata, &r); err != nil {
 		return nil, errors.Wrap(err, "unmarshal metadata failed")
+	}
+	if len(req.Extra) > 0 {
+		r.Extra = make(map[string]any, len(req.Extra))
+		for key, value := range req.Extra {
+			r.Extra[key] = value
+		}
+
+		resolution := r.Resolution
+		if explicitResolution, ok := r.Extra["resolution"].(string); ok && explicitResolution != "" {
+			resolution = explicitResolution
+		}
+		ratio := r.Ratio
+		if explicitRatio, ok := r.Extra["ratio"].(string); ok && explicitRatio != "" {
+			ratio = explicitRatio
+		}
+
+		width, widthErr := strconv.Atoi(common.Interface2String(r.Extra["width"]))
+		height, heightErr := strconv.Atoi(common.Interface2String(r.Extra["height"]))
+		delete(r.Extra, "width")
+		delete(r.Extra, "height")
+		if widthErr == nil && heightErr == nil {
+			switch {
+			case width == 1920 && height == 1080:
+				if resolution == "" {
+					r.Resolution = "1080p"
+				}
+				if ratio == "" {
+					r.Ratio = "16:9"
+				}
+			case width == 1080 && height == 1920:
+				if resolution == "" {
+					r.Resolution = "1080p"
+				}
+				if ratio == "" {
+					r.Ratio = "9:16"
+				}
+			case width == 1280 && height == 720:
+				if resolution == "" {
+					r.Resolution = "720p"
+				}
+				if ratio == "" {
+					r.Ratio = "16:9"
+				}
+			case width == 720 && height == 1280:
+				if resolution == "" {
+					r.Resolution = "720p"
+				}
+				if ratio == "" {
+					r.Ratio = "9:16"
+				}
+			}
+		}
 	}
 
 	duration := req.Duration

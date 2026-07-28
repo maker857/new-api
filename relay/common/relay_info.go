@@ -743,6 +743,7 @@ type TaskSubmitReq struct {
 	Seconds        string                 `json:"seconds,omitempty"`
 	InputReference string                 `json:"input_reference,omitempty"`
 	Metadata       map[string]interface{} `json:"metadata,omitempty"`
+	Extra          map[string]interface{} `json:"-"`
 }
 
 func (t *TaskSubmitReq) GetPrompt() string {
@@ -787,7 +788,6 @@ func (t *TaskSubmitReq) UnmarshalJSON(data []byte) error {
 			var metadataObj map[string]interface{}
 			if err := common.Unmarshal([]byte(metadataStr), &metadataObj); err == nil {
 				t.Metadata = metadataObj
-				return nil
 			}
 		}
 
@@ -795,6 +795,20 @@ func (t *TaskSubmitReq) UnmarshalJSON(data []byte) error {
 		if err := common.Unmarshal(aux.Metadata, &metadataObj); err == nil {
 			t.Metadata = metadataObj
 		}
+	}
+
+	var fields map[string]interface{}
+	if err := common.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	for _, key := range []string{
+		"prompt", "model", "mode", "image", "images", "size", "duration",
+		"seconds", "input_reference", "metadata",
+	} {
+		delete(fields, key)
+	}
+	if len(fields) > 0 {
+		t.Extra = fields
 	}
 
 	return nil

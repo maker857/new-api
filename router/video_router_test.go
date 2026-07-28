@@ -13,11 +13,10 @@ func TestSetVideoRouterRegistersNativeSeedanceTaskRoute(t *testing.T) {
 	engine := gin.New()
 	SetVideoRouter(engine)
 
+	routes := map[string]bool{}
 	for _, route := range engine.Routes() {
-		if route.Method == http.MethodPost && route.Path == "/api/v3/contents/generations/tasks" {
-			return
-		}
+		routes[route.Method+" "+route.Path] = true
 	}
-
-	require.Fail(t, "native Seedance task route is not registered")
+	require.True(t, routes[http.MethodPost+" /api/v3/contents/generations/tasks"])
+	require.True(t, routes[http.MethodGet+" /api/v3/contents/generations/tasks/:task_id"])
 }

@@ -4,6 +4,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/controller"
 	"github.com/QuantumNous/new-api/middleware"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 
 	"github.com/gin-gonic/gin"
 )
@@ -36,12 +37,14 @@ func SetVideoRouter(router *gin.Engine) {
 	volcengineSeedanceRouter.Use(middleware.RouteTag("relay"))
 	volcengineSeedanceRouter.Use(middleware.SystemPerformanceCheck())
 	volcengineSeedanceRouter.Use(middleware.TokenAuth())
-	volcengineSeedanceRouter.Use(middleware.ModelRequestRateLimit())
-	volcengineSeedanceRouter.Use(middleware.Distribute())
 	{
-		volcengineSeedanceRouter.POST("/tasks", func(c *gin.Context) {
+		volcengineSeedanceRouter.POST("/tasks", middleware.ModelRequestRateLimit(), middleware.Distribute(), func(c *gin.Context) {
 			c.Set(string(constant.ContextKeyNativeSeedanceResponse), true)
 			controller.RelayTask(c)
+		})
+		volcengineSeedanceRouter.GET("/tasks/:task_id", func(c *gin.Context) {
+			c.Set("relay_mode", relayconstant.RelayModeVideoFetchByID)
+			controller.RelayTaskFetch(c)
 		})
 	}
 

@@ -399,6 +399,33 @@ func videoFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *d
 		taskResp = service.TaskErrorWrapperLocal(errors.New("task_not_exist"), "task_not_exist", http.StatusBadRequest)
 		return
 	}
+	if strings.HasPrefix(c.Request.URL.Path, "/api/v3/contents/generations/tasks/") {
+		channelModel, err := model.GetChannelById(originTask.ChannelId, true)
+		if err != nil {
+			return nil, service.TaskErrorWrapper(err, "channel_not_found", http.StatusInternalServerError)
+		}
+		adaptor := GetTaskAdaptor(originTask.Platform)
+		if adaptor == nil {
+			return nil, service.TaskErrorWrapperLocal(fmt.Errorf("not_implemented:%s", originTask.Platform), "not_implemented", http.StatusNotImplemented)
+		}
+		key, _, apiErr := channelModel.GetNextEnabledKey()
+		if apiErr != nil {
+			return nil, service.TaskErrorWrapper(apiErr, "channel_no_available_key", apiErr.StatusCode)
+		}
+		resp, err := adaptor.FetchTask(channelModel.GetBaseURL(), key, map[string]any{"task_id": originTask.GetUpstreamTaskID()}, channelModel.GetSetting().Proxy)
+		if err != nil {
+			return nil, service.TaskErrorWrapper(err, "fetch_task_failed", http.StatusInternalServerError)
+		}
+		defer resp.Body.Close()
+		respBody, err = io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, service.TaskErrorWrapper(err, "read_response_body_failed", http.StatusInternalServerError)
+		}
+		if resp.StatusCode != http.StatusOK {
+			return nil, service.TaskErrorWrapper(fmt.Errorf("%s", string(respBody)), "fetch_task_failed", resp.StatusCode)
+		}
+		return respBody, nil
+	}
 
 	isOpenAIVideoAPI := strings.HasPrefix(c.Request.RequestURI, "/v1/videos/")
 

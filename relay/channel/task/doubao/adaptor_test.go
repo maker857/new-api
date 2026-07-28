@@ -164,3 +164,37 @@ func TestConvertToRequestPayloadProtectsSeedanceCanonicalFields(t *testing.T) {
 	require.Len(t, content, 1)
 	assert.Equal(t, "A dress changes from black to white", content[0].(map[string]any)["text"])
 }
+
+func TestConvertToRequestPayloadRejectsUnsupportedSeedanceDimensions(t *testing.T) {
+	var req relaycommon.TaskSubmitReq
+	err := common.Unmarshal([]byte(`{
+		"model":"doubao-seedance-2-0-fast-260128",
+		"prompt":"A dress changes from black to white",
+		"width":800,
+		"height":600
+	}`), &req)
+	require.NoError(t, err)
+
+	_, err = (&TaskAdaptor{}).convertToRequestPayload(&req)
+	require.ErrorContains(t, err, "unsupported Seedance dimensions 800x600")
+}
+
+func TestConvertToRequestPayloadPreventsMetadataFromOverridingSeedanceModel(t *testing.T) {
+	payload, err := (&TaskAdaptor{}).convertToRequestPayload(&relaycommon.TaskSubmitReq{
+		Model:  "doubao-seedance-2-0-fast-260128",
+		Prompt: "A dress changes from black to white",
+		Metadata: map[string]any{
+			"model":      "untrusted-model",
+			"resolution": "720p",
+		},
+	})
+	require.NoError(t, err)
+
+	payloadJSON, err := common.Marshal(payload)
+	require.NoError(t, err)
+	var actual map[string]any
+	require.NoError(t, common.Unmarshal(payloadJSON, &actual))
+
+	assert.Equal(t, "doubao-seedance-2-0-fast-260128", actual["model"])
+	assert.Equal(t, "720p", actual["resolution"])
+}

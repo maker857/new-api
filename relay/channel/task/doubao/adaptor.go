@@ -343,11 +343,22 @@ func (a *TaskAdaptor) convertToRequestPayload(req *relaycommon.TaskSubmitReq) (*
 			ratio = explicitRatio
 		}
 
-		width, widthErr := strconv.Atoi(common.Interface2String(r.Extra["width"]))
-		height, heightErr := strconv.Atoi(common.Interface2String(r.Extra["height"]))
+		widthValue, hasWidth := r.Extra["width"]
+		heightValue, hasHeight := r.Extra["height"]
 		delete(r.Extra, "width")
 		delete(r.Extra, "height")
-		if widthErr == nil && heightErr == nil {
+		if (hasWidth || hasHeight) && !(resolution != "" && ratio != "") {
+			if !hasWidth || !hasHeight {
+				return nil, fmt.Errorf("Seedance width and height must be specified together")
+			}
+
+			width, widthErr := strconv.Atoi(common.Interface2String(widthValue))
+			height, heightErr := strconv.Atoi(common.Interface2String(heightValue))
+			if widthErr != nil || heightErr != nil {
+				return nil, fmt.Errorf("invalid Seedance dimensions %v x %v", widthValue, heightValue)
+			}
+
+			mapped := true
 			switch {
 			case width == 1920 && height == 1080:
 				if resolution == "" {
@@ -377,6 +388,11 @@ func (a *TaskAdaptor) convertToRequestPayload(req *relaycommon.TaskSubmitReq) (*
 				if ratio == "" {
 					r.Ratio = "9:16"
 				}
+			default:
+				mapped = false
+			}
+			if !mapped {
+				return nil, fmt.Errorf("unsupported Seedance dimensions %dx%d", width, height)
 			}
 		}
 	}

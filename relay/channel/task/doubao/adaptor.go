@@ -145,8 +145,19 @@ func (a *TaskAdaptor) Init(info *relaycommon.RelayInfo) {
 
 // ValidateRequestAndSetAction parses body, validates fields and sets default action.
 func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycommon.RelayInfo) (taskErr *dto.TaskError) {
-	// Accept only POST /v1/video/generations as "generate" action.
-	return relaycommon.ValidateBasicTaskRequest(c, info, constant.TaskActionGenerate)
+	if taskErr := relaycommon.ValidateBasicTaskRequest(c, info, constant.TaskActionGenerate); taskErr != nil {
+		return taskErr
+	}
+
+	req, err := relaycommon.GetTaskRequest(c)
+	if err != nil {
+		return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
+	}
+	if _, _, err := resolveSeedanceDimensions(&req); err != nil {
+		return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
+	}
+
+	return nil
 }
 
 // BuildRequestURL constructs the upstream URL.
@@ -176,8 +187,11 @@ func (a *TaskAdaptor) EstimateBilling(c *gin.Context, info *relaycommon.RelayInf
 	if err != nil {
 		return nil
 	}
+	resolution, _, err := resolveSeedanceDimensions(&req)
+	if err != nil {
+		return nil
+	}
 	hasVideo := hasVideoInMetadata(req.Metadata)
-	resolution, _ := req.Metadata["resolution"].(string)
 	ratio, ok := GetVideoInputRatio(info.OriginModelName, resolution, hasVideo)
 	if !ok || ratio == 1.0 {
 		return nil
@@ -212,6 +226,67 @@ func hasVideoInMetadata(metadata map[string]interface{}) bool {
 		}
 	}
 	return false
+}
+
+func resolveSeedanceDimensions(req *relaycommon.TaskSubmitReq) (string, string, error) {
+	resolution, _ := req.Metadata["resolution"].(string)
+	ratio, _ := req.Metadata["ratio"].(string)
+	if explicitResolution, ok := req.Extra["resolution"].(string); ok && explicitResolution != "" {
+		resolution = explicitResolution
+	}
+	if explicitRatio, ok := req.Extra["ratio"].(string); ok && explicitRatio != "" {
+		ratio = explicitRatio
+	}
+
+	widthValue, hasWidth := req.Extra["width"]
+	heightValue, hasHeight := req.Extra["height"]
+	if (!hasWidth && !hasHeight) || (resolution != "" && ratio != "") {
+		return resolution, ratio, nil
+	}
+	if !hasWidth || !hasHeight {
+		return "", "", fmt.Errorf("Seedance width and height must be specified together")
+	}
+
+	width, widthErr := strconv.Atoi(common.Interface2String(widthValue))
+	height, heightErr := strconv.Atoi(common.Interface2String(heightValue))
+	if widthErr != nil || heightErr != nil {
+		return "", "", fmt.Errorf("invalid Seedance dimensions %v x %v", widthValue, heightValue)
+	}
+
+	switch {
+	case width == 1920 && height == 1080:
+		if resolution == "" {
+			resolution = "1080p"
+		}
+		if ratio == "" {
+			ratio = "16:9"
+		}
+	case width == 1080 && height == 1920:
+		if resolution == "" {
+			resolution = "1080p"
+		}
+		if ratio == "" {
+			ratio = "9:16"
+		}
+	case width == 1280 && height == 720:
+		if resolution == "" {
+			resolution = "720p"
+		}
+		if ratio == "" {
+			ratio = "16:9"
+		}
+	case width == 720 && height == 1280:
+		if resolution == "" {
+			resolution = "720p"
+		}
+		if ratio == "" {
+			ratio = "9:16"
+		}
+	default:
+		return "", "", fmt.Errorf("unsupported Seedance dimensions %dx%d", width, height)
+	}
+
+	return resolution, ratio, nil
 }
 
 // BuildRequestBody converts request into Doubao specific format.
@@ -324,78 +399,47 @@ func (a *TaskAdaptor) convertToRequestPayload(req *relaycommon.TaskSubmitReq) (*
 		}
 	}
 
-	metadata := req.Metadata
-	delete(metadata, "content")
-	delete(metadata, "duration")
+	metadata := make(map[string]any, len(req.Metadata))
+	for key, value := range req.Metadata {
+		switch key {
+		case "model", "duration", "content":
+			continue
+		}
+		metadata[key] = value
+	}
 	if err := taskcommon.UnmarshalMetadata(metadata, &r); err != nil {
 		return nil, errors.Wrap(err, "unmarshal metadata failed")
 	}
+	if contentRaw, ok := req.Metadata["content"]; ok {
+		contentJSON, err := common.Marshal(contentRaw)
+		if err != nil {
+			return nil, errors.Wrap(err, "marshal metadata content failed")
+		}
+		var metadataContent []ContentItem
+		if err := common.Unmarshal(contentJSON, &metadataContent); err != nil {
+			return nil, errors.Wrap(err, "unmarshal metadata content failed")
+		}
+		for _, content := range metadataContent {
+			switch content.Type {
+			case "image_url", "video_url", "audio_url":
+				r.Content = append(r.Content, content)
+			}
+		}
+	}
+
+	resolution, ratio, err := resolveSeedanceDimensions(req)
+	if err != nil {
+		return nil, err
+	}
+	r.Resolution = resolution
+	r.Ratio = ratio
 	if len(req.Extra) > 0 {
 		r.Extra = make(map[string]any, len(req.Extra))
 		for key, value := range req.Extra {
+			if key == "width" || key == "height" {
+				continue
+			}
 			r.Extra[key] = value
-		}
-
-		resolution := r.Resolution
-		if explicitResolution, ok := r.Extra["resolution"].(string); ok && explicitResolution != "" {
-			resolution = explicitResolution
-		}
-		ratio := r.Ratio
-		if explicitRatio, ok := r.Extra["ratio"].(string); ok && explicitRatio != "" {
-			ratio = explicitRatio
-		}
-
-		widthValue, hasWidth := r.Extra["width"]
-		heightValue, hasHeight := r.Extra["height"]
-		delete(r.Extra, "width")
-		delete(r.Extra, "height")
-		if (hasWidth || hasHeight) && !(resolution != "" && ratio != "") {
-			if !hasWidth || !hasHeight {
-				return nil, fmt.Errorf("Seedance width and height must be specified together")
-			}
-
-			width, widthErr := strconv.Atoi(common.Interface2String(widthValue))
-			height, heightErr := strconv.Atoi(common.Interface2String(heightValue))
-			if widthErr != nil || heightErr != nil {
-				return nil, fmt.Errorf("invalid Seedance dimensions %v x %v", widthValue, heightValue)
-			}
-
-			mapped := true
-			switch {
-			case width == 1920 && height == 1080:
-				if resolution == "" {
-					r.Resolution = "1080p"
-				}
-				if ratio == "" {
-					r.Ratio = "16:9"
-				}
-			case width == 1080 && height == 1920:
-				if resolution == "" {
-					r.Resolution = "1080p"
-				}
-				if ratio == "" {
-					r.Ratio = "9:16"
-				}
-			case width == 1280 && height == 720:
-				if resolution == "" {
-					r.Resolution = "720p"
-				}
-				if ratio == "" {
-					r.Ratio = "16:9"
-				}
-			case width == 720 && height == 1280:
-				if resolution == "" {
-					r.Resolution = "720p"
-				}
-				if ratio == "" {
-					r.Ratio = "9:16"
-				}
-			default:
-				mapped = false
-			}
-			if !mapped {
-				return nil, fmt.Errorf("unsupported Seedance dimensions %dx%d", width, height)
-			}
 		}
 	}
 

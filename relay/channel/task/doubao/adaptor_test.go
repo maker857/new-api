@@ -1,10 +1,14 @@
 package doubao
 
 import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -180,14 +184,16 @@ func TestConvertToRequestPayloadRejectsUnsupportedSeedanceDimensions(t *testing.
 }
 
 func TestConvertToRequestPayloadPreventsMetadataFromOverridingSeedanceModel(t *testing.T) {
-	payload, err := (&TaskAdaptor{}).convertToRequestPayload(&relaycommon.TaskSubmitReq{
+	req := relaycommon.TaskSubmitReq{
 		Model:  "doubao-seedance-2-0-fast-260128",
 		Prompt: "A dress changes from black to white",
 		Metadata: map[string]any{
 			"model":      "untrusted-model",
 			"resolution": "720p",
 		},
-	})
+	}
+
+	payload, err := (&TaskAdaptor{}).convertToRequestPayload(&req)
 	require.NoError(t, err)
 
 	payloadJSON, err := common.Marshal(payload)
@@ -197,17 +203,20 @@ func TestConvertToRequestPayloadPreventsMetadataFromOverridingSeedanceModel(t *t
 
 	assert.Equal(t, "doubao-seedance-2-0-fast-260128", actual["model"])
 	assert.Equal(t, "720p", actual["resolution"])
+	assert.Equal(t, "untrusted-model", req.Metadata["model"])
 }
 
 func TestConvertToRequestPayloadPreventsMetadataFromSettingSeedanceDuration(t *testing.T) {
-	payload, err := (&TaskAdaptor{}).convertToRequestPayload(&relaycommon.TaskSubmitReq{
+	req := relaycommon.TaskSubmitReq{
 		Model:  "doubao-seedance-2-0-fast-260128",
 		Prompt: "A dress changes from black to white",
 		Metadata: map[string]any{
 			"duration":   99,
 			"resolution": "720p",
 		},
-	})
+	}
+
+	payload, err := (&TaskAdaptor{}).convertToRequestPayload(&req)
 	require.NoError(t, err)
 
 	payloadJSON, err := common.Marshal(payload)
@@ -217,15 +226,20 @@ func TestConvertToRequestPayloadPreventsMetadataFromSettingSeedanceDuration(t *t
 
 	assert.NotContains(t, actual, "duration")
 	assert.Equal(t, "720p", actual["resolution"])
+	assert.Equal(t, 99, req.Metadata["duration"])
 }
 
-func TestConvertToRequestPayloadPreventsMetadataFromInjectingSeedanceContent(t *testing.T) {
-	payload, err := (&TaskAdaptor{}).convertToRequestPayload(&relaycommon.TaskSubmitReq{
+func TestConvertToRequestPayloadRetainsSeedanceMetadataMediaWithoutMutatingMetadata(t *testing.T) {
+	req := relaycommon.TaskSubmitReq{
 		Model:  "doubao-seedance-2-0-fast-260128",
 		Prompt: "A dress changes from black to white",
 		Images: []string{"https://example.com/input.png"},
 		Metadata: map[string]any{
 			"content": []any{
+				map[string]any{
+					"type": "text",
+					"text": "untrusted prompt",
+				},
 				map[string]any{
 					"type":      "video_url",
 					"video_url": map[string]any{"url": "https://example.com/untrusted.mp4"},
@@ -233,7 +247,9 @@ func TestConvertToRequestPayloadPreventsMetadataFromInjectingSeedanceContent(t *
 			},
 			"seed": 7,
 		},
-	})
+	}
+
+	payload, err := (&TaskAdaptor{}).convertToRequestPayload(&req)
 	require.NoError(t, err)
 
 	payloadJSON, err := common.Marshal(payload)
@@ -244,9 +260,53 @@ func TestConvertToRequestPayloadPreventsMetadataFromInjectingSeedanceContent(t *
 	assert.Equal(t, float64(7), actual["seed"])
 	content, ok := actual["content"].([]any)
 	require.True(t, ok)
-	require.Len(t, content, 2)
+	require.Len(t, content, 3)
 	assert.Equal(t, "image_url", content[0].(map[string]any)["type"])
 	assert.Equal(t, "https://example.com/input.png", content[0].(map[string]any)["image_url"].(map[string]any)["url"])
-	assert.Equal(t, "text", content[1].(map[string]any)["type"])
-	assert.Equal(t, "A dress changes from black to white", content[1].(map[string]any)["text"])
+	assert.Equal(t, "video_url", content[1].(map[string]any)["type"])
+	assert.Equal(t, "https://example.com/untrusted.mp4", content[1].(map[string]any)["video_url"].(map[string]any)["url"])
+	assert.Equal(t, "text", content[2].(map[string]any)["type"])
+	assert.Equal(t, "A dress changes from black to white", content[2].(map[string]any)["text"])
+	assert.Contains(t, req.Metadata, "content")
+	assert.Equal(t, 7, req.Metadata["seed"])
+}
+
+func TestEstimateBillingUsesDerivedSeedanceResolution(t *testing.T) {
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Set("task_request", relaycommon.TaskSubmitReq{
+		Model:  "doubao-seedance-2-0-260128",
+		Prompt: "A dress changes from black to white",
+		Extra: map[string]any{
+			"width":  float64(1920),
+			"height": float64(1080),
+		},
+	})
+
+	ratios := (&TaskAdaptor{}).EstimateBilling(context, &relaycommon.RelayInfo{
+		OriginModelName: "doubao-seedance-2-0-260128",
+	})
+
+	assert.Equal(t, 51.0/46.0, ratios["video_input"])
+}
+
+func TestValidateRequestRejectsUnsupportedSeedanceDimensions(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	request := httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(`{
+		"model":"doubao-seedance-2-0-260128",
+		"prompt":"A dress changes from black to white",
+		"width":800,
+		"height":600
+	}`))
+	request.Header.Set("Content-Type", "application/json")
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Request = request
+
+	taskErr := (&TaskAdaptor{}).ValidateRequestAndSetAction(context, &relaycommon.RelayInfo{
+		TaskRelayInfo: &relaycommon.TaskRelayInfo{},
+	})
+
+	require.NotNil(t, taskErr)
+	assert.Equal(t, "invalid_request", taskErr.Code)
+	assert.Equal(t, http.StatusBadRequest, taskErr.StatusCode)
+	assert.True(t, taskErr.LocalError)
 }

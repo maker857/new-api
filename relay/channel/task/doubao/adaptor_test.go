@@ -128,6 +128,62 @@ func TestConvertToRequestPayloadForwardsDuration(t *testing.T) {
 	assert.Equal(t, 4, int(*payload.Duration))
 }
 
+func TestBuildRequestBodyPreservesNativeSeedanceContentOrder(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Set(string(constant.ContextKeyNativeSeedanceResponse), true)
+	context.Set("task_request", relaycommon.TaskSubmitReq{
+		Model: "doubao-seedance-2-0-260128",
+		Extra: map[string]any{
+			"content": []any{
+				map[string]any{"type": "text", "text": "First instruction"},
+				map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://example.com/input.png"}},
+				map[string]any{"type": "text", "text": "Second instruction"},
+			},
+		},
+	})
+
+	body, err := (&TaskAdaptor{}).BuildRequestBody(context, &relaycommon.RelayInfo{
+		TaskRelayInfo: &relaycommon.TaskRelayInfo{},
+		ChannelMeta:   &relaycommon.ChannelMeta{},
+	})
+	require.NoError(t, err)
+	payloadJSON, err := io.ReadAll(body)
+	require.NoError(t, err)
+
+	var payload map[string]any
+	require.NoError(t, common.Unmarshal(payloadJSON, &payload))
+	content, ok := payload["content"].([]any)
+	require.True(t, ok)
+	require.Len(t, content, 3)
+	assert.Equal(t, "First instruction", content[0].(map[string]any)["text"])
+	assert.Equal(t, "image_url", content[1].(map[string]any)["type"])
+	assert.Equal(t, "Second instruction", content[2].(map[string]any)["text"])
+}
+
+func TestValidateRequestAcceptsNativeSeedanceContent(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	request := httptest.NewRequest(http.MethodPost, "/api/plan/v3/contents/generations/tasks", strings.NewReader(`{
+		"model":"doubao-seedance-2-0-260128",
+		"content":[{"type":"text","text":"A dress changes from black to white"}],
+		"duration":15
+	}`))
+	request.Header.Set("Content-Type", "application/json")
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Request = request
+	context.Set(string(constant.ContextKeyNativeSeedanceResponse), true)
+
+	taskErr := (&TaskAdaptor{}).ValidateRequestAndSetAction(context, &relaycommon.RelayInfo{
+		TaskRelayInfo: &relaycommon.TaskRelayInfo{},
+	})
+	require.Nil(t, taskErr)
+
+	stored, err := relaycommon.GetTaskRequest(context)
+	require.NoError(t, err)
+	assert.Equal(t, "doubao-seedance-2-0-260128", stored.Model)
+	require.Contains(t, stored.Extra, "content")
+}
+
 func TestConvertToRequestPayloadMapsOpenAIVideoDimensionsForSeedance(t *testing.T) {
 	var req relaycommon.TaskSubmitReq
 	err := common.Unmarshal([]byte(`{
@@ -356,6 +412,26 @@ func TestEstimateBillingUsesDerivedSeedanceResolution(t *testing.T) {
 	})
 
 	assert.Equal(t, 51.0/46.0, ratios["video_input"])
+}
+
+func TestEstimateBillingRecognizesVideoInNativeSeedanceContent(t *testing.T) {
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Set("task_request", relaycommon.TaskSubmitReq{
+		Model: "doubao-seedance-2-0-260128",
+		Extra: map[string]any{
+			"resolution": "720p",
+			"content": []any{
+				map[string]any{"type": "text", "text": "Animate this clip"},
+				map[string]any{"type": "video_url", "video_url": map[string]any{"url": "https://example.com/input.mp4"}},
+			},
+		},
+	})
+
+	ratios := (&TaskAdaptor{}).EstimateBilling(context, &relaycommon.RelayInfo{
+		OriginModelName: "doubao-seedance-2-0-260128",
+	})
+
+	assert.Equal(t, 28.0/46.0, ratios["video_input"])
 }
 
 func TestValidateRequestRejectsUnsupportedSeedanceDimensions(t *testing.T) {

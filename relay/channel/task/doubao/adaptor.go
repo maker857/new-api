@@ -62,6 +62,7 @@ type requestPayload struct {
 	Seed             *dto.IntValue  `json:"seed,omitempty"`
 	CameraFixed      *dto.BoolValue `json:"camera_fixed,omitempty"`
 	Watermark        *dto.BoolValue `json:"watermark,omitempty"`
+	NativeContent    []any          `json:"-"`
 	Extra            map[string]any `json:"-"`
 }
 
@@ -76,6 +77,9 @@ func (r requestPayload) MarshalJSON() ([]byte, error) {
 	var payload map[string]any
 	if err := common.Unmarshal(payloadJSON, &payload); err != nil {
 		return nil, err
+	}
+	if r.NativeContent != nil {
+		payload["content"] = r.NativeContent
 	}
 
 	for key, value := range r.Extra {
@@ -145,6 +149,48 @@ func (a *TaskAdaptor) Init(info *relaycommon.RelayInfo) {
 
 // ValidateRequestAndSetAction parses body, validates fields and sets default action.
 func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycommon.RelayInfo) (taskErr *dto.TaskError) {
+	if common.GetContextKeyBool(c, constant.ContextKeyNativeSeedanceResponse) {
+		var req relaycommon.TaskSubmitReq
+		if err := common.UnmarshalBodyReusable(c, &req); err != nil {
+			return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
+		}
+		if strings.TrimSpace(req.Model) == "" {
+			return service.TaskErrorWrapperLocal(fmt.Errorf("model is required"), "invalid_request", http.StatusBadRequest)
+		}
+
+		contentRaw, ok := req.Extra["content"]
+		if !ok {
+			return service.TaskErrorWrapperLocal(fmt.Errorf("content is required"), "invalid_request", http.StatusBadRequest)
+		}
+		contentJSON, err := common.Marshal(contentRaw)
+		if err != nil {
+			return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
+		}
+		var content []ContentItem
+		if err := common.Unmarshal(contentJSON, &content); err != nil {
+			return service.TaskErrorWrapperLocal(fmt.Errorf("content must be an array: %w", err), "invalid_request", http.StatusBadRequest)
+		}
+		for _, item := range content {
+			if item.Type == "text" && strings.TrimSpace(item.Text) != "" {
+				req.Prompt = item.Text
+				break
+			}
+		}
+		if strings.TrimSpace(req.Prompt) == "" {
+			return service.TaskErrorWrapperLocal(fmt.Errorf("content must include non-empty text"), "invalid_request", http.StatusBadRequest)
+		}
+		if req.Duration < 0 || req.Duration > relaycommon.MaxTaskDurationSeconds {
+			return service.TaskErrorWrapperLocal(fmt.Errorf("duration must be between 0 and %d", relaycommon.MaxTaskDurationSeconds), "invalid_request", http.StatusBadRequest)
+		}
+		if _, _, err := resolveSeedanceDimensions(&req); err != nil {
+			return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
+		}
+
+		info.Action = constant.TaskActionGenerate
+		c.Set("task_request", req)
+		return nil
+	}
+
 	if taskErr := relaycommon.ValidateBasicTaskRequest(c, info, constant.TaskActionGenerate); taskErr != nil {
 		return taskErr
 	}
@@ -191,7 +237,7 @@ func (a *TaskAdaptor) EstimateBilling(c *gin.Context, info *relaycommon.RelayInf
 	if err != nil {
 		return nil
 	}
-	hasVideo := hasVideoInMetadata(req.Metadata)
+	hasVideo := hasVideoInMetadata(req.Metadata) || hasVideoInContent(req.Extra["content"])
 	ratio, ok := GetVideoInputRatio(info.OriginModelName, resolution, hasVideo)
 	if !ok || ratio == 1.0 {
 		return nil
@@ -209,6 +255,10 @@ func hasVideoInMetadata(metadata map[string]interface{}) bool {
 	if !ok {
 		return false
 	}
+	return hasVideoInContent(contentRaw)
+}
+
+func hasVideoInContent(contentRaw any) bool {
 	contentSlice, ok := contentRaw.([]interface{})
 	if !ok {
 		return false
@@ -296,7 +346,12 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 		return nil, err
 	}
 
-	body, err := a.convertToRequestPayload(&req)
+	var body *requestPayload
+	if common.GetContextKeyBool(c, constant.ContextKeyNativeSeedanceResponse) {
+		body, err = a.convertToNativeRequestPayload(&req)
+	} else {
+		body, err = a.convertToRequestPayload(&req)
+	}
 	if err != nil {
 		return nil, errors.Wrap(err, "convert request payload failed")
 	}
@@ -310,6 +365,27 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 		return nil, err
 	}
 	return bytes.NewReader(data), nil
+}
+
+func (a *TaskAdaptor) convertToNativeRequestPayload(req *relaycommon.TaskSubmitReq) (*requestPayload, error) {
+	payload, err := a.convertToRequestPayload(req)
+	if err != nil {
+		return nil, err
+	}
+	contentRaw, ok := req.Extra["content"]
+	if !ok {
+		return nil, fmt.Errorf("content is required")
+	}
+	contentJSON, err := common.Marshal(contentRaw)
+	if err != nil {
+		return nil, err
+	}
+	var content []any
+	if err := common.Unmarshal(contentJSON, &content); err != nil {
+		return nil, fmt.Errorf("content must be an array: %w", err)
+	}
+	payload.NativeContent = content
+	return payload, nil
 }
 
 // DoRequest delegates to common helper.

@@ -260,6 +260,13 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 	} else if strings.HasPrefix(c.Request.URL.Path, "/api/v3/auc/bigmodel/") {
 		modelRequest.Model = strings.TrimSpace(c.GetHeader("X-Api-Resource-Id"))
 		c.Set("relay_mode", relayconstant.RelayModeVolcengineASRNative)
+	} else if c.Request.URL.Path == "/api/plan/v3/contents/generations/tasks" {
+		req, err := getModelFromRequest(c)
+		if err != nil {
+			return nil, false, err
+		}
+		modelRequest.Model = req.Model
+		c.Set("relay_mode", relayconstant.RelayModeVideoSubmit)
 	} else if strings.Contains(c.Request.URL.Path, "/mj/") {
 		relayMode := relayconstant.Path2RelayModeMidjourney(c.Request.URL.Path)
 		if relayMode == relayconstant.RelayModeMidjourneyTaskFetch ||

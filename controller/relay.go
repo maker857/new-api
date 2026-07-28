@@ -588,9 +588,6 @@ func RelayTask(c *gin.Context) {
 		}
 		service.LogTaskConsumption(c, relayInfo)
 
-		if common.GetContextKeyBool(c, constant.ContextKeyNativeSeedanceResponse) && result.UpstreamTaskID != "" {
-			relayInfo.PublicTaskID = result.UpstreamTaskID
-		}
 		task := model.InitTask(result.Platform, relayInfo)
 		task.PrivateData.UpstreamTaskID = result.UpstreamTaskID
 		task.PrivateData.BillingSource = relayInfo.BillingSource

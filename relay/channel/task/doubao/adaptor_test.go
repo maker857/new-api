@@ -57,8 +57,8 @@ func TestDoResponseWritesNativeSeedanceResponse(t *testing.T) {
 	assert.Equal(t, "cgt-native-task", taskID)
 	assert.Equal(t, upstreamBody, taskData)
 	assert.Equal(t, http.StatusOK, recorder.Code)
-	assert.Equal(t, "application/json", recorder.Header().Get("Content-Type"))
-	assert.Equal(t, upstreamBody, recorder.Body.Bytes())
+	assert.Contains(t, recorder.Header().Get("Content-Type"), "application/json")
+	assert.JSONEq(t, `{"id":"task_public"}`, recorder.Body.String())
 }
 
 func TestDoResponseKeepsOpenAIVideoResponse(t *testing.T) {

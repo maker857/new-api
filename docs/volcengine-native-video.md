@@ -104,10 +104,10 @@ curl -X POST 'http://<new-api-host>/api/v3/contents/generations/tasks' \
 
 原生接口不把响应转换为 OpenAI 视频任务对象。火山方舟返回的非 200 状态码、响应头中的 `Content-Type` 和错误 JSON 也会原样透传；例如模型不支持某个 `duration` 时，客户端会直接收到火山方舟的 `InvalidParameter` 错误及其原始错误内容。
 
-使用创建接口返回的 `id` 查询状态：
+创建接口返回的是 New API 的 `task_...` 任务 ID。火山的 `cgt-...` 上游 ID 仅在网关内部保存，用于转发查询请求。使用返回的 `task_...` 查询状态：
 
 ```text
-GET http://<new-api-host>/api/v3/contents/generations/tasks/<cgt-task-id>
+GET http://<new-api-host>/api/v3/contents/generations/tasks/<task-id>
 ```
 
 该查询同样使用 New API 的 Bearer 令牌，并将火山方舟任务状态原样返回。

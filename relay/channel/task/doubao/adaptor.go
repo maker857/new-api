@@ -424,7 +424,7 @@ func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *rela
 		return
 	}
 	if common.GetContextKeyBool(c, constant.ContextKeyNativeSeedanceResponse) {
-		c.Data(http.StatusOK, "application/json", responseBody)
+		c.JSON(http.StatusOK, responsePayload{ID: info.PublicTaskID})
 		return dResp.ID, responseBody, nil
 	}
 

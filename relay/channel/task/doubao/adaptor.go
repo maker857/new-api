@@ -319,12 +319,13 @@ func (a *TaskAdaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, req
 
 // DoResponse handles upstream response, returns taskID etc.
 func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (taskID string, taskData []byte, taskErr *dto.TaskError) {
+	defer resp.Body.Close()
+
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		taskErr = service.TaskErrorWrapper(err, "read_response_body_failed", http.StatusInternalServerError)
 		return
 	}
-	_ = resp.Body.Close()
 
 	// Parse Doubao response
 	var dResp responsePayload
@@ -336,6 +337,10 @@ func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *rela
 	if dResp.ID == "" {
 		taskErr = service.TaskErrorWrapper(fmt.Errorf("task_id is empty"), "invalid_response", http.StatusInternalServerError)
 		return
+	}
+	if common.GetContextKeyBool(c, constant.ContextKeyNativeSeedanceResponse) {
+		c.Data(http.StatusOK, "application/json", responseBody)
+		return dResp.ID, responseBody, nil
 	}
 
 	ov := dto.NewOpenAIVideo()

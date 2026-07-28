@@ -1,17 +1,86 @@
 package doubao
 
 import (
+	"bytes"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type failingReadCloser struct {
+	closed bool
+}
+
+func (r *failingReadCloser) Read(_ []byte) (int, error) {
+	return 0, errors.New("upstream read failed")
+}
+
+func (r *failingReadCloser) Close() error {
+	r.closed = true
+	return nil
+}
+
+func TestDoResponseClosesUpstreamBodyWhenReadFails(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	body := &failingReadCloser{}
+
+	_, _, taskErr := (&TaskAdaptor{}).DoResponse(context, &http.Response{Body: body}, &relaycommon.RelayInfo{})
+
+	require.NotNil(t, taskErr)
+	assert.Equal(t, "read_response_body_failed", taskErr.Code)
+	assert.True(t, body.closed)
+}
+
+func TestDoResponseWritesNativeSeedanceResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Set(string(constant.ContextKeyNativeSeedanceResponse), true)
+	upstreamBody := []byte("{\n  \"id\": \"cgt-native-task\",\n  \"vendor_metadata\": {\"nested\": [true, 2]}\n}\n")
+
+	taskID, taskData, taskErr := (&TaskAdaptor{}).DoResponse(context, &http.Response{
+		Body: io.NopCloser(bytes.NewReader(upstreamBody)),
+	}, &relaycommon.RelayInfo{TaskRelayInfo: &relaycommon.TaskRelayInfo{PublicTaskID: "task_public"}})
+
+	require.Nil(t, taskErr)
+	assert.Equal(t, "cgt-native-task", taskID)
+	assert.Equal(t, upstreamBody, taskData)
+	assert.Equal(t, http.StatusOK, recorder.Code)
+	assert.Equal(t, "application/json", recorder.Header().Get("Content-Type"))
+	assert.Equal(t, upstreamBody, recorder.Body.Bytes())
+}
+
+func TestDoResponseKeepsOpenAIVideoResponse(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	upstreamBody := []byte(`{"id":"cgt-upstream-task"}`)
+
+	taskID, taskData, taskErr := (&TaskAdaptor{}).DoResponse(context, &http.Response{
+		Body: io.NopCloser(bytes.NewReader(upstreamBody)),
+	}, &relaycommon.RelayInfo{
+		TaskRelayInfo:   &relaycommon.TaskRelayInfo{PublicTaskID: "task_public"},
+		OriginModelName: "doubao-seedance-2-0-260128",
+	})
+
+	require.Nil(t, taskErr)
+	assert.Equal(t, "cgt-upstream-task", taskID)
+	assert.Equal(t, upstreamBody, taskData)
+	assert.Equal(t, http.StatusOK, recorder.Code)
+	assert.Contains(t, recorder.Body.String(), `"id":"task_public"`)
+	assert.NotContains(t, recorder.Body.String(), "cgt-upstream-task")
+}
 
 func TestBuildTaskURL(t *testing.T) {
 	tests := []struct {

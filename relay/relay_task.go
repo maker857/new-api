@@ -223,6 +223,10 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	}
 	if resp != nil && resp.StatusCode != http.StatusOK {
 		responseBody, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if common.GetContextKeyBool(c, constant.ContextKeyNativeSeedanceResponse) {
+			return nil, writeNativeSeedanceErrorResponse(c, resp, responseBody)
+		}
 		return nil, service.TaskErrorWrapper(fmt.Errorf("%s", string(responseBody)), "fail_to_fetch_task", resp.StatusCode)
 	}
 
@@ -261,6 +265,17 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 
 // recalcQuotaFromRatios 根据 adjustedRatios 重新计算 quota。
 // 公式: baseQuota × ∏(ratio) — 其中 baseQuota 是不含 OtherRatios 的基础额度。
+func writeNativeSeedanceErrorResponse(c *gin.Context, resp *http.Response, responseBody []byte) *dto.TaskError {
+	contentType := resp.Header.Get("Content-Type")
+	if contentType != "" {
+		c.Header("Content-Type", contentType)
+	}
+	c.Status(resp.StatusCode)
+	_, _ = c.Writer.Write(responseBody)
+	c.Set("native_response_committed", true)
+	return service.TaskErrorWrapper(fmt.Errorf("%s", string(responseBody)), "fail_to_fetch_task", resp.StatusCode)
+}
+
 func recalcQuotaFromRatios(info *relaycommon.RelayInfo, ratios map[string]float64) (int, bool) {
 	// 从 PriceData 获取不含 OtherRatios 的基础价格
 	baseQuota := info.PriceData.RemoveOtherRatiosFromFloat(float64(info.PriceData.Quota))

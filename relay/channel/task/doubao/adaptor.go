@@ -154,6 +154,15 @@ func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycom
 		if err := common.UnmarshalBodyReusable(c, &req); err != nil {
 			return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
 		}
+		var nativeFields struct {
+			Duration *int `json:"duration"`
+		}
+		if err := common.UnmarshalBodyReusable(c, &nativeFields); err != nil {
+			return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
+		}
+		if nativeFields.Duration != nil && *nativeFields.Duration == 0 {
+			return service.TaskErrorWrapperLocal(fmt.Errorf("duration must not be 0"), "invalid_request", http.StatusBadRequest)
+		}
 		if strings.TrimSpace(req.Model) == "" {
 			return service.TaskErrorWrapperLocal(fmt.Errorf("model is required"), "invalid_request", http.StatusBadRequest)
 		}

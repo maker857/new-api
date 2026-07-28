@@ -184,6 +184,28 @@ func TestValidateRequestAcceptsNativeSeedanceContent(t *testing.T) {
 	require.Contains(t, stored.Extra, "content")
 }
 
+func TestValidateRequestRejectsExplicitZeroNativeSeedanceDuration(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	request := httptest.NewRequest(http.MethodPost, "/api/plan/v3/contents/generations/tasks", strings.NewReader(`{
+		"model":"doubao-seedance-2-0-260128",
+		"content":[{"type":"text","text":"A dress changes from black to white"}],
+		"duration":0
+	}`))
+	request.Header.Set("Content-Type", "application/json")
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Request = request
+	context.Set(string(constant.ContextKeyNativeSeedanceResponse), true)
+
+	taskErr := (&TaskAdaptor{}).ValidateRequestAndSetAction(context, &relaycommon.RelayInfo{
+		TaskRelayInfo: &relaycommon.TaskRelayInfo{},
+	})
+
+	require.NotNil(t, taskErr)
+	assert.True(t, taskErr.LocalError)
+	assert.Equal(t, http.StatusBadRequest, taskErr.StatusCode)
+	assert.Contains(t, taskErr.Message, "duration")
+}
+
 func TestConvertToRequestPayloadMapsOpenAIVideoDimensionsForSeedance(t *testing.T) {
 	var req relaycommon.TaskSubmitReq
 	err := common.Unmarshal([]byte(`{

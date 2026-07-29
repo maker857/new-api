@@ -189,6 +189,7 @@ import {
   ChannelBasicSection,
   ChannelEditorLoadingState,
   ChannelModelsSection,
+  VolcEngineASRSection,
   VolcEngineTTSSection,
 } from './sections'
 
@@ -3287,6 +3288,13 @@ export function ChannelMutateDrawer({
 
                     {currentType === 45 && (
                       <VolcEngineTTSSection
+                        form={form}
+                        disabled={sensitiveLocked}
+                      />
+                    )}
+
+                    {currentType === 45 && (
+                      <VolcEngineASRSection
                         form={form}
                         disabled={sensitiveLocked}
                       />

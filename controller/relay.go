@@ -43,6 +43,10 @@ func relayHandler(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIErro
 		fallthrough
 	case relayconstant.RelayModeAudioTranscription:
 		err = relay.AudioHelper(c, info)
+	case relayconstant.RelayModeVolcengineTTSNative:
+		err = relay.NativeVolcengineTTSHelper(c, info)
+	case relayconstant.RelayModeVolcengineASRNative:
+		err = relay.NativeVolcengineASRHelper(c, info)
 	case relayconstant.RelayModeRerank:
 		err = relay.RerankHelper(c, info)
 	case relayconstant.RelayModeEmbeddings:
@@ -93,6 +97,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			logger.LogError(c, fmt.Sprintf("relay error: %s", common.LocalLogPreview(newAPIError.Error())))
 			service.RewriteNewAPIErrorWithGinContext(newAPIError, c)
 			newAPIError.SetMessage(common.MessageWithRequestId(newAPIError.Error(), requestId))
+			if c.GetBool("native_response_committed") {
+				return
+			}
 			switch relayFormat {
 			case types.RelayFormatOpenAIRealtime:
 				helper.WssError(c, ws, newAPIError.ToOpenAIError())
@@ -610,6 +617,9 @@ func RelayTask(c *gin.Context) {
 
 // respondTaskError 统一输出 Task 错误响应（含 429 限流提示改写）
 func respondTaskError(c *gin.Context, taskErr *dto.TaskError) {
+	if c.GetBool("native_response_committed") {
+		return
+	}
 	if taskErr.StatusCode == http.StatusTooManyRequests {
 		taskErr.Message = "当前分组上游负载已饱和，请稍后再试"
 	}
@@ -618,6 +628,9 @@ func respondTaskError(c *gin.Context, taskErr *dto.TaskError) {
 
 func shouldRetryTaskRelay(c *gin.Context, channelId int, taskErr *dto.TaskError, retryTimes int) bool {
 	if taskErr == nil {
+		return false
+	}
+	if c.GetBool("native_response_committed") {
 		return false
 	}
 	if service.ShouldSkipRetryAfterChannelAffinityFailure(c) {

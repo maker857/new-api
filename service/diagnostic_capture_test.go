@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -16,6 +18,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -53,14 +56,18 @@ func TestDiagnosticCaptureChannelDefaultIsDisabled(t *testing.T) {
 
 func TestDiagnosticCaptureHeadersRedactCredentials(t *testing.T) {
 	headers := map[string][]string{
-		"Authorization": {"Bearer diagnostic-token"},
-		"X-Api-Key":     {"channel-secret-key"},
-		"User-Agent":    {"diagnostic-test"},
+		"Authorization":    {"Bearer diagnostic-token"},
+		"X-Api-Key":        {"channel-secret-key"},
+		"X-Api-Access-Key": {"legacy-access-key"},
+		"X-Api-App-Id":     {"legacy-app-id"},
+		"User-Agent":       {"diagnostic-test"},
 	}
 
 	captured := redactHeaders(headers)
 	require.Equal(t, []string{"Bearer...-token"}, captured["Authorization"])
 	require.Equal(t, []string{"channe...et-key"}, captured["X-Api-Key"])
+	require.Equal(t, []string{"legacy...ss-key"}, captured["X-Api-Access-Key"])
+	require.Equal(t, []string{"legacy...app-id"}, captured["X-Api-App-Id"])
 	require.Equal(t, []string{"diagnostic-test"}, captured["User-Agent"])
 	require.Equal(t, "shor...-key", partiallyRedactDiagnosticHeader("short-key"))
 }
@@ -453,6 +460,31 @@ func TestDiagnosticCaptureOutboundTransportFailureIsRecorded(t *testing.T) {
 	require.Equal(t, int64(7), combined.APIResponses[0].Sequence)
 	require.Equal(t, "dial tcp: connection refused", combined.APIResponses[0].Error)
 	require.Equal(t, "empty", combined.APIResponses[0].Body.Encoding)
+}
+
+func TestDiagnosticNDJSONResponseRedactsCaptureWithoutMutatingBody(t *testing.T) {
+	captureDir := t.TempDir()
+	flow := &DiagnosticFlow{TraceID: "native-redaction-trace", Channel: "channel", Started: time.Date(2026, 7, 24, 10, 0, 0, 0, time.Local)}
+	flow.session = newDiagnosticCaptureSession(DiagnosticCaptureConfig{
+		Enabled: true, Mode: "full", CaptureDir: captureDir, TempDir: filepath.Join(t.TempDir(), "temp"),
+	}, flow)
+	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"message":"channel-secret"}` + "\n"))}
+	WrapDiagnosticOutboundNDJSONResponse(resp, &DiagnosticExchange{Flow: flow, Sequence: 1, Started: time.Now()}, 1024, "channel-secret")
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	assert.Contains(t, string(body), "channel-secret")
+	flow.session.close(flow)
+
+	path := filepath.Join(captureDir, "channel", "2026-07-24", "native-redaction-trace", "request-log.json")
+	require.Eventually(t, func() bool {
+		_, statErr := os.Stat(filepath.Join(filepath.Dir(path), ".capture-complete"))
+		return statErr == nil
+	}, time.Second, 10*time.Millisecond)
+	captured, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(captured), "[REDACTED]")
+	assert.NotContains(t, string(captured), "channel-secret")
 }
 
 func TestDiagnosticCaptureWebSocketFailureIsRecorded(t *testing.T) {

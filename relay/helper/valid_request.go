@@ -49,12 +49,71 @@ func GetAndValidateRequest(c *gin.Context, format types.RelayFormat) (request dt
 		request, err = GetAndValidateRerankRequest(c)
 	case types.RelayFormatOpenAIAudio:
 		request, err = GetAndValidAudioRequest(c, relayMode)
+	case types.RelayFormatVolcengineTTSNative:
+		request, err = GetAndValidateVolcengineTTSNativeRequest(c)
+	case types.RelayFormatVolcengineASRNative:
+		request, err = GetAndValidateVolcengineASRNativeRequest(c)
 	case types.RelayFormatOpenAIRealtime:
 		request = &dto.BaseRequest{}
 	default:
 		return nil, fmt.Errorf("unsupported relay format: %s", format)
 	}
 	return request, err
+}
+
+func GetAndValidateVolcengineASRNativeRequest(c *gin.Context) (*dto.VolcengineASRNativeRequest, error) {
+	storage, err := common.GetBodyStorage(c)
+	if err != nil {
+		return nil, err
+	}
+	body, err := storage.Bytes()
+	if err != nil {
+		return nil, err
+	}
+	if len(strings.TrimSpace(string(body))) == 0 {
+		return nil, errors.New("request body is required")
+	}
+
+	var payload map[string]any
+	if err = common.Unmarshal(body, &payload); err != nil {
+		return nil, err
+	}
+	request := &dto.VolcengineASRNativeRequest{
+		Model:   strings.TrimSpace(c.GetHeader("X-Api-Resource-Id")),
+		RawBody: append([]byte(nil), body...),
+	}
+	if request.Model == "" {
+		return nil, errors.New("X-Api-Resource-Id is required")
+	}
+	return request, nil
+}
+
+func GetAndValidateVolcengineTTSNativeRequest(c *gin.Context) (*dto.VolcengineTTSNativeRequest, error) {
+	storage, err := common.GetBodyStorage(c)
+	if err != nil {
+		return nil, err
+	}
+	body, err := storage.Bytes()
+	if err != nil {
+		return nil, err
+	}
+
+	request := &dto.VolcengineTTSNativeRequest{}
+	if err = common.Unmarshal(body, request); err != nil {
+		return nil, err
+	}
+	request.RawBody = append(request.RawBody[:0], body...)
+	request.Model = strings.TrimSpace(c.GetHeader("X-Api-Resource-Id"))
+	if request.Model == "" {
+		return nil, errors.New("X-Api-Resource-Id is required")
+	}
+	if strings.TrimSpace(request.ReqParams.Text) == "" {
+		return nil, errors.New("text is required")
+	}
+	if strings.TrimSpace(request.ReqParams.Speaker) == "" {
+		return nil, errors.New("speaker is required")
+	}
+	return request, nil
 }
 
 func GetAndValidAudioRequest(c *gin.Context, relayMode int) (*dto.AudioRequest, error) {

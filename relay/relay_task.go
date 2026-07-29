@@ -223,6 +223,10 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	}
 	if resp != nil && resp.StatusCode != http.StatusOK {
 		responseBody, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if common.GetContextKeyBool(c, constant.ContextKeyNativeSeedanceResponse) {
+			return nil, writeNativeSeedanceErrorResponse(c, resp, responseBody)
+		}
 		return nil, service.TaskErrorWrapper(fmt.Errorf("%s", string(responseBody)), "fail_to_fetch_task", resp.StatusCode)
 	}
 
@@ -261,6 +265,17 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 
 // recalcQuotaFromRatios 根据 adjustedRatios 重新计算 quota。
 // 公式: baseQuota × ∏(ratio) — 其中 baseQuota 是不含 OtherRatios 的基础额度。
+func writeNativeSeedanceErrorResponse(c *gin.Context, resp *http.Response, responseBody []byte) *dto.TaskError {
+	contentType := resp.Header.Get("Content-Type")
+	if contentType != "" {
+		c.Header("Content-Type", contentType)
+	}
+	c.Status(resp.StatusCode)
+	_, _ = c.Writer.Write(responseBody)
+	c.Set("native_response_committed", true)
+	return service.TaskErrorWrapper(fmt.Errorf("%s", string(responseBody)), "fail_to_fetch_task", resp.StatusCode)
+}
+
 func recalcQuotaFromRatios(info *relaycommon.RelayInfo, ratios map[string]float64) (int, bool) {
 	// 从 PriceData 获取不含 OtherRatios 的基础价格
 	baseQuota := info.PriceData.RemoveOtherRatiosFromFloat(float64(info.PriceData.Quota))
@@ -383,6 +398,33 @@ func videoFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *d
 	if !exist {
 		taskResp = service.TaskErrorWrapperLocal(errors.New("task_not_exist"), "task_not_exist", http.StatusBadRequest)
 		return
+	}
+	if strings.HasPrefix(c.Request.URL.Path, "/api/v3/contents/generations/tasks/") {
+		channelModel, err := model.GetChannelById(originTask.ChannelId, true)
+		if err != nil {
+			return nil, service.TaskErrorWrapper(err, "channel_not_found", http.StatusInternalServerError)
+		}
+		adaptor := GetTaskAdaptor(originTask.Platform)
+		if adaptor == nil {
+			return nil, service.TaskErrorWrapperLocal(fmt.Errorf("not_implemented:%s", originTask.Platform), "not_implemented", http.StatusNotImplemented)
+		}
+		key, _, apiErr := channelModel.GetNextEnabledKey()
+		if apiErr != nil {
+			return nil, service.TaskErrorWrapper(apiErr, "channel_no_available_key", apiErr.StatusCode)
+		}
+		resp, err := adaptor.FetchTask(channelModel.GetBaseURL(), key, map[string]any{"task_id": originTask.GetUpstreamTaskID()}, channelModel.GetSetting().Proxy)
+		if err != nil {
+			return nil, service.TaskErrorWrapper(err, "fetch_task_failed", http.StatusInternalServerError)
+		}
+		defer resp.Body.Close()
+		respBody, err = io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, service.TaskErrorWrapper(err, "read_response_body_failed", http.StatusInternalServerError)
+		}
+		if resp.StatusCode != http.StatusOK {
+			return nil, service.TaskErrorWrapper(fmt.Errorf("%s", string(respBody)), "fetch_task_failed", resp.StatusCode)
+		}
+		return respBody, nil
 	}
 
 	isOpenAIVideoAPI := strings.HasPrefix(c.Request.RequestURI, "/v1/videos/")

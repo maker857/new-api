@@ -351,6 +351,7 @@ func TokenAuthReadOnly() func(c *gin.Context) {
 
 func TokenAuth() func(c *gin.Context) {
 	return func(c *gin.Context) {
+		applyNativeTTSTokenAuthorization(c)
 		// 先检测是否为ws
 		if c.Request.Header.Get("Sec-WebSocket-Protocol") != "" {
 			// Sec-WebSocket-Protocol: realtime, openai-insecure-api-key.sk-xxx, openai-beta.realtime-v1
@@ -479,6 +480,15 @@ func TokenAuth() func(c *gin.Context) {
 			return
 		}
 		c.Next()
+	}
+}
+
+func applyNativeTTSTokenAuthorization(c *gin.Context) {
+	if c.Request.URL.Path != "/api/v3/tts/unidirectional" {
+		return
+	}
+	if key := strings.TrimSpace(c.Request.Header.Get("X-Api-Key")); key != "" {
+		c.Request.Header.Set("Authorization", "Bearer "+key)
 	}
 }
 

@@ -47,7 +47,6 @@ const defaultOperationsSettings: OperationsSettings = {
   DiagnosticCaptureEnabled: false,
   DiagnosticCaptureMode: 'full',
   DiagnosticCaptureDir: 'captures',
-  DiagnosticCaptureTempDir: 'diagnostic-capture-temp',
   DiagnosticCaptureTempRetentionMinutes: 60,
   DiagnosticCaptureAutoCleanupEnabled: false,
   DiagnosticCaptureMaxStorageBytes: 0,

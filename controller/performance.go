@@ -281,7 +281,6 @@ func GetDiagnosticCaptureStorage(c *gin.Context) {
 type DiagnosticCaptureSettingsRequest struct {
 	Enabled                      bool    `json:"enabled"`
 	CaptureDir                   string  `json:"capture_dir"`
-	TempDir                      string  `json:"temp_dir"`
 	TempRetentionMinutes         int64   `json:"temp_retention_minutes"`
 	AutoCleanupEnabled           bool    `json:"auto_cleanup_enabled"`
 	MaxStorageBytes              int64   `json:"max_storage_bytes"`
@@ -314,11 +313,11 @@ func UpdateDiagnosticCaptureSettings(c *gin.Context) {
 		common.ApiErrorMsg(c, "diagnostic capture directory cannot be empty")
 		return
 	}
-	if strings.TrimSpace(request.TempDir) == "" {
-		common.ApiErrorMsg(c, "diagnostic capture temporary directory cannot be empty")
+	if err := service.ValidateDiagnosticCaptureRelativeDirectory(request.CaptureDir); err != nil {
+		common.ApiErrorMsg(c, err.Error())
 		return
 	}
-	if err := service.ValidateDiagnosticCaptureDirectories(request.CaptureDir, request.TempDir); err != nil {
+	if err := service.ValidateDiagnosticCaptureDirectories(request.CaptureDir, filepath.Join(filepath.Dir(request.CaptureDir), "diagnostic-capture-temp")); err != nil {
 		common.ApiErrorMsg(c, err.Error())
 		return
 	}
@@ -386,7 +385,6 @@ func UpdateDiagnosticCaptureSettings(c *gin.Context) {
 		service.DiagnosticCaptureEnabledKey:                  strconv.FormatBool(request.Enabled),
 		service.DiagnosticCaptureModeKey:                     "full",
 		service.DiagnosticCaptureDirKey:                      strings.TrimSpace(request.CaptureDir),
-		service.DiagnosticCaptureTempDirKey:                  strings.TrimSpace(request.TempDir),
 		service.DiagnosticCaptureTempRetentionMinutesKey:     strconv.FormatInt(request.TempRetentionMinutes, 10),
 		service.DiagnosticCaptureAutoCleanupEnabledKey:       strconv.FormatBool(request.AutoCleanupEnabled),
 		service.DiagnosticCaptureMaxStorageBytesKey:          strconv.FormatInt(request.MaxStorageBytes, 10),

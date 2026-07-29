@@ -38,8 +38,6 @@ function buildLogSettingsSection(
         DiagnosticCaptureEnabled: Boolean(settings.DiagnosticCaptureEnabled),
         DiagnosticCaptureMode: settings.DiagnosticCaptureMode ?? 'full',
         DiagnosticCaptureDir: settings.DiagnosticCaptureDir ?? 'captures',
-        DiagnosticCaptureTempDir:
-          settings.DiagnosticCaptureTempDir ?? 'diagnostic-capture-temp',
         DiagnosticCaptureTempRetentionMinutes:
           settings.DiagnosticCaptureTempRetentionMinutes ?? 60,
         DiagnosticCaptureAutoCleanupEnabled: Boolean(

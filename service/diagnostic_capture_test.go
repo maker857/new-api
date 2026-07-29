@@ -51,6 +51,44 @@ func TestDiagnosticCaptureChannelDefaultIsDisabled(t *testing.T) {
 	require.False(t, (model.ChannelInfo{}).IsDiagnosticCaptureEnabled())
 }
 
+func TestValidateDiagnosticCaptureRelativeDirectory(t *testing.T) {
+	absolutePath, err := filepath.Abs("captures")
+	require.NoError(t, err)
+
+	cases := []struct {
+		name  string
+		path  string
+		valid bool
+	}{
+		{name: "directory", path: "captures", valid: true},
+		{name: "nested directory", path: "archive/captures", valid: true},
+		{name: "absolute path", path: absolutePath, valid: false},
+		{name: "parent directory", path: "../captures", valid: false},
+		{name: "storage root", path: ".", valid: false},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateDiagnosticCaptureRelativeDirectory(tt.path)
+			if tt.valid {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestDiagnosticCaptureAuxiliaryDirectoriesFollowCaptureDirectory(t *testing.T) {
+	for _, captureDir := range []string{"captures", "archive/captures"} {
+		t.Run(captureDir, func(t *testing.T) {
+			parent := filepath.Dir(captureDir)
+			require.Equal(t, filepath.Join(parent, "diagnostic-capture-temp"), diagnosticCaptureTempDir(captureDir))
+			require.Equal(t, filepath.Join(parent, "diagnostic-capture-failures"), diagnosticCaptureFailureDir(captureDir))
+		})
+	}
+}
+
 func TestDiagnosticCaptureHeadersRedactCredentials(t *testing.T) {
 	headers := map[string][]string{
 		"Authorization": {"Bearer diagnostic-token"},
@@ -271,7 +309,7 @@ func TestScanDiagnosticCaptureStorageOnlyReturnsMarkedCaptureDirectories(t *test
 func TestScanDiagnosticCaptureTotalStorageIncludesTemporaryFiles(t *testing.T) {
 	root := t.TempDir()
 	captureDir := filepath.Join(root, "captures")
-	tempDir := filepath.Join(root, "temporary")
+	tempDir := diagnosticCaptureTempDir(captureDir)
 	capturePath := filepath.Join(captureDir, "channel", "2026-07-23", "trace")
 	require.NoError(t, os.MkdirAll(capturePath, 0o755))
 	require.NoError(t, os.MkdirAll(tempDir, 0o700))
@@ -292,7 +330,7 @@ func TestScanDiagnosticCaptureTotalStorageIncludesTemporaryFiles(t *testing.T) {
 func TestDiagnosticCaptureStorageStatusUsesCachedUsage(t *testing.T) {
 	root := t.TempDir()
 	captureDir := filepath.Join(root, "captures")
-	tempDir := filepath.Join(root, "temporary")
+	tempDir := diagnosticCaptureTempDir(captureDir)
 	capturePath := filepath.Join(captureDir, "channel", "2026-07-23", "trace")
 	require.NoError(t, os.MkdirAll(capturePath, 0o755))
 	require.NoError(t, os.MkdirAll(tempDir, 0o700))
@@ -304,7 +342,6 @@ func TestDiagnosticCaptureStorageStatusUsesCachedUsage(t *testing.T) {
 	common.OptionMap = map[string]string{
 		DiagnosticCaptureAutoCleanupEnabledKey: "true",
 		DiagnosticCaptureDirKey:                captureDir,
-		DiagnosticCaptureTempDirKey:            tempDir,
 		DiagnosticCaptureMaxStorageBytesKey:    "1000",
 		DiagnosticCaptureLastCleanupStatusKey:  "retention_limited",
 	}

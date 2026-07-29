@@ -747,12 +747,20 @@ func runDiagnosticCaptureCleanup() {
 	cleanupDiagnosticCaptureStorageIfNeeded(cfg)
 }
 
-func diagnosticCaptureFailureDir(captureDir string) string {
+func diagnosticCaptureSiblingDir(captureDir, name string) string {
 	captureDir = strings.TrimSpace(captureDir)
 	if captureDir == "" {
 		captureDir = "captures"
 	}
-	return filepath.Join(filepath.Dir(filepath.Clean(captureDir)), "diagnostic-capture-failures")
+	return filepath.Join(filepath.Dir(filepath.Clean(captureDir)), name)
+}
+
+func diagnosticCaptureTempDir(captureDir string) string {
+	return diagnosticCaptureSiblingDir(captureDir, "diagnostic-capture-temp")
+}
+
+func diagnosticCaptureFailureDir(captureDir string) string {
+	return diagnosticCaptureSiblingDir(captureDir, "diagnostic-capture-failures")
 }
 
 func ValidateDiagnosticCaptureDirectories(captureDir, tempDir string) error {
@@ -793,6 +801,17 @@ func ValidateDiagnosticCaptureDirectories(captureDir, tempDir string) error {
 				return fmt.Errorf("diagnostic capture %s and %s directories must not overlap", directories[left].name, directories[right].name)
 			}
 		}
+	}
+	return nil
+}
+
+// ValidateDiagnosticCaptureRelativeDirectory keeps diagnostic logs within the
+// container storage root chosen by the deployment configuration.
+func ValidateDiagnosticCaptureRelativeDirectory(path string) error {
+	cleanPath := filepath.Clean(strings.TrimSpace(path))
+	if cleanPath == "." || cleanPath == ".." || filepath.IsAbs(cleanPath) ||
+		strings.HasPrefix(cleanPath, ".."+string(os.PathSeparator)) {
+		return fmt.Errorf("diagnostic capture directory must be a relative path inside the storage root")
 	}
 	return nil
 }

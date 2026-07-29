@@ -3,6 +3,7 @@ package controller
 import (
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -304,26 +305,17 @@ func UpdateOption(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"success": false, "message": "诊断日志模式只能是 metadata 或 full"})
 			return
 		}
-	case service.DiagnosticCaptureMaxBodyMBKey:
-		maxBodyMB, parseErr := strconv.Atoi(strings.TrimSpace(option.Value.(string)))
-		if parseErr != nil || maxBodyMB < 1 {
-			c.JSON(http.StatusOK, gin.H{"success": false, "message": "诊断日志 body 上限必须是大于 0 的数字"})
-			return
-		}
-	case service.DiagnosticCaptureDirKey, service.DiagnosticCaptureTempDirKey:
-		cfg := service.DiagnosticCaptureConfigFromOptions()
-		captureDir := cfg.CaptureDir
-		tempDir := cfg.TempDir
-		if option.Key == service.DiagnosticCaptureDirKey {
-			captureDir = strings.TrimSpace(option.Value.(string))
-		} else {
-			tempDir = strings.TrimSpace(option.Value.(string))
-		}
-		if captureDir == "" || tempDir == "" {
+	case service.DiagnosticCaptureDirKey:
+		captureDir := strings.TrimSpace(option.Value.(string))
+		if captureDir == "" {
 			c.JSON(http.StatusOK, gin.H{"success": false, "message": "diagnostic capture directories cannot be empty"})
 			return
 		}
-		if err := service.ValidateDiagnosticCaptureDirectories(captureDir, tempDir); err != nil {
+		if err := service.ValidateDiagnosticCaptureRelativeDirectory(captureDir); err != nil {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
+			return
+		}
+		if err := service.ValidateDiagnosticCaptureDirectories(captureDir, filepath.Join(filepath.Dir(captureDir), "diagnostic-capture-temp")); err != nil {
 			c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
 			return
 		}

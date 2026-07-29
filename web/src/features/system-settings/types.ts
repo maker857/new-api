@@ -42,7 +42,6 @@ export type UpdateOptionResponse = {
 export type DiagnosticCaptureSettingsRequest = {
   enabled: boolean
   capture_dir: string
-  temp_dir: string
   temp_retention_minutes: number
   auto_cleanup_enabled: boolean
   max_storage_bytes: number
@@ -374,7 +373,6 @@ export type OperationsSettings = {
   DiagnosticCaptureEnabled: boolean
   DiagnosticCaptureMode: string
   DiagnosticCaptureDir: string
-  DiagnosticCaptureTempDir: string
   DiagnosticCaptureTempRetentionMinutes: number
   DiagnosticCaptureAutoCleanupEnabled: boolean
   DiagnosticCaptureMaxStorageBytes: number

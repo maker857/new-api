@@ -34,9 +34,7 @@ const (
 	DiagnosticCaptureEnabledKey                  = "DiagnosticCaptureEnabled"
 	DiagnosticCaptureModeKey                     = "DiagnosticCaptureMode"
 	DiagnosticCaptureDirKey                      = "DiagnosticCaptureDir"
-	DiagnosticCaptureTempDirKey                  = "DiagnosticCaptureTempDir"
 	DiagnosticCaptureTempRetentionMinutesKey     = "DiagnosticCaptureTempRetentionMinutes"
-	DiagnosticCaptureMaxBodyMBKey                = "DiagnosticCaptureMaxBodyMB"
 	DiagnosticCaptureAutoCleanupEnabledKey       = "DiagnosticCaptureAutoCleanupEnabled"
 	DiagnosticCaptureMaxStorageBytesKey          = "DiagnosticCaptureMaxStorageBytes"
 	DiagnosticCaptureCleanupPercentKey           = "DiagnosticCaptureCleanupPercent"
@@ -65,7 +63,6 @@ type DiagnosticCaptureConfig struct {
 	Enabled                   bool
 	Mode                      string
 	CaptureDir                string
-	MaxBodyBytes              int64
 	AutoCleanupEnabled        bool
 	MaxStorageBytes           int64
 	CleanupPercent            int64
@@ -234,9 +231,7 @@ func DefaultDiagnosticCaptureOptions() map[string]string {
 		DiagnosticCaptureEnabledKey:                  "false",
 		DiagnosticCaptureModeKey:                     "full",
 		DiagnosticCaptureDirKey:                      "captures",
-		DiagnosticCaptureTempDirKey:                  "diagnostic-capture-temp",
 		DiagnosticCaptureTempRetentionMinutesKey:     "60",
-		DiagnosticCaptureMaxBodyMBKey:                "10",
 		DiagnosticCaptureAutoCleanupEnabledKey:       "false",
 		DiagnosticCaptureMaxStorageBytesKey:          "0",
 		DiagnosticCaptureCleanupPercentKey:           "0",
@@ -260,10 +255,6 @@ func DiagnosticCaptureConfigFromOptions() DiagnosticCaptureConfig {
 	}
 	common.OptionMapRWMutex.RUnlock()
 
-	maxBodyMB, _ := strconv.ParseInt(strings.TrimSpace(options[DiagnosticCaptureMaxBodyMBKey]), 10, 64)
-	if maxBodyMB <= 0 {
-		maxBodyMB = 10
-	}
 	maxStorageBytes, _ := strconv.ParseInt(strings.TrimSpace(options[DiagnosticCaptureMaxStorageBytesKey]), 10, 64)
 	if maxStorageBytes < 0 || maxStorageBytes > maxDiagnosticCaptureStorageBytes {
 		maxStorageBytes = 0
@@ -302,15 +293,15 @@ func DiagnosticCaptureConfigFromOptions() DiagnosticCaptureConfig {
 	if mode != "metadata" && mode != "full" {
 		mode = "full"
 	}
+	captureDir := strings.TrimSpace(options[DiagnosticCaptureDirKey])
 	return DiagnosticCaptureConfig{
 		Enabled:                   options[DiagnosticCaptureEnabledKey] == "true",
 		Mode:                      mode,
-		CaptureDir:                strings.TrimSpace(options[DiagnosticCaptureDirKey]),
-		TempDir:                   strings.TrimSpace(options[DiagnosticCaptureTempDirKey]),
-		FailureDir:                diagnosticCaptureFailureDir(strings.TrimSpace(options[DiagnosticCaptureDirKey])),
+		CaptureDir:                captureDir,
+		TempDir:                   diagnosticCaptureTempDir(captureDir),
+		FailureDir:                diagnosticCaptureFailureDir(captureDir),
 		TempRetentionMinutes:      tempRetentionMinutes,
 		NextCleanupEligibleAt:     diagnosticCaptureOptionInt64(DiagnosticCaptureNextCleanupEligibleAtKey),
-		MaxBodyBytes:              maxBodyMB * 1024 * 1024,
 		AutoCleanupEnabled:        options[DiagnosticCaptureAutoCleanupEnabledKey] == "true",
 		MaxStorageBytes:           maxStorageBytes,
 		CleanupPercent:            cleanupPercent,
@@ -827,6 +818,9 @@ type diagnosticCaptureCandidate struct {
 }
 
 type DiagnosticCaptureStorageStatus struct {
+	StorageRoot           string `json:"storage_root"`
+	CaptureDir            string `json:"capture_dir"`
+	TemporaryDir          string `json:"temporary_dir"`
 	CurrentBytes          int64  `json:"current_bytes"`
 	TemporaryBytes        int64  `json:"temporary_bytes"`
 	LastCleanupAt         int64  `json:"last_cleanup_at"`
@@ -1564,6 +1558,18 @@ func diagnosticCaptureCreatedAt(dir string) (time.Time, bool) {
 
 func GetDiagnosticCaptureStorageStatus() (DiagnosticCaptureStorageStatus, error) {
 	cfg := DiagnosticCaptureConfigFromOptions()
+	storageRoot, err := resolveDiagnosticCaptureDirectory(".")
+	if err != nil {
+		return DiagnosticCaptureStorageStatus{}, err
+	}
+	captureDir, err := resolveDiagnosticCaptureDirectory(cfg.CaptureDir)
+	if err != nil {
+		return DiagnosticCaptureStorageStatus{}, err
+	}
+	temporaryDir, err := resolveDiagnosticCaptureDirectory(cfg.TempDir)
+	if err != nil {
+		return DiagnosticCaptureStorageStatus{}, err
+	}
 	var currentBytes, temporaryBytes int64
 	diagnosticCaptureStorageState.Lock()
 	if diagnosticCaptureStorageState.initialized &&
@@ -1584,6 +1590,9 @@ func GetDiagnosticCaptureStorageStatus() (DiagnosticCaptureStorageStatus, error)
 		lastCleanupStatus = ""
 	}
 	return DiagnosticCaptureStorageStatus{
+		StorageRoot:           storageRoot,
+		CaptureDir:            captureDir,
+		TemporaryDir:          temporaryDir,
 		CurrentBytes:          currentBytes,
 		TemporaryBytes:        temporaryBytes,
 		LastCleanupAt:         diagnosticCaptureOptionInt64(DiagnosticCaptureLastCleanupAtKey),
@@ -1827,38 +1836,6 @@ func leftPadSequence(sequence int64) string {
 		sequence = 0
 	}
 	return fmt.Sprintf("%06d", sequence)
-}
-
-func getInboundRequestBody(c *gin.Context, maxBytes int64) captureBody {
-	storage, err := common.GetBodyStorage(c)
-	if err != nil || storage == nil {
-		return captureBody{}
-	}
-	body, err := storage.Bytes()
-	if err != nil {
-		return captureBody{}
-	}
-	return truncateCaptureBody(body, maxBytes)
-}
-
-func readDiagnosticRequestBody(body io.Reader, maxBytes int64) (io.Reader, captureBody) {
-	data, err := io.ReadAll(body)
-	if err != nil {
-		return body, captureBody{}
-	}
-	return bytes.NewReader(data), truncateCaptureBody(data, maxBytes)
-}
-
-func truncateCaptureBody(data []byte, maxBytes int64) captureBody {
-	if maxBytes <= 0 || int64(len(data)) <= maxBytes {
-		return captureBody{Data: data, OriginalSize: int64(len(data)), SavedSize: int64(len(data))}
-	}
-	return captureBody{
-		Data:         data[:maxBytes],
-		OriginalSize: int64(len(data)),
-		SavedSize:    maxBytes,
-		Truncated:    true,
-	}
 }
 
 func parseDiagnosticPathRules(raw string) []string {

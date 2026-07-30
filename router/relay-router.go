@@ -107,6 +107,11 @@ func SetRelayRouter(router *gin.Engine) {
 			controller.Relay(c, types.RelayFormatOpenAIResponsesCompaction)
 		})
 
+		// alpha search related routes (Codex standalone web search)
+		httpRouter.POST("/alpha/search", func(c *gin.Context) {
+			controller.Relay(c, types.RelayFormatOpenAIAlphaSearch)
+		})
+
 		// image related routes
 		httpRouter.POST("/edits", func(c *gin.Context) {
 			controller.Relay(c, types.RelayFormatOpenAIImage)
@@ -166,6 +171,29 @@ func SetRelayRouter(router *gin.Engine) {
 		httpRouter.GET("/fine-tunes/:id/events", controller.RelayNotImplemented)
 		httpRouter.DELETE("/models/:model", controller.RelayNotImplemented)
 	}
+
+	volcengineTTSRouter := router.Group("/api/v3/tts")
+	volcengineTTSRouter.Use(middleware.RouteTag("relay"))
+	volcengineTTSRouter.Use(middleware.SystemPerformanceCheck())
+	volcengineTTSRouter.Use(middleware.TokenAuth())
+	volcengineTTSRouter.Use(middleware.ModelRequestRateLimit())
+	volcengineTTSRouter.Use(middleware.Distribute())
+	volcengineTTSRouter.POST("/unidirectional", func(c *gin.Context) {
+		controller.Relay(c, types.RelayFormatVolcengineTTSNative)
+	})
+
+	volcengineASRRouter := router.Group("/api/v3/auc/bigmodel")
+	volcengineASRRouter.Use(middleware.RouteTag("relay"))
+	volcengineASRRouter.Use(middleware.SystemPerformanceCheck())
+	volcengineASRRouter.Use(middleware.TokenAuth())
+	volcengineASRRouter.Use(middleware.ModelRequestRateLimit())
+	volcengineASRRouter.Use(middleware.Distribute())
+	volcengineASRRouter.POST("/submit", func(c *gin.Context) {
+		controller.Relay(c, types.RelayFormatVolcengineASRNative)
+	})
+	volcengineASRRouter.POST("/query", func(c *gin.Context) {
+		controller.Relay(c, types.RelayFormatVolcengineASRNative)
+	})
 
 	relayMjRouter := router.Group("/mj")
 	relayMjRouter.Use(middleware.RouteTag("relay"))

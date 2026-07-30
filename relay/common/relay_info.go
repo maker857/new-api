@@ -344,6 +344,8 @@ var streamSupportedChannels = map[int]bool{
 	constant.ChannelTypeMiniMax:        true,
 	constant.ChannelTypeSiliconFlow:    true,
 	constant.ChannelTypeAdvancedCustom: true,
+	constant.ChannelTypeSub2API:        true,
+	constant.ChannelTypeTencent:        true,
 }
 
 func GenRelayInfoWs(c *gin.Context, ws *websocket.Conn) *RelayInfo {
@@ -381,6 +383,18 @@ func GenRelayInfoRerank(c *gin.Context, request *dto.RerankRequest) *RelayInfo {
 func GenRelayInfoOpenAIAudio(c *gin.Context, request dto.Request) *RelayInfo {
 	info := genBaseRelayInfo(c, request)
 	info.RelayFormat = types.RelayFormatOpenAIAudio
+	return info
+}
+
+func GenRelayInfoVolcengineTTSNative(c *gin.Context, request dto.Request) *RelayInfo {
+	info := genBaseRelayInfo(c, request)
+	info.RelayFormat = types.RelayFormatVolcengineTTSNative
+	return info
+}
+
+func GenRelayInfoVolcengineASRNative(c *gin.Context, request dto.Request) *RelayInfo {
+	info := genBaseRelayInfo(c, request)
+	info.RelayFormat = types.RelayFormatVolcengineASRNative
 	return info
 }
 
@@ -553,6 +567,10 @@ func GenRelayInfo(c *gin.Context, relayFormat types.RelayFormat, request dto.Req
 		info = GenRelayInfoOpenAI(c, request)
 	case types.RelayFormatOpenAIAudio:
 		info = GenRelayInfoOpenAIAudio(c, request)
+	case types.RelayFormatVolcengineTTSNative:
+		info = GenRelayInfoVolcengineTTSNative(c, request)
+	case types.RelayFormatVolcengineASRNative:
+		info = GenRelayInfoVolcengineASRNative(c, request)
 	case types.RelayFormatOpenAIImage:
 		info = GenRelayInfoImage(c, request)
 	case types.RelayFormatOpenAIRealtime:
@@ -580,6 +598,11 @@ func GenRelayInfo(c *gin.Context, relayFormat types.RelayFormat, request dto.Req
 			return GenRelayInfoResponsesCompaction(c, request), nil
 		}
 		return nil, errors.New("request is not a OpenAIResponsesCompactionRequest")
+	case types.RelayFormatOpenAIAlphaSearch:
+		if request, ok := request.(*dto.AlphaSearchRequest); ok {
+			return GenRelayInfoAlphaSearch(c, request), nil
+		}
+		return nil, errors.New("request is not a AlphaSearchRequest")
 	case types.RelayFormatTask:
 		info = genBaseRelayInfo(c, nil)
 		info.TaskRelayInfo = &TaskRelayInfo{}
@@ -654,6 +677,23 @@ func GenRelayInfoResponsesCompaction(c *gin.Context, request *dto.OpenAIResponse
 	return info
 }
 
+func GenRelayInfoAlphaSearch(c *gin.Context, request *dto.AlphaSearchRequest) *RelayInfo {
+	info := genBaseRelayInfo(c, request)
+	if info.RelayMode == relayconstant.RelayModeUnknown {
+		info.RelayMode = relayconstant.RelayModeAlphaSearch
+	}
+	info.RelayFormat = types.RelayFormatOpenAIAlphaSearch
+	info.ResponsesUsageInfo = &ResponsesUsageInfo{
+		BuiltInTools: map[string]*BuildInToolInfo{
+			dto.BuildInToolWebSearchPreview: {
+				ToolName:  dto.BuildInToolWebSearchPreview,
+				CallCount: 0,
+			},
+		},
+	}
+	return info
+}
+
 //func (info *RelayInfo) SetPromptTokens(promptTokens int) {
 //	info.promptTokens = promptTokens
 //}
@@ -703,6 +743,7 @@ type TaskSubmitReq struct {
 	Seconds        string                 `json:"seconds,omitempty"`
 	InputReference string                 `json:"input_reference,omitempty"`
 	Metadata       map[string]interface{} `json:"metadata,omitempty"`
+	Extra          map[string]interface{} `json:"-"`
 }
 
 func (t *TaskSubmitReq) GetPrompt() string {
@@ -747,7 +788,6 @@ func (t *TaskSubmitReq) UnmarshalJSON(data []byte) error {
 			var metadataObj map[string]interface{}
 			if err := common.Unmarshal([]byte(metadataStr), &metadataObj); err == nil {
 				t.Metadata = metadataObj
-				return nil
 			}
 		}
 
@@ -755,6 +795,20 @@ func (t *TaskSubmitReq) UnmarshalJSON(data []byte) error {
 		if err := common.Unmarshal(aux.Metadata, &metadataObj); err == nil {
 			t.Metadata = metadataObj
 		}
+	}
+
+	var fields map[string]interface{}
+	if err := common.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	for _, key := range []string{
+		"prompt", "model", "mode", "image", "images", "size", "duration",
+		"seconds", "input_reference", "metadata",
+	} {
+		delete(fields, key)
+	}
+	if len(fields) > 0 {
+		t.Extra = fields
 	}
 
 	return nil

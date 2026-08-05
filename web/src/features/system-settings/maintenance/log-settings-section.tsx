@@ -270,6 +270,25 @@ function getDiagnosticStorageDisplay(bytes: number) {
   };
 }
 
+function toRelativeDiagnosticCaptureDirectory(
+  captureDir: string,
+  storageRoot?: string,
+) {
+  const directory = captureDir.trim();
+  const root = storageRoot?.trim();
+  if (!directory || !root) return directory;
+
+  const normalizedDirectory = directory.replaceAll("\\", "/");
+  const normalizedRoot = root
+    .replaceAll("\\", "/")
+    .replace(/\/+$/, "");
+  const prefix = `${normalizedRoot}/`;
+  if (normalizedDirectory.startsWith(prefix)) {
+    return normalizedDirectory.slice(prefix.length);
+  }
+  return directory;
+}
+
 type ErrorRewriteVisualRule = {
   content_contains: string;
   message: string;
@@ -734,6 +753,22 @@ export function LogSettingsSection({
   }, [fetchDiagnosticStorageInfo, mode]);
 
   useEffect(() => {
+    const storageRoot = diagnosticStorageInfo?.storage_root;
+    if (!storageRoot) return;
+    const currentDirectory = form.getValues("DiagnosticCaptureDir");
+    const relativeDirectory = toRelativeDiagnosticCaptureDirectory(
+      currentDirectory,
+      storageRoot,
+    );
+    if (relativeDirectory !== currentDirectory) {
+      form.setValue("DiagnosticCaptureDir", relativeDirectory, {
+        shouldDirty: true,
+        shouldValidate: true,
+      });
+    }
+  }, [diagnosticStorageInfo?.storage_root, form]);
+
+  useEffect(() => {
     if (mode !== "maintenance") return;
     let cancelled = false;
 
@@ -1163,7 +1198,17 @@ export function LogSettingsSection({
                                 : t("Loading...")}
                             </InputGroupAddon>
                             <FormControl>
-                              <InputGroupInput {...field} />
+                              <InputGroupInput
+                                {...field}
+                                onChange={(event) =>
+                                  field.onChange(
+                                    toRelativeDiagnosticCaptureDirectory(
+                                      event.target.value,
+                                      diagnosticStorageInfo?.storage_root,
+                                    ),
+                                  )
+                                }
+                              />
                             </FormControl>
                           </InputGroup>
                           <FormDescription>

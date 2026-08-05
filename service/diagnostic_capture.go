@@ -164,14 +164,24 @@ type diagnosticResponseJSON struct {
 }
 
 type diagnosticBodyJSON struct {
-	Mode         string `json:"mode"`
-	Encoding     string `json:"encoding"`
-	OriginalSize int64  `json:"original_size"`
-	SavedSize    int64  `json:"saved_size"`
-	Truncated    bool   `json:"truncated"`
-	Text         string `json:"text,omitempty"`
-	JSON         any    `json:"json,omitempty"`
-	Base64       string `json:"base64,omitempty"`
+	Mode         string                        `json:"mode"`
+	Encoding     string                        `json:"encoding"`
+	OriginalSize int64                         `json:"original_size"`
+	SavedSize    int64                         `json:"saved_size"`
+	Truncated    bool                          `json:"truncated"`
+	Text         string                        `json:"text,omitempty"`
+	JSON         any                           `json:"json,omitempty"`
+	Base64       string                        `json:"base64,omitempty"`
+	Conversion   *diagnosticBodyConversionJSON `json:"conversion,omitempty"`
+}
+
+type diagnosticBodyConversionJSON struct {
+	Converted           bool   `json:"converted,omitempty"`
+	Source              string `json:"source"`
+	OriginalContentType string `json:"original_content_type,omitempty"`
+	EventCount          int    `json:"event_count,omitempty"`
+	ConvertedAt         string `json:"converted_at,omitempty"`
+	ParseError          string `json:"parse_error,omitempty"`
 }
 
 type captureReadCloser struct {

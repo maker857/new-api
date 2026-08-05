@@ -110,6 +110,10 @@ type diagnosticCapturePartState struct {
 	originalSize    int64
 	complete        bool
 	jsonBody        bool
+	streamJSON      []byte
+	streamText      []byte
+	streamParseErr  string
+	streamEvents    int
 	webSocketFrames bool
 }
 
@@ -543,6 +547,17 @@ func (s *diagnosticCaptureSession) run() {
 			continue
 		}
 		state.jsonBody = jsonBody
+		if !jsonBody && diagnosticCapturePartIsSSE(state) {
+			streamJSON, streamText, streamParseErr, streamEvents, convertErr := diagnosticCaptureSSEFile(state.tempPath)
+			if convertErr != nil {
+				s.fail("failed to convert diagnostic SSE body: " + convertErr.Error())
+				continue
+			}
+			state.streamJSON = streamJSON
+			state.streamText = streamText
+			state.streamParseErr = streamParseErr
+			state.streamEvents = streamEvents
+		}
 	}
 	captureFailed := s.failed.Load()
 	writeErr := writeDiagnosticCaptureSession(s.cfg, &flow, orderedParts)
@@ -1285,6 +1300,17 @@ func retryDiagnosticCaptureFailures(cfg DiagnosticCaptureConfig) {
 				return filepath.SkipDir
 			}
 			state.jsonBody = jsonBody
+			if !jsonBody && diagnosticCapturePartIsSSE(state) {
+				streamJSON, streamText, streamParseErr, streamEvents, convertErr := diagnosticCaptureSSEFile(state.tempPath)
+				if convertErr != nil {
+					stopDiagnosticCaptureRetry(cfg, path, &record, "capture retry stopped: failed to convert retained SSE body: "+convertErr.Error())
+					return filepath.SkipDir
+				}
+				state.streamJSON = streamJSON
+				state.streamText = streamText
+				state.streamParseErr = streamParseErr
+				state.streamEvents = streamEvents
+			}
 		}
 		record.AttemptCount++
 		record.LastAttemptAt = now.UnixNano()
@@ -2143,11 +2169,23 @@ func writeDiagnosticInboundResponse(w *diagnosticCaptureJSONWriter, cfg Diagnost
 func writeDiagnosticCaptureBody(w *diagnosticCaptureJSONWriter, cfg DiagnosticCaptureConfig, state *diagnosticCapturePartState) {
 	truncated := !state.complete || state.originalSize != state.savedSize
 	w.raw(`{"mode":`)
-	w.value(cfg.Mode)
+	mode := cfg.Mode
 	encoding := "empty"
 	jsonBody := state.jsonBody
+	streamBody := len(state.streamJSON) > 0
+	streamFallback := state.streamParseErr != ""
+	if streamBody {
+		mode = "parsed"
+	} else if streamFallback {
+		mode = "fallback"
+	}
+	w.value(mode)
 	if cfg.Mode != "full" {
 		encoding = "metadata-only"
+	} else if streamBody {
+		encoding = "json"
+	} else if streamFallback {
+		encoding = "text"
 	} else if state.tempPath != "" && state.savedSize > 0 {
 		if jsonBody {
 			encoding = "json"
@@ -2166,6 +2204,27 @@ func writeDiagnosticCaptureBody(w *diagnosticCaptureJSONWriter, cfg DiagnosticCa
 	if jsonBody {
 		w.raw(`,"json":`)
 		streamDiagnosticCaptureFile(w, state.tempPath)
+	} else if streamBody {
+		w.raw(`,"json":`)
+		w.bytes(state.streamJSON)
+		w.raw(`,"conversion":`)
+		w.value(diagnosticBodyConversionJSON{
+			Converted:           true,
+			Source:              "sse",
+			OriginalContentType: "text/event-stream",
+			EventCount:          state.streamEvents,
+			ConvertedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		})
+	} else if streamFallback {
+		w.raw(`,"text":`)
+		w.value(string(state.streamText))
+		w.raw(`,"conversion":`)
+		w.value(diagnosticBodyConversionJSON{
+			Source:              "sse",
+			OriginalContentType: "text/event-stream",
+			EventCount:          state.streamEvents,
+			ParseError:          state.streamParseErr,
+		})
 	} else if encoding == "base64" {
 		w.raw(`,"base64":"`)
 		streamDiagnosticCaptureFileBase64(w, state.tempPath)

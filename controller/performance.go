@@ -288,6 +288,12 @@ type DiagnosticCaptureSettingsRequest struct {
 	CleanupRateMB                int64   `json:"cleanup_rate_mb"`
 	MinRetentionMinutes          int64   `json:"min_retention_minutes"`
 	IncompleteTimeoutMinutes     int64   `json:"incomplete_timeout_minutes"`
+	ReconciliationEnabled        *bool   `json:"reconciliation_enabled"`
+	ReconciliationMode           *string `json:"reconciliation_mode"`
+	ReconciliationHour           *int    `json:"reconciliation_hour"`
+	ReconciliationMinute         *int    `json:"reconciliation_minute"`
+	ReconciliationWeekday        *int    `json:"reconciliation_weekday"`
+	ReconciliationMonthday       *int    `json:"reconciliation_monthday"`
 	Paths                        string  `json:"paths"`
 	ErrorRewriteEnabled          *bool   `json:"error_rewrite_enabled"`
 	ErrorRewriteSource           *string `json:"error_rewrite_source"`
@@ -309,6 +315,30 @@ func UpdateDiagnosticCaptureSettings(c *gin.Context) {
 	}
 
 	const maxRetentionMinutes = int64(24 * 365 * 10 * 60)
+	reconciliationEnabled := true
+	reconciliationMode := "daily"
+	reconciliationHour := 3
+	reconciliationMinute := 0
+	reconciliationWeekday := 1
+	reconciliationMonthday := 1
+	if request.ReconciliationEnabled != nil {
+		reconciliationEnabled = *request.ReconciliationEnabled
+	}
+	if request.ReconciliationMode != nil {
+		reconciliationMode = strings.ToLower(strings.TrimSpace(*request.ReconciliationMode))
+	}
+	if request.ReconciliationHour != nil {
+		reconciliationHour = *request.ReconciliationHour
+	}
+	if request.ReconciliationMinute != nil {
+		reconciliationMinute = *request.ReconciliationMinute
+	}
+	if request.ReconciliationWeekday != nil {
+		reconciliationWeekday = *request.ReconciliationWeekday
+	}
+	if request.ReconciliationMonthday != nil {
+		reconciliationMonthday = *request.ReconciliationMonthday
+	}
 	if strings.TrimSpace(request.CaptureDir) == "" {
 		common.ApiErrorMsg(c, "diagnostic capture directory cannot be empty")
 		return
@@ -343,6 +373,22 @@ func UpdateDiagnosticCaptureSettings(c *gin.Context) {
 	}
 	if request.IncompleteTimeoutMinutes < 0 || request.IncompleteTimeoutMinutes > maxRetentionMinutes {
 		common.ApiErrorMsg(c, "diagnostic capture incomplete timeout must be between 0 and 5256000 minutes")
+		return
+	}
+	if reconciliationMode != "daily" && reconciliationMode != "weekly" && reconciliationMode != "monthly" {
+		common.ApiErrorMsg(c, "diagnostic capture reconciliation mode must be daily, weekly, or monthly")
+		return
+	}
+	if reconciliationHour < 0 || reconciliationHour > 23 || reconciliationMinute < 0 || reconciliationMinute > 59 {
+		common.ApiErrorMsg(c, "diagnostic capture reconciliation time must be a valid hour and minute")
+		return
+	}
+	if reconciliationWeekday < 0 || reconciliationWeekday > 6 {
+		common.ApiErrorMsg(c, "diagnostic capture reconciliation weekday must be between 0 and 6")
+		return
+	}
+	if reconciliationMonthday < 1 || reconciliationMonthday > 31 {
+		common.ApiErrorMsg(c, "diagnostic capture reconciliation month day must be between 1 and 31")
 		return
 	}
 	if request.ErrorRewriteRulesJSON != nil {
@@ -394,6 +440,12 @@ func UpdateDiagnosticCaptureSettings(c *gin.Context) {
 		service.DiagnosticCaptureIncompleteTimeoutMinutesKey: strconv.FormatInt(request.IncompleteTimeoutMinutes, 10),
 		service.DiagnosticCaptureMinRetentionHoursKey:        strconv.FormatInt(request.MinRetentionMinutes/60, 10),
 		service.DiagnosticCaptureIncompleteTimeoutHoursKey:   strconv.FormatInt(request.IncompleteTimeoutMinutes/60, 10),
+		service.DiagnosticCaptureReconciliationEnabledKey:    strconv.FormatBool(reconciliationEnabled),
+		service.DiagnosticCaptureReconciliationModeKey:       reconciliationMode,
+		service.DiagnosticCaptureReconciliationHourKey:       strconv.Itoa(reconciliationHour),
+		service.DiagnosticCaptureReconciliationMinuteKey:     strconv.Itoa(reconciliationMinute),
+		service.DiagnosticCaptureReconciliationWeekdayKey:    strconv.Itoa(reconciliationWeekday),
+		service.DiagnosticCaptureReconciliationMonthdayKey:   strconv.Itoa(reconciliationMonthday),
 		service.DiagnosticCaptureNextCleanupEligibleAtKey:    "0",
 		service.DiagnosticCapturePathsKey:                    strings.TrimSpace(request.Paths),
 	}

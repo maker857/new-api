@@ -54,6 +54,12 @@ const defaultOperationsSettings: OperationsSettings = {
   DiagnosticCaptureCleanupRateMB: 0,
   DiagnosticCaptureMinRetentionMinutes: 0,
   DiagnosticCaptureIncompleteTimeoutMinutes: 1440,
+  DiagnosticCaptureReconciliationEnabled: true,
+  DiagnosticCaptureReconciliationMode: 'daily',
+  DiagnosticCaptureReconciliationHour: 3,
+  DiagnosticCaptureReconciliationMinute: 0,
+  DiagnosticCaptureReconciliationWeekday: 1,
+  DiagnosticCaptureReconciliationMonthday: 1,
   DiagnosticCaptureMinRetentionHours: 0,
   DiagnosticCaptureIncompleteTimeoutHours: 24,
   DiagnosticCapturePaths:

@@ -124,6 +124,12 @@ const logSettingsSchema = z
       .int()
       .min(0)
       .max(5256000),
+    DiagnosticCaptureReconciliationEnabled: z.boolean(),
+    DiagnosticCaptureReconciliationMode: z.enum(["daily", "weekly", "monthly"]),
+    DiagnosticCaptureReconciliationHour: z.coerce.number<number>().int().min(0).max(23),
+    DiagnosticCaptureReconciliationMinute: z.coerce.number<number>().int().min(0).max(59),
+    DiagnosticCaptureReconciliationWeekday: z.coerce.number<number>().int().min(0).max(6),
+    DiagnosticCaptureReconciliationMonthday: z.coerce.number<number>().int().min(1).max(31),
     DiagnosticCapturePaths: z.string(),
     ErrorRewriteEnabled: z.boolean(),
     ErrorRewriteSource: z.enum(["local", "http", "sql"]),
@@ -213,6 +219,12 @@ type LogSettingsSectionProps = {
     DiagnosticCaptureCleanupRateMB: number;
     DiagnosticCaptureMinRetentionMinutes: number;
     DiagnosticCaptureIncompleteTimeoutMinutes: number;
+    DiagnosticCaptureReconciliationEnabled: boolean;
+    DiagnosticCaptureReconciliationMode: string;
+    DiagnosticCaptureReconciliationHour: number;
+    DiagnosticCaptureReconciliationMinute: number;
+    DiagnosticCaptureReconciliationWeekday: number;
+    DiagnosticCaptureReconciliationMonthday: number;
     DiagnosticCaptureMinRetentionHours: number;
     DiagnosticCaptureIncompleteTimeoutHours: number;
     DiagnosticCapturePaths: string;
@@ -587,6 +599,21 @@ export function LogSettingsSection({
         diagnosticDefaults.DiagnosticCaptureMinRetentionMinutes,
       DiagnosticCaptureIncompleteTimeoutMinutes:
         diagnosticDefaults.DiagnosticCaptureIncompleteTimeoutMinutes,
+      DiagnosticCaptureReconciliationEnabled:
+        diagnosticDefaults.DiagnosticCaptureReconciliationEnabled,
+      DiagnosticCaptureReconciliationMode:
+        diagnosticDefaults.DiagnosticCaptureReconciliationMode === "weekly" ||
+        diagnosticDefaults.DiagnosticCaptureReconciliationMode === "monthly"
+          ? diagnosticDefaults.DiagnosticCaptureReconciliationMode
+          : "daily",
+      DiagnosticCaptureReconciliationHour:
+        diagnosticDefaults.DiagnosticCaptureReconciliationHour,
+      DiagnosticCaptureReconciliationMinute:
+        diagnosticDefaults.DiagnosticCaptureReconciliationMinute,
+      DiagnosticCaptureReconciliationWeekday:
+        diagnosticDefaults.DiagnosticCaptureReconciliationWeekday,
+      DiagnosticCaptureReconciliationMonthday:
+        diagnosticDefaults.DiagnosticCaptureReconciliationMonthday,
       DiagnosticCapturePaths: diagnosticDefaults.DiagnosticCapturePaths,
       ErrorRewriteEnabled: diagnosticDefaults.ErrorRewriteEnabled,
       ErrorRewriteSource:
@@ -713,6 +740,21 @@ export function LogSettingsSection({
         diagnosticDefaults.DiagnosticCaptureMinRetentionMinutes,
       DiagnosticCaptureIncompleteTimeoutMinutes:
         diagnosticDefaults.DiagnosticCaptureIncompleteTimeoutMinutes,
+      DiagnosticCaptureReconciliationEnabled:
+        diagnosticDefaults.DiagnosticCaptureReconciliationEnabled,
+      DiagnosticCaptureReconciliationMode:
+        diagnosticDefaults.DiagnosticCaptureReconciliationMode === "weekly" ||
+        diagnosticDefaults.DiagnosticCaptureReconciliationMode === "monthly"
+          ? diagnosticDefaults.DiagnosticCaptureReconciliationMode
+          : "daily",
+      DiagnosticCaptureReconciliationHour:
+        diagnosticDefaults.DiagnosticCaptureReconciliationHour,
+      DiagnosticCaptureReconciliationMinute:
+        diagnosticDefaults.DiagnosticCaptureReconciliationMinute,
+      DiagnosticCaptureReconciliationWeekday:
+        diagnosticDefaults.DiagnosticCaptureReconciliationWeekday,
+      DiagnosticCaptureReconciliationMonthday:
+        diagnosticDefaults.DiagnosticCaptureReconciliationMonthday,
       DiagnosticCapturePaths: diagnosticDefaults.DiagnosticCapturePaths,
       ErrorRewriteEnabled: diagnosticDefaults.ErrorRewriteEnabled,
       ErrorRewriteSource:
@@ -809,6 +851,18 @@ export function LogSettingsSection({
   const logCleanupProcessed = logCleanupState?.processed ?? 0;
   const logCleanupTotal = logCleanupState?.total ?? 0;
   const logCleanupTaskId = logCleanupTask?.task_id;
+  const reconciliationEnabled = form.watch(
+    "DiagnosticCaptureReconciliationEnabled",
+  );
+  const reconciliationMode = form.watch(
+    "DiagnosticCaptureReconciliationMode",
+  );
+  let reconciliationFrequencyLabel = t("Daily");
+  if (reconciliationMode === "weekly") {
+    reconciliationFrequencyLabel = t("Weekly");
+  } else if (reconciliationMode === "monthly") {
+    reconciliationFrequencyLabel = t("Monthly");
+  }
   let diagnosticCleanupStatus = "-";
   if (diagnosticStorageInfo?.last_cleanup_status === "retention_limited") {
     diagnosticCleanupStatus = t("Limited by minimum retention");
@@ -869,6 +923,12 @@ export function LogSettingsSection({
         min_retention_minutes: values.DiagnosticCaptureMinRetentionMinutes,
         incomplete_timeout_minutes:
           values.DiagnosticCaptureIncompleteTimeoutMinutes,
+        reconciliation_enabled: values.DiagnosticCaptureReconciliationEnabled,
+        reconciliation_mode: values.DiagnosticCaptureReconciliationMode,
+        reconciliation_hour: values.DiagnosticCaptureReconciliationHour,
+        reconciliation_minute: values.DiagnosticCaptureReconciliationMinute,
+        reconciliation_weekday: values.DiagnosticCaptureReconciliationWeekday,
+        reconciliation_monthday: values.DiagnosticCaptureReconciliationMonthday,
         paths: values.DiagnosticCapturePaths,
         error_rewrite_enabled: values.ErrorRewriteEnabled,
         error_rewrite_source: values.ErrorRewriteSource,
@@ -946,6 +1006,36 @@ export function LogSettingsSection({
         "DiagnosticCaptureIncompleteTimeoutHours",
         Math.floor(values.DiagnosticCaptureIncompleteTimeoutMinutes / 60),
         diagnosticDefaults.DiagnosticCaptureIncompleteTimeoutHours,
+      ],
+      [
+        "DiagnosticCaptureReconciliationEnabled",
+        values.DiagnosticCaptureReconciliationEnabled,
+        diagnosticDefaults.DiagnosticCaptureReconciliationEnabled,
+      ],
+      [
+        "DiagnosticCaptureReconciliationMode",
+        values.DiagnosticCaptureReconciliationMode,
+        diagnosticDefaults.DiagnosticCaptureReconciliationMode,
+      ],
+      [
+        "DiagnosticCaptureReconciliationHour",
+        values.DiagnosticCaptureReconciliationHour,
+        diagnosticDefaults.DiagnosticCaptureReconciliationHour,
+      ],
+      [
+        "DiagnosticCaptureReconciliationMinute",
+        values.DiagnosticCaptureReconciliationMinute,
+        diagnosticDefaults.DiagnosticCaptureReconciliationMinute,
+      ],
+      [
+        "DiagnosticCaptureReconciliationWeekday",
+        values.DiagnosticCaptureReconciliationWeekday,
+        diagnosticDefaults.DiagnosticCaptureReconciliationWeekday,
+      ],
+      [
+        "DiagnosticCaptureReconciliationMonthday",
+        values.DiagnosticCaptureReconciliationMonthday,
+        diagnosticDefaults.DiagnosticCaptureReconciliationMonthday,
       ],
       [
         "DiagnosticCapturePaths",
@@ -1287,6 +1377,11 @@ export function LogSettingsSection({
                             <FormControl>
                               <Input type="number" min={0} {...field} />
                             </FormControl>
+                            <FormDescription>
+                              {t(
+                                "Set 0 to disable capacity-based cleanup.",
+                              )}
+                            </FormDescription>
                             <FormMessage />
                           </div>
                         )}
@@ -1374,6 +1469,184 @@ export function LogSettingsSection({
                         )}
                       />
                     </SettingsControlChildren>
+                  </div>
+
+                  <div className="bg-background space-y-3 rounded-xl border p-4 md:h-44">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <h4 className="text-sm font-medium">
+                          {t("Diagnostic capture storage reconciliation")}
+                        </h4>
+                        <p className="text-muted-foreground mt-1 text-xs">
+                          {t(
+                            "Periodically scan diagnostic capture files to reconcile actual disk usage before deciding whether cleanup is needed.",
+                          )}
+                        </p>
+                      </div>
+                      <FormField
+                        control={form.control}
+                        name="DiagnosticCaptureReconciliationEnabled"
+                        render={({ field }) => (
+                          <FormControl>
+                            <Switch
+                              checked={field.value}
+                              onCheckedChange={field.onChange}
+                              aria-label={t(
+                                "Enable diagnostic capture storage reconciliation",
+                              )}
+                            />
+                          </FormControl>
+                        )}
+                      />
+                    </div>
+
+                    {reconciliationEnabled && (
+                      <SettingsControlChildren className="grid gap-x-5 gap-y-5 md:grid-cols-2 xl:grid-cols-4">
+                        <FormField
+                          control={form.control}
+                          name="DiagnosticCaptureReconciliationMode"
+                          render={({ field }) => (
+                            <div className="space-y-2">
+                              <FormLabel>{t("Frequency")}</FormLabel>
+                              <Select
+                                value={field.value}
+                                onValueChange={field.onChange}
+                              >
+                                <FormControl>
+                                  <SelectTrigger>
+                                    <SelectValue>
+                                      {reconciliationFrequencyLabel}
+                                    </SelectValue>
+                                  </SelectTrigger>
+                                </FormControl>
+                                <SelectContent>
+                                  <SelectItem value="daily">
+                                    {t("Daily")}
+                                  </SelectItem>
+                                  <SelectItem value="weekly">
+                                    {t("Weekly")}
+                                  </SelectItem>
+                                  <SelectItem value="monthly">
+                                    {t("Monthly")}
+                                  </SelectItem>
+                                </SelectContent>
+                              </Select>
+                              <FormMessage />
+                            </div>
+                          )}
+                        />
+
+                        {reconciliationMode === "weekly" && (
+                          <FormField
+                            control={form.control}
+                            name="DiagnosticCaptureReconciliationWeekday"
+                            render={({ field }) => (
+                              <div className="space-y-2">
+                                <FormLabel>{t("Day of week")}</FormLabel>
+                                <Select
+                                  value={String(field.value)}
+                                  onValueChange={(value) =>
+                                    field.onChange(Number(value))
+                                  }
+                                >
+                                  <FormControl>
+                                    <SelectTrigger>
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                  </FormControl>
+                                  <SelectContent>
+                                    <SelectItem value="1">{t("Monday")}</SelectItem>
+                                    <SelectItem value="2">{t("Tuesday")}</SelectItem>
+                                    <SelectItem value="3">{t("Wednesday")}</SelectItem>
+                                    <SelectItem value="4">{t("Thursday")}</SelectItem>
+                                    <SelectItem value="5">{t("Friday")}</SelectItem>
+                                    <SelectItem value="6">{t("Saturday")}</SelectItem>
+                                    <SelectItem value="0">{t("Sunday")}</SelectItem>
+                                  </SelectContent>
+                                </Select>
+                                <FormMessage />
+                              </div>
+                            )}
+                          />
+                        )}
+
+                        {reconciliationMode === "monthly" && (
+                          <FormField
+                            control={form.control}
+                            name="DiagnosticCaptureReconciliationMonthday"
+                            render={({ field }) => (
+                              <div className="space-y-2">
+                                <FormLabel>{t("Day of month")}</FormLabel>
+                                <FormControl>
+                                  <Input
+                                    type="number"
+                                    min={1}
+                                    max={31}
+                                    {...field}
+                                  />
+                                </FormControl>
+                                <FormDescription>
+                                  {t(
+                                    "When the selected date exceeds days in the month, run on the last day.",
+                                  )}
+                                </FormDescription>
+                                <FormMessage />
+                              </div>
+                            )}
+                          />
+                        )}
+
+                        <div className="space-y-2">
+                          <FormLabel>{t("Execution time (Beijing time)")}</FormLabel>
+                          <div className="grid grid-cols-2 gap-2">
+                            <FormField
+                              control={form.control}
+                              name="DiagnosticCaptureReconciliationHour"
+                              render={({ field }) => (
+                                <InputGroup>
+                                  <FormControl>
+                                    <InputGroupInput
+                                      type="number"
+                                      min={0}
+                                      max={23}
+                                      placeholder="00"
+                                      className="text-center tabular-nums"
+                                      aria-label={t("Hour")}
+                                      {...field}
+                                    />
+                                  </FormControl>
+                                  <InputGroupAddon align="inline-end">
+                                    {t("Hour suffix")}
+                                  </InputGroupAddon>
+                                </InputGroup>
+                              )}
+                            />
+                            <FormField
+                              control={form.control}
+                              name="DiagnosticCaptureReconciliationMinute"
+                              render={({ field }) => (
+                                <InputGroup>
+                                  <FormControl>
+                                    <InputGroupInput
+                                      type="number"
+                                      min={0}
+                                      max={59}
+                                      placeholder="00"
+                                      className="text-center tabular-nums"
+                                      aria-label={t("Minute")}
+                                      {...field}
+                                    />
+                                  </FormControl>
+                                  <InputGroupAddon align="inline-end">
+                                    {t("Minute suffix")}
+                                  </InputGroupAddon>
+                                </InputGroup>
+                              )}
+                            />
+                          </div>
+                        </div>
+                      </SettingsControlChildren>
+                    )}
                   </div>
 
                   <div className="bg-background space-y-3 rounded-xl border p-4">

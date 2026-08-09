@@ -367,6 +367,36 @@ func UpdateOption(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"success": false, "message": "diagnostic capture incomplete timeout must be between 0 and 87600 hours"})
 			return
 		}
+	case service.DiagnosticCaptureReconciliationModeKey:
+		mode := strings.ToLower(strings.TrimSpace(option.Value.(string)))
+		if mode != "daily" && mode != "weekly" && mode != "monthly" {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": "diagnostic capture reconciliation mode must be daily, weekly, or monthly"})
+			return
+		}
+	case service.DiagnosticCaptureReconciliationHourKey:
+		hour, parseErr := strconv.Atoi(strings.TrimSpace(option.Value.(string)))
+		if parseErr != nil || hour < 0 || hour > 23 {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": "diagnostic capture reconciliation hour must be between 0 and 23"})
+			return
+		}
+	case service.DiagnosticCaptureReconciliationMinuteKey:
+		minute, parseErr := strconv.Atoi(strings.TrimSpace(option.Value.(string)))
+		if parseErr != nil || minute < 0 || minute > 59 {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": "diagnostic capture reconciliation minute must be between 0 and 59"})
+			return
+		}
+	case service.DiagnosticCaptureReconciliationWeekdayKey:
+		weekday, parseErr := strconv.Atoi(strings.TrimSpace(option.Value.(string)))
+		if parseErr != nil || weekday < 0 || weekday > 6 {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": "diagnostic capture reconciliation weekday must be between 0 and 6"})
+			return
+		}
+	case service.DiagnosticCaptureReconciliationMonthdayKey:
+		monthday, parseErr := strconv.Atoi(strings.TrimSpace(option.Value.(string)))
+		if parseErr != nil || monthday < 1 || monthday > 31 {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": "diagnostic capture reconciliation month day must be between 1 and 31"})
+			return
+		}
 	case service.ErrorRewriteRulesJSONKey:
 		if _, parseErr := service.ParseErrorRewriteRulesJSON(option.Value.(string)); parseErr != nil {
 			c.JSON(http.StatusOK, gin.H{"success": false, "message": "error rewrite rules JSON is invalid: " + parseErr.Error()})
@@ -452,7 +482,13 @@ func UpdateOption(c *gin.Context) {
 		service.DiagnosticCaptureMinRetentionMinutesKey,
 		service.DiagnosticCaptureIncompleteTimeoutMinutesKey,
 		service.DiagnosticCaptureMinRetentionHoursKey,
-		service.DiagnosticCaptureIncompleteTimeoutHoursKey:
+		service.DiagnosticCaptureIncompleteTimeoutHoursKey,
+		service.DiagnosticCaptureReconciliationEnabledKey,
+		service.DiagnosticCaptureReconciliationModeKey,
+		service.DiagnosticCaptureReconciliationHourKey,
+		service.DiagnosticCaptureReconciliationMinuteKey,
+		service.DiagnosticCaptureReconciliationWeekdayKey,
+		service.DiagnosticCaptureReconciliationMonthdayKey:
 		cleanupSettingsChanged = true
 		err = model.UpdateOptionsBulk(map[string]string{
 			option.Key: option.Value.(string),

@@ -785,6 +785,43 @@ var diagnosticCaptureTempCleanupMu sync.Mutex
 
 var diagnosticCaptureCleanupLoop sync.Once
 
+var diagnosticCaptureReconciliationWakeup = make(chan struct{}, 1)
+
+func notifyDiagnosticCaptureReconciliationSettingsChanged() {
+	select {
+	case diagnosticCaptureReconciliationWakeup <- struct{}{}:
+	default:
+	}
+}
+
+func nextDiagnosticCaptureReconciliation(now time.Time, cfg DiagnosticCaptureConfig) time.Time {
+	location := now.Location()
+	candidate := time.Date(now.Year(), now.Month(), now.Day(), cfg.ReconciliationHour, cfg.ReconciliationMinute, 0, 0, location)
+	switch cfg.ReconciliationMode {
+	case diagnosticCaptureScheduleWeekly:
+		days := (cfg.ReconciliationWeekday - int(now.Weekday()) + 7) % 7
+		candidate = candidate.AddDate(0, 0, days)
+		if !candidate.After(now) {
+			candidate = candidate.AddDate(0, 0, 7)
+		}
+	case diagnosticCaptureScheduleMonthly:
+		lastDay := time.Date(now.Year(), now.Month()+1, 0, 0, 0, 0, 0, location).Day()
+		monthDay := min(cfg.ReconciliationMonthday, lastDay)
+		candidate = time.Date(now.Year(), now.Month(), monthDay, cfg.ReconciliationHour, cfg.ReconciliationMinute, 0, 0, location)
+		if !candidate.After(now) {
+			nextMonth := time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, location)
+			lastDay = time.Date(nextMonth.Year(), nextMonth.Month()+1, 0, 0, 0, 0, 0, location).Day()
+			monthDay = min(cfg.ReconciliationMonthday, lastDay)
+			candidate = time.Date(nextMonth.Year(), nextMonth.Month(), monthDay, cfg.ReconciliationHour, cfg.ReconciliationMinute, 0, 0, location)
+		}
+	default:
+		if !candidate.After(now) {
+			candidate = candidate.AddDate(0, 0, 1)
+		}
+	}
+	return candidate
+}
+
 func prepareDiagnosticCaptureTempDir(cfg DiagnosticCaptureConfig) {
 	tempDir := strings.TrimSpace(cfg.TempDir)
 	if tempDir == "" {
@@ -830,13 +867,29 @@ func StartDiagnosticCaptureCleanup() {
 	diagnosticCaptureCleanupLoop.Do(func() {
 		go func() {
 			for {
-				now := time.Now().In(time.FixedZone("CST", 8*60*60))
-				next := time.Date(now.Year(), now.Month(), now.Day(), 3, 0, 0, 0, now.Location())
-				if !next.After(now) {
-					next = next.AddDate(0, 0, 1)
+				cfg := DiagnosticCaptureConfigFromOptions()
+				if !cfg.ReconciliationEnabled {
+					<-diagnosticCaptureReconciliationWakeup
+					continue
 				}
-				time.Sleep(time.Until(next))
-				reconcileDiagnosticCaptureStorage()
+				now := time.Now().In(time.FixedZone("CST", 8*60*60))
+				timer := time.NewTimer(time.Until(nextDiagnosticCaptureReconciliation(now, cfg)))
+				select {
+				case <-timer.C:
+					reconcileDiagnosticCaptureStorage()
+					// Use the reconciled total immediately so the administrator's
+					// configured time controls both the disk check and the ensuing
+					// capacity-cleanup decision, rather than waiting for the next
+					// ten-minute housekeeping tick.
+					cleanupDiagnosticCaptureStorageIfNeeded(DiagnosticCaptureConfigFromOptions())
+				case <-diagnosticCaptureReconciliationWakeup:
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
+				}
 			}
 		}()
 		go func() {
@@ -1751,7 +1804,7 @@ func writeDiagnosticCaptureSession(cfg DiagnosticCaptureConfig, flow *Diagnostic
 		writer:    bufferedWriter,
 		formatter: &diagnosticCaptureJSONFormatter{writer: bufferedWriter},
 	}
-	stream.raw(`{"format":"cpa-sections-json","version":1`)
+	stream.raw(`{"version":1`)
 	if flow.ProxyTraceID != "" {
 		stream.raw(`,"proxy_trace_id":`)
 		stream.value(flow.ProxyTraceID)
@@ -1766,12 +1819,11 @@ func writeDiagnosticCaptureSession(cfg DiagnosticCaptureConfig, flow *Diagnostic
 			stream.raw(`,"request_info":`)
 			stream.value(content.RequestInfo)
 		}
-		if content.Headers != nil {
-			stream.raw(`,"headers":`)
-			stream.value(content.Headers)
-		}
-		stream.raw(`,"request_body":`)
+		stream.raw(`,"request":{"headers":`)
+		stream.value(content.Request.Headers)
+		stream.raw(`,"body":`)
 		writeDiagnosticCaptureBody(stream, cfg, inboundRequest)
+		stream.raw("}")
 	}
 	if len(apiRequests) > 0 {
 		stream.raw(`,"api_requests":[`)
@@ -1861,12 +1913,11 @@ func writeDiagnosticAPIRequest(w *diagnosticCaptureJSONWriter, cfg DiagnosticCap
 	w.value(request.UpstreamURL)
 	w.raw(`,"http_method":`)
 	w.value(request.HTTPMethod)
-	if request.Headers != nil {
-		w.raw(`,"headers":`)
-		w.value(request.Headers)
-	}
+	w.raw(`,"request":{"headers":`)
+	w.value(request.Request.Headers)
 	w.raw(`,"body":`)
 	writeDiagnosticCaptureBody(w, cfg, state)
+	w.raw("}")
 	w.raw("}")
 }
 
@@ -1886,12 +1937,11 @@ func writeDiagnosticAPIResponse(w *diagnosticCaptureJSONWriter, cfg DiagnosticCa
 		w.raw(`,"status":`)
 		w.value(response.Status)
 	}
-	if response.Headers != nil {
-		w.raw(`,"headers":`)
-		w.value(response.Headers)
-	}
+	w.raw(`,"response":{"headers":`)
+	w.value(response.Response.Headers)
 	w.raw(`,"body":`)
 	writeDiagnosticCaptureBody(w, cfg, state)
+	w.raw("}")
 	if response.Error != "" {
 		w.raw(`,"error":`)
 		w.value(response.Error)
@@ -2150,19 +2200,25 @@ func writeDiagnosticInboundResponse(w *diagnosticCaptureJSONWriter, cfg Diagnost
 		w.value(response.DurationMS)
 		first = false
 	}
-	if response.Headers != nil {
+	if response.Response.Headers != nil {
 		if !first {
 			w.raw(",")
 		}
-		w.raw(`"headers":`)
-		w.value(response.Headers)
+		w.raw(`"response":{"headers":`)
+		w.value(response.Response.Headers)
+		w.raw(`,"body":`)
+		writeDiagnosticCaptureBody(w, cfg, state)
+		w.raw("}")
+		first = false
+	} else {
+		if !first {
+			w.raw(",")
+		}
+		w.raw(`"response":{"headers":{},"body":`)
+		writeDiagnosticCaptureBody(w, cfg, state)
+		w.raw("}")
 		first = false
 	}
-	if !first {
-		w.raw(",")
-	}
-	w.raw(`"body":`)
-	writeDiagnosticCaptureBody(w, cfg, state)
 	w.raw("}")
 }
 

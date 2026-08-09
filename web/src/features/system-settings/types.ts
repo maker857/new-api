@@ -49,6 +49,12 @@ export type DiagnosticCaptureSettingsRequest = {
   cleanup_rate_mb: number
   min_retention_minutes: number
   incomplete_timeout_minutes: number
+  reconciliation_enabled: boolean
+  reconciliation_mode: 'daily' | 'weekly' | 'monthly'
+  reconciliation_hour: number
+  reconciliation_minute: number
+  reconciliation_weekday: number
+  reconciliation_monthday: number
   paths: string
   error_rewrite_enabled: boolean
   error_rewrite_source: 'local' | 'http' | 'sql'
@@ -380,6 +386,12 @@ export type OperationsSettings = {
   DiagnosticCaptureCleanupRateMB: number
   DiagnosticCaptureMinRetentionMinutes: number
   DiagnosticCaptureIncompleteTimeoutMinutes: number
+  DiagnosticCaptureReconciliationEnabled: boolean
+  DiagnosticCaptureReconciliationMode: string
+  DiagnosticCaptureReconciliationHour: number
+  DiagnosticCaptureReconciliationMinute: number
+  DiagnosticCaptureReconciliationWeekday: number
+  DiagnosticCaptureReconciliationMonthday: number
   DiagnosticCaptureMinRetentionHours: number
   DiagnosticCaptureIncompleteTimeoutHours: number
   DiagnosticCapturePaths: string

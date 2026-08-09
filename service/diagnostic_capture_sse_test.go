@@ -97,7 +97,7 @@ func TestDiagnosticCaptureSSEWritesConvertedResponse(t *testing.T) {
 	var combined diagnosticCombinedCPAJSON
 	require.NoError(t, common.Unmarshal(data, &combined))
 	require.Len(t, combined.APIResponses, 1)
-	body := combined.APIResponses[0].Body
+	body := combined.APIResponses[0].Response.Body
 	assert.Equal(t, "parsed", body.Mode)
 	assert.Equal(t, "json", body.Encoding)
 	require.NotNil(t, body.Conversion)

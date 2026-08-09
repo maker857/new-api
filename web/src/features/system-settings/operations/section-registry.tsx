@@ -59,6 +59,18 @@ function buildLogSettingsSection(
           (settings.DiagnosticCaptureIncompleteTimeoutHours ?? 24) !== 24
             ? (settings.DiagnosticCaptureIncompleteTimeoutHours ?? 24) * 60
             : (settings.DiagnosticCaptureIncompleteTimeoutMinutes ?? 1440),
+        DiagnosticCaptureReconciliationEnabled:
+          settings.DiagnosticCaptureReconciliationEnabled ?? true,
+        DiagnosticCaptureReconciliationMode:
+          settings.DiagnosticCaptureReconciliationMode ?? 'daily',
+        DiagnosticCaptureReconciliationHour:
+          settings.DiagnosticCaptureReconciliationHour ?? 3,
+        DiagnosticCaptureReconciliationMinute:
+          settings.DiagnosticCaptureReconciliationMinute ?? 0,
+        DiagnosticCaptureReconciliationWeekday:
+          settings.DiagnosticCaptureReconciliationWeekday ?? 1,
+        DiagnosticCaptureReconciliationMonthday:
+          settings.DiagnosticCaptureReconciliationMonthday ?? 1,
         DiagnosticCaptureMinRetentionHours:
           settings.DiagnosticCaptureMinRetentionHours ?? 0,
         DiagnosticCaptureIncompleteTimeoutHours:

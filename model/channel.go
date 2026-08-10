@@ -85,8 +85,8 @@ func (channel *Channel) NormalizeDefaults() {
 		channel.ChannelInfo.ErrorRewriteEnabled = &errorRewriteDisabled
 	}
 	if channel.ChannelInfo.DiagnosticCaptureEnabled == nil {
-		diagnosticCaptureDisabled := false
-		channel.ChannelInfo.DiagnosticCaptureEnabled = &diagnosticCaptureDisabled
+		diagnosticCaptureEnabled := true
+		channel.ChannelInfo.DiagnosticCaptureEnabled = &diagnosticCaptureEnabled
 	}
 }
 

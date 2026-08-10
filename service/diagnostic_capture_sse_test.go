@@ -44,6 +44,62 @@ func TestDiagnosticAggregateAnthropicSSERejectsIncompleteStream(t *testing.T) {
 	assert.Contains(t, err.Error(), "message_stop")
 }
 
+func TestDiagnosticAggregateOpenAIResponsesSSE(t *testing.T) {
+	raw := []byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"output\":[]}}\n\n" +
+		"data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[]}}\n\n" +
+		"data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"content_index\":0,\"delta\":\"hello\"}\n\n" +
+		"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]}]}}\n\n")
+	events, err := diagnosticParseSSE(raw)
+	require.NoError(t, err)
+	response, err := diagnosticAggregateOpenAIResponsesSSE(events)
+	require.NoError(t, err)
+	assert.Equal(t, "resp_1", response["id"])
+	assert.Equal(t, "completed", response["status"])
+	output := response["output"].([]any)
+	assert.Equal(t, "hello", output[0].(map[string]any)["content"].([]any)[0].(map[string]any)["text"])
+}
+
+func TestDiagnosticCaptureSSEFileConvertsOpenAIResponses(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "response.part")
+	raw := []byte("event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"output\":[]}}\n\n" +
+		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"completed\",\"output\":[]}}\n\n")
+	require.NoError(t, os.WriteFile(path, raw, 0o600))
+
+	data, fallback, parseErr, eventCount, err := diagnosticCaptureSSEFile(path)
+	require.NoError(t, err)
+	require.Empty(t, fallback)
+	require.Empty(t, parseErr)
+	assert.Equal(t, 2, eventCount)
+	var response map[string]any
+	require.NoError(t, common.Unmarshal(data, &response))
+	assert.Equal(t, "resp_1", response["id"])
+	assert.Equal(t, "completed", response["status"])
+}
+
+func TestDiagnosticAggregateOpenAIChatSSE(t *testing.T) {
+	raw := []byte("data: {\"id\":\"chat_1\",\"model\":\"gpt-test\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hello \"},\"finish_reason\":null}]}\n\n" +
+		"data: {\"id\":\"chat_1\",\"model\":\"gpt-test\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"world\"},\"finish_reason\":\"stop\"}]}\n\n" +
+		"data: [DONE]\n\n")
+	events, err := diagnosticParseSSE(raw)
+	require.NoError(t, err)
+	response, err := diagnosticAggregateOpenAIChatSSE(events)
+	require.NoError(t, err)
+	assert.Equal(t, "chat_1", response["id"])
+	choice := response["choices"].([]any)[0].(map[string]any)
+	assert.Equal(t, "hello world", choice["message"].(map[string]any)["content"])
+	assert.Equal(t, "stop", choice["finish_reason"])
+}
+
+func TestDiagnosticAggregateUnknownSSEKeepsEventData(t *testing.T) {
+	events, err := diagnosticParseSSE([]byte("event: custom.delta\ndata: {\"value\":1}\n\n"))
+	require.NoError(t, err)
+	result := diagnosticAggregateSSE(events).(map[string]any)
+	items := result["events"].([]map[string]any)
+	require.Len(t, items, 1)
+	assert.Equal(t, "custom.delta", items[0]["event"])
+	assert.Equal(t, float64(1), items[0]["data"].(map[string]any)["value"])
+}
+
 func TestDiagnosticCaptureSSEWritesConvertedResponse(t *testing.T) {
 	root := t.TempDir()
 	stream := []byte("event: message_start\n" +

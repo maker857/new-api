@@ -21,16 +21,21 @@ func diagnosticCapturePartIsSSE(state *diagnosticCapturePartState) bool {
 	if state == nil || state.part != "response" || state.meta == nil {
 		return false
 	}
-	headers, ok := state.meta["headers"].(map[string][]string)
-	if !ok {
-		return false
-	}
-	for name, values := range headers {
-		if !strings.EqualFold(name, "Content-Type") {
-			continue
+	switch headers := state.meta["headers"].(type) {
+	case map[string][]string:
+		for name, values := range headers {
+			if !strings.EqualFold(name, "Content-Type") {
+				continue
+			}
+			for _, value := range values {
+				if strings.HasPrefix(strings.ToLower(strings.TrimSpace(value)), "text/event-stream") {
+					return true
+				}
+			}
 		}
-		for _, value := range values {
-			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(value)), "text/event-stream") {
+	case map[string]string:
+		for name, value := range headers {
+			if strings.EqualFold(name, "Content-Type") && strings.HasPrefix(strings.ToLower(strings.TrimSpace(value)), "text/event-stream") {
 				return true
 			}
 		}
@@ -38,9 +43,9 @@ func diagnosticCapturePartIsSSE(state *diagnosticCapturePartState) bool {
 	return false
 }
 
-// diagnosticCaptureSSEFile converts a completed Anthropic Messages SSE response
-// into the equivalent message object. The original text is returned only when
-// conversion fails so callers can preserve a readable diagnostic fallback.
+// diagnosticCaptureSSEFile converts known SSE protocols into a readable JSON
+// object. Unknown SSE protocols are retained as an event array so the original
+// event payloads remain inspectable instead of being encoded as base64.
 func diagnosticCaptureSSEFile(path string) ([]byte, []byte, string, int, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -50,15 +55,199 @@ func diagnosticCaptureSSEFile(path string) ([]byte, []byte, string, int, error) 
 	if err != nil {
 		return nil, raw, err.Error(), len(events), nil
 	}
-	message, err := diagnosticAggregateAnthropicSSE(events)
-	if err != nil {
-		return nil, raw, err.Error(), len(events), nil
-	}
+	message := diagnosticAggregateSSE(events)
 	data, err := common.Marshal(message)
 	if err != nil {
 		return nil, raw, err.Error(), len(events), nil
 	}
 	return data, nil, "", len(events), nil
+}
+
+func diagnosticAggregateSSE(events []diagnosticSSEEvent) any {
+	parsed := make([]map[string]any, 0, len(events))
+	for _, event := range events {
+		if len(event.data) == 0 {
+			continue
+		}
+		if bytes.Equal(event.data, []byte("[DONE]")) {
+			parsed = append(parsed, map[string]any{"event": event.name, "data": "[DONE]"})
+			continue
+		}
+		var payload any
+		if common.Unmarshal(event.data, &payload) == nil {
+			parsed = append(parsed, map[string]any{"event": event.name, "data": payload})
+		} else {
+			parsed = append(parsed, map[string]any{"event": event.name, "data": string(event.data)})
+		}
+	}
+
+	if hasSSEEventType(parsed, "message_start") {
+		if message, err := diagnosticAggregateAnthropicSSE(events); err == nil {
+			return message
+		}
+	}
+	if hasSSEEventPrefix(parsed, "response.") {
+		if response, err := diagnosticAggregateOpenAIResponsesSSE(events); err == nil {
+			return response
+		}
+	}
+	if hasChatCompletionChunk(parsed) {
+		if response, err := diagnosticAggregateOpenAIChatSSE(events); err == nil {
+			return response
+		}
+	}
+	return map[string]any{"events": parsed}
+}
+
+func hasSSEEventType(events []map[string]any, name string) bool {
+	for _, event := range events {
+		if event["event"] == name {
+			return true
+		}
+		if payload, ok := event["data"].(map[string]any); ok && payload["type"] == name {
+			return true
+		}
+	}
+	return false
+}
+
+func hasSSEEventPrefix(events []map[string]any, prefix string) bool {
+	for _, event := range events {
+		name, _ := event["event"].(string)
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+		if payload, ok := event["data"].(map[string]any); ok {
+			typeName, _ := payload["type"].(string)
+			if strings.HasPrefix(typeName, prefix) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasChatCompletionChunk(events []map[string]any) bool {
+	for _, event := range events {
+		if payload, ok := event["data"].(map[string]any); ok {
+			if _, ok := payload["choices"]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func diagnosticSSEPayload(event diagnosticSSEEvent) (map[string]any, bool) {
+	if len(event.data) == 0 || bytes.Equal(event.data, []byte("[DONE]")) {
+		return nil, false
+	}
+	var payload map[string]any
+	if common.Unmarshal(event.data, &payload) != nil {
+		return nil, false
+	}
+	return payload, true
+}
+
+func diagnosticAggregateOpenAIResponsesSSE(events []diagnosticSSEEvent) (map[string]any, error) {
+	var response map[string]any
+	for _, event := range events {
+		payload, ok := diagnosticSSEPayload(event)
+		if !ok {
+			continue
+		}
+		typeName, _ := payload["type"].(string)
+		if completed, ok := payload["response"].(map[string]any); ok && (typeName == "response.created" || typeName == "response.completed" || typeName == "response.incomplete" || typeName == "response.failed") {
+			response = completed
+			continue
+		}
+		if item, ok := payload["item"].(map[string]any); ok && (typeName == "response.output_item.added" || typeName == "response.output_item.done") {
+			if response == nil {
+				response = map[string]any{"object": "response", "output": []any{}}
+			}
+			output, _ := response["output"].([]any)
+			index := diagnosticSSENumber(payload["output_index"])
+			for len(output) <= index {
+				output = append(output, nil)
+			}
+			output[index] = item
+			response["output"] = output
+		}
+	}
+	if response == nil {
+		return nil, errors.New("no OpenAI Responses payload")
+	}
+	return response, nil
+}
+
+func diagnosticAggregateOpenAIChatSSE(events []diagnosticSSEEvent) (map[string]any, error) {
+	response := map[string]any{"object": "chat.completion", "choices": []any{}}
+	choices := make(map[int]map[string]any)
+	for _, event := range events {
+		payload, ok := diagnosticSSEPayload(event)
+		if !ok {
+			continue
+		}
+		for _, rawChoice := range diagnosticSSEArray(payload["choices"]) {
+			choice, ok := rawChoice.(map[string]any)
+			if !ok {
+				continue
+			}
+			index := diagnosticSSENumber(choice["index"])
+			result := choices[index]
+			if result == nil {
+				result = map[string]any{"index": index, "message": map[string]any{"role": "assistant", "content": ""}}
+				choices[index] = result
+			}
+			if value, ok := payload["id"]; ok {
+				response["id"] = value
+			}
+			if value, ok := payload["model"]; ok {
+				response["model"] = value
+			}
+			if delta, ok := choice["delta"].(map[string]any); ok {
+				message := result["message"].(map[string]any)
+				if role, ok := delta["role"]; ok {
+					message["role"] = role
+				}
+				if text, ok := delta["content"].(string); ok {
+					message["content"] = message["content"].(string) + text
+				}
+			}
+			if finish, ok := choice["finish_reason"]; ok {
+				result["finish_reason"] = finish
+			}
+		}
+		if usage, ok := payload["usage"]; ok {
+			response["usage"] = usage
+		}
+	}
+	output := make([]any, 0, len(choices))
+	for i := 0; i <= len(choices); i++ {
+		if choice, ok := choices[i]; ok {
+			output = append(output, choice)
+		}
+	}
+	if len(output) == 0 {
+		return nil, errors.New("no OpenAI Chat Completion choices")
+	}
+	response["choices"] = output
+	return response, nil
+}
+
+func diagnosticSSENumber(value any) int {
+	if number, ok := value.(float64); ok && number >= 0 {
+		return int(number)
+	}
+	if number, ok := value.(int); ok && number >= 0 {
+		return number
+	}
+	return 0
+}
+
+func diagnosticSSEArray(value any) []any {
+	items, _ := value.([]any)
+	return items
 }
 
 func diagnosticParseSSE(raw []byte) ([]diagnosticSSEEvent, error) {

@@ -281,7 +281,6 @@ function getDiagnosticStorageDisplay(bytes: number) {
     unit: "MB" as const,
   };
 }
-
 function toRelativeDiagnosticCaptureDirectory(
   captureDir: string,
   storageRoot?: string,
@@ -666,6 +665,9 @@ export function LogSettingsSection({
     "hours",
   );
   const [incompleteTimeoutUnit, setIncompleteTimeoutUnit] = useState<
+    "hours" | "minutes"
+  >("hours");
+  const [tempRetentionUnit, setTempRetentionUnit] = useState<
     "hours" | "minutes"
   >("hours");
   const [diagnosticStorageInfo, setDiagnosticStorageInfo] =
@@ -1799,14 +1801,56 @@ export function LogSettingsSection({
                             <FormLabel>
                               {t("Temporary file cleanup delay")}
                             </FormLabel>
-                            <FormControl>
-                              <Input
-                                type="number"
-                                min={1}
-                                max={5256000}
-                                {...field}
-                              />
-                            </FormControl>
+                            <div className="grid grid-cols-[minmax(0,1fr)_8rem] gap-2">
+                              <FormControl>
+                                <Input
+                                  type="number"
+                                  min={1}
+                                  max={
+                                    tempRetentionUnit === "hours"
+                                      ? 87600
+                                      : 5256000
+                                  }
+                                  step={1}
+                                  value={
+                                    tempRetentionUnit === "hours"
+                                      ? field.value / 60
+                                      : field.value
+                                  }
+                                  onChange={(event) => {
+                                    const value = event.target.value;
+                                    field.onChange(
+                                      value === ""
+                                        ? value
+                                        : Number(value) *
+                                            (tempRetentionUnit === "hours"
+                                              ? 60
+                                              : 1),
+                                    );
+                                  }}
+                                />
+                              </FormControl>
+                              <Select
+                                value={tempRetentionUnit}
+                                onValueChange={(value) =>
+                                  setTempRetentionUnit(
+                                    value as "hours" | "minutes",
+                                  )
+                                }
+                              >
+                                <SelectTrigger>
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="hours">
+                                    {t("Hours")}
+                                  </SelectItem>
+                                  <SelectItem value="minutes">
+                                    {t("Minutes")}
+                                  </SelectItem>
+                                </SelectContent>
+                              </Select>
+                            </div>
                             <FormDescription>
                               {t(
                                 "Only abandoned temporary files use this value. Completed captures are removed from temporary storage immediately.",

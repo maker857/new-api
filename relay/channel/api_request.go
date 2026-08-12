@@ -65,6 +65,11 @@ func SetupApiRequestHeader(info *common.RelayInfo, c *gin.Context, req *http.Hea
 const clientHeaderPlaceholderPrefix = "{client_header:"
 
 const (
+	diagnosticTraceHeader   = "X-Diagnostic-Trace-Id"
+	diagnosticChannelHeader = "X-Diagnostic-Channel"
+)
+
+const (
 	headerPassthroughAllKey        = "*"
 	headerPassthroughRegexPrefix   = "re:"
 	headerPassthroughRegexPrefixV2 = "regex:"
@@ -84,9 +89,11 @@ var passthroughSkipHeaderNamesLower = map[string]struct{}{
 	"cookie": {},
 
 	// Additional headers that should not be forwarded by name-matching passthrough rules.
-	"host":            {},
-	"content-length":  {},
-	"accept-encoding": {},
+	"host":                  {},
+	"content-length":        {},
+	"accept-encoding":       {},
+	"x-diagnostic-trace-id": {},
+	"x-diagnostic-channel":  {},
 
 	// Do not passthrough credentials by wildcard/regex.
 	"authorization":  {},
@@ -150,6 +157,11 @@ func shouldSkipPassthroughHeader(name string) bool {
 	return false
 }
 
+func isDiagnosticHeaderName(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	return lower == strings.ToLower(diagnosticTraceHeader) || lower == strings.ToLower(diagnosticChannelHeader)
+}
+
 func applyHeaderOverridePlaceholders(template string, c *gin.Context, apiKey string) (string, bool, error) {
 	trimmed := strings.TrimSpace(template)
 	if strings.HasPrefix(trimmed, clientHeaderPlaceholderPrefix) {
@@ -162,6 +174,9 @@ func applyHeaderOverridePlaceholders(template string, c *gin.Context, apiKey str
 		name := strings.TrimSpace(afterPrefix[:end])
 		if name == "" {
 			return "", false, fmt.Errorf("client_header placeholder name is empty: %q", template)
+		}
+		if isDiagnosticHeaderName(name) {
+			return "", false, nil
 		}
 		if c == nil || c.Request == nil {
 			return "", false, fmt.Errorf("missing request context for client_header placeholder")
@@ -271,6 +286,9 @@ func processHeaderOverride(info *common.RelayInfo, c *gin.Context) (map[string]s
 		if key == "" {
 			continue
 		}
+		if isDiagnosticHeaderName(key) {
+			continue
+		}
 
 		str, ok := v.(string)
 		if !ok {
@@ -302,6 +320,9 @@ func applyHeaderOverrideToRequest(req *http.Request, headerOverride map[string]s
 		return
 	}
 	for key, value := range headerOverride {
+		if isDiagnosticHeaderName(key) {
+			continue
+		}
 		req.Header.Set(key, value)
 		// set Host in req
 		if strings.EqualFold(key, "Host") {
@@ -333,10 +354,20 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		return nil, err
 	}
 	applyHeaderOverrideToRequest(req, headerOverride)
+	outboundBody, diagnosticFlow := service.PrepareDiagnosticOutboundRequest(c, info, req.Method, req.URL.String(), req.Header, req.Body)
+	if outboundBody != nil {
+		if closer, ok := outboundBody.(io.ReadCloser); ok {
+			req.Body = closer
+		} else {
+			req.Body = io.NopCloser(outboundBody)
+		}
+	}
 	resp, err := doRequest(c, req, info)
 	if err != nil {
+		service.RecordDiagnosticOutboundFailure(diagnosticFlow, err)
 		return nil, fmt.Errorf("do request failed: %w", err)
 	}
+	service.WrapDiagnosticOutboundResponse(c, resp, diagnosticFlow)
 	return resp, nil
 }
 
@@ -365,10 +396,20 @@ func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBod
 		return nil, err
 	}
 	applyHeaderOverrideToRequest(req, headerOverride)
+	outboundBody, diagnosticFlow := service.PrepareDiagnosticOutboundRequest(c, info, req.Method, req.URL.String(), req.Header, req.Body)
+	if outboundBody != nil {
+		if closer, ok := outboundBody.(io.ReadCloser); ok {
+			req.Body = closer
+		} else {
+			req.Body = io.NopCloser(outboundBody)
+		}
+	}
 	resp, err := doRequest(c, req, info)
 	if err != nil {
+		service.RecordDiagnosticOutboundFailure(diagnosticFlow, err)
 		return nil, fmt.Errorf("do request failed: %w", err)
 	}
+	service.WrapDiagnosticOutboundResponse(c, resp, diagnosticFlow)
 	return resp, nil
 }
 
@@ -389,13 +430,24 @@ func DoWssRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 		return nil, err
 	}
 	for key, value := range headerOverride {
+		if isDiagnosticHeaderName(key) {
+			continue
+		}
 		targetHeader.Set(key, value)
 	}
 	targetHeader.Set("Content-Type", c.Request.Header.Get("Content-Type"))
-	targetConn, _, err := websocket.DefaultDialer.Dial(fullRequestURL, targetHeader)
+	_, diagnosticFlow := service.PrepareDiagnosticOutboundRequest(c, info, http.MethodGet, fullRequestURL, targetHeader, nil)
+	targetConn, handshakeResponse, err := websocket.DefaultDialer.Dial(fullRequestURL, targetHeader)
 	if err != nil {
+		service.RecordDiagnosticOutboundFailure(diagnosticFlow, err)
 		return nil, fmt.Errorf("dial failed to %s: %w", common.SanitizeURLForLog(fullRequestURL), err)
 	}
+	if handshakeResponse != nil {
+		service.RecordDiagnosticOutboundResponseMetadata(diagnosticFlow, handshakeResponse.StatusCode, handshakeResponse.Header)
+	} else {
+		service.RecordDiagnosticOutboundResponseMetadata(diagnosticFlow, http.StatusSwitchingProtocols, nil)
+	}
+	c.Set("diagnostic_websocket_upstream_url", fullRequestURL)
 	// send request body
 	//all, err := io.ReadAll(requestBody)
 	//err = service.WssString(c, targetConn, string(all))
@@ -478,7 +530,14 @@ func sendPingData(c *gin.Context, mutex *sync.Mutex) error {
 }
 
 func DoRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http.Response, error) {
-	return doRequest(c, req, info)
+	diagnosticFlow := service.PrepareDiagnosticHTTPOutboundRequest(c, info, req)
+	resp, err := doRequest(c, req, info)
+	if err != nil {
+		service.RecordDiagnosticOutboundFailure(diagnosticFlow, err)
+		return nil, err
+	}
+	service.WrapDiagnosticOutboundResponse(c, resp, diagnosticFlow)
+	return resp, nil
 }
 
 // keepUpstreamRedirectResponse stops net/http from following redirects while
@@ -581,9 +640,24 @@ func DoTaskApiRequest(a TaskAdaptor, c *gin.Context, info *common.RelayInfo, req
 	if err != nil {
 		return nil, fmt.Errorf("setup request header failed: %w", err)
 	}
+	headerOverride, err := processHeaderOverride(info, c)
+	if err != nil {
+		return nil, err
+	}
+	applyHeaderOverrideToRequest(req, headerOverride)
+	outboundBody, diagnosticFlow := service.PrepareDiagnosticOutboundRequest(c, info, req.Method, req.URL.String(), req.Header, req.Body)
+	if outboundBody != nil {
+		if closer, ok := outboundBody.(io.ReadCloser); ok {
+			req.Body = closer
+		} else {
+			req.Body = io.NopCloser(outboundBody)
+		}
+	}
 	resp, err := doRequest(c, req, info)
 	if err != nil {
+		service.RecordDiagnosticOutboundFailure(diagnosticFlow, err)
 		return nil, fmt.Errorf("do request failed: %w", err)
 	}
+	service.WrapDiagnosticOutboundResponse(c, resp, diagnosticFlow)
 	return resp, nil
 }

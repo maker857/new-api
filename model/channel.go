@@ -60,13 +60,34 @@ type Channel struct {
 }
 
 type ChannelInfo struct {
-	IsMultiKey             bool                  `json:"is_multi_key"`                        // 是否多Key模式
-	MultiKeySize           int                   `json:"multi_key_size"`                      // 多Key模式下的Key数量
-	MultiKeyStatusList     map[int]int           `json:"multi_key_status_list"`               // key状态列表，key index -> status
-	MultiKeyDisabledReason map[int]string        `json:"multi_key_disabled_reason,omitempty"` // key禁用原因列表，key index -> reason
-	MultiKeyDisabledTime   map[int]int64         `json:"multi_key_disabled_time,omitempty"`   // key禁用时间列表，key index -> time
-	MultiKeyPollingIndex   int                   `json:"multi_key_polling_index"`             // 多Key模式下轮询的key索引
-	MultiKeyMode           constant.MultiKeyMode `json:"multi_key_mode"`
+	IsMultiKey               bool                  `json:"is_multi_key"`                        // 是否多Key模式
+	MultiKeySize             int                   `json:"multi_key_size"`                      // 多Key模式下的Key数量
+	MultiKeyStatusList       map[int]int           `json:"multi_key_status_list"`               // key状态列表，key index -> status
+	MultiKeyDisabledReason   map[int]string        `json:"multi_key_disabled_reason,omitempty"` // key禁用原因列表，key index -> reason
+	MultiKeyDisabledTime     map[int]int64         `json:"multi_key_disabled_time,omitempty"`   // key禁用时间列表，key index -> time
+	MultiKeyPollingIndex     int                   `json:"multi_key_polling_index"`             // 多Key模式下轮询的key索引
+	MultiKeyMode             constant.MultiKeyMode `json:"multi_key_mode"`
+	ErrorRewriteEnabled      *bool                 `json:"error_rewrite_enabled,omitempty"`
+	DiagnosticCaptureEnabled *bool                 `json:"diagnostic_capture_enabled,omitempty"`
+}
+
+func (c ChannelInfo) IsErrorRewriteEnabled() bool {
+	return c.ErrorRewriteEnabled != nil && *c.ErrorRewriteEnabled
+}
+
+func (c ChannelInfo) IsDiagnosticCaptureEnabled() bool {
+	return c.DiagnosticCaptureEnabled != nil && *c.DiagnosticCaptureEnabled
+}
+
+func (channel *Channel) NormalizeDefaults() {
+	if channel.ChannelInfo.ErrorRewriteEnabled == nil {
+		errorRewriteDisabled := false
+		channel.ChannelInfo.ErrorRewriteEnabled = &errorRewriteDisabled
+	}
+	if channel.ChannelInfo.DiagnosticCaptureEnabled == nil {
+		diagnosticCaptureDisabled := false
+		channel.ChannelInfo.DiagnosticCaptureEnabled = &diagnosticCaptureDisabled
+	}
 }
 
 type ChannelSortOptions struct {
@@ -437,6 +458,9 @@ func BatchInsertChannels(channels []Channel) error {
 	if len(channels) == 0 {
 		return nil
 	}
+	for index := range channels {
+		channels[index].NormalizeDefaults()
+	}
 	tx := DB.Begin()
 	if tx.Error != nil {
 		return tx.Error
@@ -530,6 +554,7 @@ func (channel *Channel) GetStatusCodeMapping() string {
 }
 
 func (channel *Channel) Insert() error {
+	channel.NormalizeDefaults()
 	var err error
 	err = DB.Create(channel).Error
 	if err != nil {
@@ -540,6 +565,7 @@ func (channel *Channel) Insert() error {
 }
 
 func (channel *Channel) Update() error {
+	channel.NormalizeDefaults()
 	// If this is a multi-key channel, recalculate MultiKeySize based on the current key list to avoid inconsistency after editing keys
 	if channel.ChannelInfo.IsMultiKey {
 		var keyStr string
@@ -982,6 +1008,16 @@ func (channel *Channel) ValidateSettings() error {
 	}
 	if channelOtherSettings.AdvancedCustom != nil {
 		if err := channelOtherSettings.AdvancedCustom.Validate(); err != nil {
+			return err
+		}
+	}
+	if channel.Type == constant.ChannelTypeVolcEngine && channelOtherSettings.VolcTTS != nil {
+		if err := channelOtherSettings.VolcTTS.Validate(); err != nil {
+			return err
+		}
+	}
+	if channel.Type == constant.ChannelTypeVolcEngine && channelOtherSettings.VolcASR != nil {
+		if err := channelOtherSettings.VolcASR.Validate(); err != nil {
 			return err
 		}
 	}

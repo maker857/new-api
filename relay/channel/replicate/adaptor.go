@@ -478,10 +478,13 @@ func uploadFileFromForm(c *gin.Context, info *relaycommon.RelayInfo, fieldCandid
 	req.Header.Set("Content-Type", formContentType)
 	req.Header.Set("Authorization", "Bearer "+info.ApiKey)
 
+	diagnosticFlow := service.PrepareDiagnosticHTTPOutboundRequest(c, info, req)
 	resp, err := service.GetHttpClient().Do(req)
 	if err != nil {
+		service.RecordDiagnosticOutboundFailure(diagnosticFlow, err)
 		return "", fmt.Errorf("replicate adaptor: upload image failed: %w", err)
 	}
+	service.WrapDiagnosticOutboundResponse(c, resp, diagnosticFlow)
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)

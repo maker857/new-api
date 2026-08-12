@@ -39,6 +39,30 @@ export type UpdateOptionResponse = {
   message: string
 }
 
+export type DiagnosticCaptureSettingsRequest = {
+  enabled: boolean
+  capture_dir: string
+  temp_dir: string
+  temp_retention_minutes: number
+  auto_cleanup_enabled: boolean
+  max_storage_bytes: number
+  cleanup_percent: number
+  cleanup_rate_mb: number
+  min_retention_minutes: number
+  incomplete_timeout_minutes: number
+  paths: string
+  error_rewrite_enabled: boolean
+  error_rewrite_source: 'local' | 'http' | 'sql'
+  error_rewrite_sync_token: string
+  error_rewrite_rules_json: string
+  error_rewrite_rules_url: string
+  error_rewrite_fallback_message: string
+  error_rewrite_refresh_seconds: number
+  error_rewrite_request_timeout_ms: number
+  error_rewrite_sql_driver: 'mysql' | 'postgres' | 'sqlite'
+  error_rewrite_sql_query: string
+}
+
 export type ConfirmPaymentComplianceResponse = {
   success: boolean
   message: string
@@ -353,6 +377,33 @@ export type OperationsSettings = {
   WorkerValidKey: string
   WorkerAllowHttpImageRequestEnabled: boolean
   LogConsumeEnabled: boolean
+  DiagnosticCaptureEnabled: boolean
+  DiagnosticCaptureMode: string
+  DiagnosticCaptureDir: string
+  DiagnosticCaptureTempDir: string
+  DiagnosticCaptureTempRetentionMinutes: number
+  DiagnosticCaptureAutoCleanupEnabled: boolean
+  DiagnosticCaptureMaxStorageBytes: number
+  DiagnosticCaptureCleanupPercent: number
+  DiagnosticCaptureCleanupRateMB: number
+  DiagnosticCaptureMinRetentionMinutes: number
+  DiagnosticCaptureIncompleteTimeoutMinutes: number
+  DiagnosticCaptureMinRetentionHours: number
+  DiagnosticCaptureIncompleteTimeoutHours: number
+  DiagnosticCapturePaths: string
+  ErrorRewriteEnabled: boolean
+  ErrorRewriteSource: string
+  ErrorRewriteRulesJSON: string
+  ErrorRewriteMonitorRulesJSON: string
+  ErrorRewriteMonitorRulesVersion: string
+  ErrorRewriteMonitorLastPullAt: string
+  ErrorRewriteSyncToken: string
+  ErrorRewriteRulesURL: string
+  ErrorRewriteFallbackMessage: string
+  ErrorRewriteRefreshSeconds: number
+  ErrorRewriteRequestTimeoutMS: number
+  ErrorRewriteSQLDriver: string
+  ErrorRewriteSQLQuery: string
   'performance_setting.disk_cache_enabled': boolean
   'performance_setting.disk_cache_threshold_mb': number
   'performance_setting.disk_cache_max_size_mb': number

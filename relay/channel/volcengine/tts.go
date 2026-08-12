@@ -10,9 +10,10 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
-	"github.com/QuantumNous/new-api/relaykit/dto"
-	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
@@ -209,8 +210,10 @@ func handleTTSWebSocketResponse(c *gin.Context, requestURL string, volcRequest V
 	header := http.Header{}
 	header.Set("Authorization", fmt.Sprintf("Bearer;%s", token))
 
+	_, diagnosticFlow := service.PrepareDiagnosticOutboundRequest(c, info, http.MethodGet, requestURL, header, nil)
 	conn, resp, dialErr := websocket.DefaultDialer.DialContext(context.Background(), requestURL, header)
 	if dialErr != nil {
+		service.RecordDiagnosticOutboundFailure(diagnosticFlow, dialErr)
 		if resp != nil {
 			return nil, types.NewErrorWithStatusCode(
 				fmt.Errorf("failed to connect to websocket: %w, status: %d", dialErr, resp.StatusCode),
@@ -224,6 +227,11 @@ func handleTTSWebSocketResponse(c *gin.Context, requestURL string, volcRequest V
 			http.StatusBadGateway,
 		)
 	}
+	if resp != nil {
+		service.RecordDiagnosticOutboundResponseMetadata(diagnosticFlow, resp.StatusCode, resp.Header)
+	} else {
+		service.RecordDiagnosticOutboundResponseMetadata(diagnosticFlow, http.StatusSwitchingProtocols, nil)
+	}
 	defer conn.Close()
 
 	payload, marshalErr := json.Marshal(volcRequest)
@@ -235,20 +243,31 @@ func handleTTSWebSocketResponse(c *gin.Context, requestURL string, volcRequest V
 		)
 	}
 
-	if sendErr := FullClientRequest(conn, payload); sendErr != nil {
+	frame, frameErr := FullClientRequestFrame(payload)
+	if frameErr != nil {
+		return nil, types.NewErrorWithStatusCode(
+			fmt.Errorf("failed to prepare request: %w", frameErr),
+			types.ErrorCodeBadRequestBody,
+			http.StatusInternalServerError,
+		)
+	}
+	if sendErr := conn.WriteMessage(websocket.BinaryMessage, frame); sendErr != nil {
+		service.RecordDiagnosticWebSocketFrame(c, requestURL, "request", frame)
+		service.RecordDiagnosticWebSocketFailure(c, requestURL, sendErr)
 		return nil, types.NewErrorWithStatusCode(
 			fmt.Errorf("failed to send request: %w", sendErr),
 			types.ErrorCodeBadRequestBody,
 			http.StatusInternalServerError,
 		)
 	}
+	service.RecordDiagnosticWebSocketFrame(c, requestURL, "request", frame)
 
 	contentType := getContentTypeByEncoding(encoding)
 	c.Header("Content-Type", contentType)
 	c.Header("Transfer-Encoding", "chunked")
 
 	for {
-		msg, recvErr := ReceiveMessage(conn)
+		msg, frame, recvErr := ReceiveMessageFrame(conn)
 		if recvErr != nil {
 			if websocket.IsCloseError(recvErr, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
 				break
@@ -259,6 +278,7 @@ func handleTTSWebSocketResponse(c *gin.Context, requestURL string, volcRequest V
 				http.StatusInternalServerError,
 			)
 		}
+		service.RecordDiagnosticWebSocketFrame(c, requestURL, "response", frame)
 
 		switch msg.MsgType {
 		case MsgTypeError:

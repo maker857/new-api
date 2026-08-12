@@ -244,6 +244,14 @@ func buildFetchOperationURL(baseURL, upstreamName string) (string, error) {
 
 // FetchTask fetch task status
 func (a *TaskAdaptor) FetchTask(baseUrl, key string, body map[string]any, proxy string) (*http.Response, error) {
+	return a.fetchTask(nil, baseUrl, key, body, proxy)
+}
+
+func (a *TaskAdaptor) FetchTaskWithDiagnosticCapture(c *gin.Context, baseUrl, key string, body map[string]any, proxy string) (*http.Response, error) {
+	return a.fetchTask(c, baseUrl, key, body, proxy)
+}
+
+func (a *TaskAdaptor) fetchTask(c *gin.Context, baseUrl, key string, body map[string]any, proxy string) (*http.Response, error) {
 	taskID, ok := body["task_id"].(string)
 	if !ok {
 		return nil, fmt.Errorf("invalid task_id")
@@ -281,7 +289,14 @@ func (a *TaskAdaptor) FetchTask(baseUrl, key string, body map[string]any, proxy 
 	if err != nil {
 		return nil, fmt.Errorf("new proxy http client failed: %w", err)
 	}
-	return client.Do(req)
+	diagnosticFlow := service.PrepareDiagnosticHTTPOutboundRequest(c, nil, req)
+	resp, err := client.Do(req)
+	if err != nil {
+		service.RecordDiagnosticOutboundFailure(diagnosticFlow, err)
+		return nil, err
+	}
+	service.WrapDiagnosticOutboundResponse(c, resp, diagnosticFlow)
+	return resp, nil
 }
 
 func (a *TaskAdaptor) ParseTaskResult(respBody []byte) (*relaycommon.TaskInfo, error) {

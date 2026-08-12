@@ -6,17 +6,17 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
 
 	"github.com/QuantumNous/new-api/constant"
-	taskdto "github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relay/channel"
 	"github.com/QuantumNous/new-api/relay/channel/task/taskcommon"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
-	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
 
 	"github.com/gin-gonic/gin"
@@ -62,6 +62,37 @@ type requestPayload struct {
 	Seed             *dto.IntValue  `json:"seed,omitempty"`
 	CameraFixed      *dto.BoolValue `json:"camera_fixed,omitempty"`
 	Watermark        *dto.BoolValue `json:"watermark,omitempty"`
+	NativeContent    []any          `json:"-"`
+	Extra            map[string]any `json:"-"`
+}
+
+func (r requestPayload) MarshalJSON() ([]byte, error) {
+	type requestPayloadAlias requestPayload
+
+	payloadJSON, err := common.Marshal(requestPayloadAlias(r))
+	if err != nil {
+		return nil, err
+	}
+
+	var payload map[string]any
+	if err := common.Unmarshal(payloadJSON, &payload); err != nil {
+		return nil, err
+	}
+	if r.NativeContent != nil {
+		payload["content"] = r.NativeContent
+	}
+
+	for key, value := range r.Extra {
+		switch key {
+		case "model", "content", "duration":
+			continue
+		}
+		if _, exists := payload[key]; !exists {
+			payload[key] = value
+		}
+	}
+
+	return common.Marshal(payload)
 }
 
 type responsePayload struct {
@@ -117,14 +148,84 @@ func (a *TaskAdaptor) Init(info *relaycommon.RelayInfo) {
 }
 
 // ValidateRequestAndSetAction parses body, validates fields and sets default action.
-func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycommon.RelayInfo) (taskErr *taskdto.TaskError) {
-	// Accept only POST /v1/video/generations as "generate" action.
-	return relaycommon.ValidateBasicTaskRequest(c, info, constant.TaskActionGenerate)
+func (a *TaskAdaptor) ValidateRequestAndSetAction(c *gin.Context, info *relaycommon.RelayInfo) (taskErr *dto.TaskError) {
+	if common.GetContextKeyBool(c, constant.ContextKeyNativeSeedanceResponse) {
+		var req relaycommon.TaskSubmitReq
+		if err := common.UnmarshalBodyReusable(c, &req); err != nil {
+			return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
+		}
+		var nativeFields struct {
+			Duration *int `json:"duration"`
+		}
+		if err := common.UnmarshalBodyReusable(c, &nativeFields); err != nil {
+			return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
+		}
+		if nativeFields.Duration != nil && *nativeFields.Duration == 0 {
+			return service.TaskErrorWrapperLocal(fmt.Errorf("duration must not be 0"), "invalid_request", http.StatusBadRequest)
+		}
+		if strings.TrimSpace(req.Model) == "" {
+			return service.TaskErrorWrapperLocal(fmt.Errorf("model is required"), "invalid_request", http.StatusBadRequest)
+		}
+
+		contentRaw, ok := req.Extra["content"]
+		if !ok {
+			return service.TaskErrorWrapperLocal(fmt.Errorf("content is required"), "invalid_request", http.StatusBadRequest)
+		}
+		contentJSON, err := common.Marshal(contentRaw)
+		if err != nil {
+			return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
+		}
+		var content []ContentItem
+		if err := common.Unmarshal(contentJSON, &content); err != nil {
+			return service.TaskErrorWrapperLocal(fmt.Errorf("content must be an array: %w", err), "invalid_request", http.StatusBadRequest)
+		}
+		for _, item := range content {
+			if item.Type == "text" && strings.TrimSpace(item.Text) != "" {
+				req.Prompt = item.Text
+				break
+			}
+		}
+		if strings.TrimSpace(req.Prompt) == "" {
+			return service.TaskErrorWrapperLocal(fmt.Errorf("content must include non-empty text"), "invalid_request", http.StatusBadRequest)
+		}
+		if req.Duration < 0 || req.Duration > relaycommon.MaxTaskDurationSeconds {
+			return service.TaskErrorWrapperLocal(fmt.Errorf("duration must be between 0 and %d", relaycommon.MaxTaskDurationSeconds), "invalid_request", http.StatusBadRequest)
+		}
+		if _, _, err := resolveSeedanceDimensions(&req); err != nil {
+			return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
+		}
+
+		info.Action = constant.TaskActionGenerate
+		c.Set("task_request", req)
+		return nil
+	}
+
+	if taskErr := relaycommon.ValidateBasicTaskRequest(c, info, constant.TaskActionGenerate); taskErr != nil {
+		return taskErr
+	}
+
+	req, err := relaycommon.GetTaskRequest(c)
+	if err != nil {
+		return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
+	}
+	if _, _, err := resolveSeedanceDimensions(&req); err != nil {
+		return service.TaskErrorWrapperLocal(err, "invalid_request", http.StatusBadRequest)
+	}
+
+	return nil
 }
 
 // BuildRequestURL constructs the upstream URL.
 func (a *TaskAdaptor) BuildRequestURL(_ *relaycommon.RelayInfo) (string, error) {
-	return fmt.Sprintf("%s/api/v3/contents/generations/tasks", a.baseURL), nil
+	return buildTaskURL(a.baseURL), nil
+}
+
+func buildTaskURL(baseURL string) string {
+	baseURL = strings.TrimRight(baseURL, "/")
+	if strings.HasSuffix(baseURL, "/api/plan") {
+		return fmt.Sprintf("%s/v3/contents/generations/tasks", baseURL)
+	}
+	return fmt.Sprintf("%s/api/v3/contents/generations/tasks", baseURL)
 }
 
 // BuildRequestHeader sets required headers.
@@ -141,8 +242,11 @@ func (a *TaskAdaptor) EstimateBilling(c *gin.Context, info *relaycommon.RelayInf
 	if err != nil {
 		return nil
 	}
-	hasVideo := hasVideoInMetadata(req.Metadata)
-	resolution, _ := req.Metadata["resolution"].(string)
+	resolution, _, err := resolveSeedanceDimensions(&req)
+	if err != nil {
+		return nil
+	}
+	hasVideo := hasVideoInMetadata(req.Metadata) || hasVideoInContent(req.Extra["content"])
 	ratio, ok := GetVideoInputRatio(info.OriginModelName, resolution, hasVideo)
 	if !ok || ratio == 1.0 {
 		return nil
@@ -160,6 +264,10 @@ func hasVideoInMetadata(metadata map[string]interface{}) bool {
 	if !ok {
 		return false
 	}
+	return hasVideoInContent(contentRaw)
+}
+
+func hasVideoInContent(contentRaw any) bool {
 	contentSlice, ok := contentRaw.([]interface{})
 	if !ok {
 		return false
@@ -179,6 +287,67 @@ func hasVideoInMetadata(metadata map[string]interface{}) bool {
 	return false
 }
 
+func resolveSeedanceDimensions(req *relaycommon.TaskSubmitReq) (string, string, error) {
+	resolution, _ := req.Metadata["resolution"].(string)
+	ratio, _ := req.Metadata["ratio"].(string)
+	if explicitResolution, ok := req.Extra["resolution"].(string); ok && explicitResolution != "" {
+		resolution = explicitResolution
+	}
+	if explicitRatio, ok := req.Extra["ratio"].(string); ok && explicitRatio != "" {
+		ratio = explicitRatio
+	}
+
+	widthValue, hasWidth := req.Extra["width"]
+	heightValue, hasHeight := req.Extra["height"]
+	if (!hasWidth && !hasHeight) || (resolution != "" && ratio != "") {
+		return resolution, ratio, nil
+	}
+	if !hasWidth || !hasHeight {
+		return "", "", fmt.Errorf("Seedance width and height must be specified together")
+	}
+
+	width, widthErr := strconv.Atoi(common.Interface2String(widthValue))
+	height, heightErr := strconv.Atoi(common.Interface2String(heightValue))
+	if widthErr != nil || heightErr != nil {
+		return "", "", fmt.Errorf("invalid Seedance dimensions %v x %v", widthValue, heightValue)
+	}
+
+	switch {
+	case width == 1920 && height == 1080:
+		if resolution == "" {
+			resolution = "1080p"
+		}
+		if ratio == "" {
+			ratio = "16:9"
+		}
+	case width == 1080 && height == 1920:
+		if resolution == "" {
+			resolution = "1080p"
+		}
+		if ratio == "" {
+			ratio = "9:16"
+		}
+	case width == 1280 && height == 720:
+		if resolution == "" {
+			resolution = "720p"
+		}
+		if ratio == "" {
+			ratio = "16:9"
+		}
+	case width == 720 && height == 1280:
+		if resolution == "" {
+			resolution = "720p"
+		}
+		if ratio == "" {
+			ratio = "9:16"
+		}
+	default:
+		return "", "", fmt.Errorf("unsupported Seedance dimensions %dx%d", width, height)
+	}
+
+	return resolution, ratio, nil
+}
+
 // BuildRequestBody converts request into Doubao specific format.
 func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayInfo) (io.Reader, error) {
 	req, err := relaycommon.GetTaskRequest(c)
@@ -186,7 +355,12 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 		return nil, err
 	}
 
-	body, err := a.convertToRequestPayload(&req)
+	var body *requestPayload
+	if common.GetContextKeyBool(c, constant.ContextKeyNativeSeedanceResponse) {
+		body, err = a.convertToNativeRequestPayload(&req)
+	} else {
+		body, err = a.convertToRequestPayload(&req)
+	}
 	if err != nil {
 		return nil, errors.Wrap(err, "convert request payload failed")
 	}
@@ -202,19 +376,41 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 	return bytes.NewReader(data), nil
 }
 
+func (a *TaskAdaptor) convertToNativeRequestPayload(req *relaycommon.TaskSubmitReq) (*requestPayload, error) {
+	payload, err := a.convertToRequestPayload(req)
+	if err != nil {
+		return nil, err
+	}
+	contentRaw, ok := req.Extra["content"]
+	if !ok {
+		return nil, fmt.Errorf("content is required")
+	}
+	contentJSON, err := common.Marshal(contentRaw)
+	if err != nil {
+		return nil, err
+	}
+	var content []any
+	if err := common.Unmarshal(contentJSON, &content); err != nil {
+		return nil, fmt.Errorf("content must be an array: %w", err)
+	}
+	payload.NativeContent = content
+	return payload, nil
+}
+
 // DoRequest delegates to common helper.
 func (a *TaskAdaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (*http.Response, error) {
 	return channel.DoTaskApiRequest(a, c, info, requestBody)
 }
 
 // DoResponse handles upstream response, returns taskID etc.
-func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (taskID string, taskData []byte, taskErr *taskdto.TaskError) {
+func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (taskID string, taskData []byte, taskErr *dto.TaskError) {
+	defer resp.Body.Close()
+
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		taskErr = service.TaskErrorWrapper(err, "read_response_body_failed", http.StatusInternalServerError)
 		return
 	}
-	_ = resp.Body.Close()
 
 	// Parse Doubao response
 	var dResp responsePayload
@@ -226,6 +422,10 @@ func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *rela
 	if dResp.ID == "" {
 		taskErr = service.TaskErrorWrapper(fmt.Errorf("task_id is empty"), "invalid_response", http.StatusInternalServerError)
 		return
+	}
+	if common.GetContextKeyBool(c, constant.ContextKeyNativeSeedanceResponse) {
+		c.JSON(http.StatusOK, responsePayload{ID: info.PublicTaskID})
+		return dResp.ID, responseBody, nil
 	}
 
 	ov := dto.NewOpenAIVideo()
@@ -245,7 +445,7 @@ func (a *TaskAdaptor) FetchTask(baseUrl, key string, body map[string]any, proxy 
 		return nil, fmt.Errorf("invalid task_id")
 	}
 
-	uri := fmt.Sprintf("%s/api/v3/contents/generations/tasks/%s", baseUrl, taskID)
+	uri := fmt.Sprintf("%s/%s", buildTaskURL(baseUrl), taskID)
 
 	req, err := http.NewRequest(http.MethodGet, uri, nil)
 	if err != nil {
@@ -289,13 +489,56 @@ func (a *TaskAdaptor) convertToRequestPayload(req *relaycommon.TaskSubmitReq) (*
 		}
 	}
 
-	metadata := req.Metadata
+	metadata := make(map[string]any, len(req.Metadata))
+	for key, value := range req.Metadata {
+		switch key {
+		case "model", "duration", "content":
+			continue
+		}
+		metadata[key] = value
+	}
 	if err := taskcommon.UnmarshalMetadata(metadata, &r); err != nil {
 		return nil, errors.Wrap(err, "unmarshal metadata failed")
 	}
+	if contentRaw, ok := req.Metadata["content"]; ok {
+		contentJSON, err := common.Marshal(contentRaw)
+		if err != nil {
+			return nil, errors.Wrap(err, "marshal metadata content failed")
+		}
+		var metadataContent []ContentItem
+		if err := common.Unmarshal(contentJSON, &metadataContent); err != nil {
+			return nil, errors.Wrap(err, "unmarshal metadata content failed")
+		}
+		for _, content := range metadataContent {
+			switch content.Type {
+			case "image_url", "video_url", "audio_url":
+				r.Content = append(r.Content, content)
+			}
+		}
+	}
 
-	if sec, _ := strconv.Atoi(req.Seconds); sec > 0 {
-		r.Duration = lo.ToPtr(dto.IntValue(sec))
+	resolution, ratio, err := resolveSeedanceDimensions(req)
+	if err != nil {
+		return nil, err
+	}
+	r.Resolution = resolution
+	r.Ratio = ratio
+	if len(req.Extra) > 0 {
+		r.Extra = make(map[string]any, len(req.Extra))
+		for key, value := range req.Extra {
+			if key == "width" || key == "height" {
+				continue
+			}
+			r.Extra[key] = value
+		}
+	}
+
+	duration := req.Duration
+	if duration == 0 {
+		duration, _ = strconv.Atoi(req.Seconds)
+	}
+	if duration != 0 {
+		r.Duration = lo.ToPtr(dto.IntValue(duration))
 	}
 
 	r.Content = lo.Reject(r.Content, func(c ContentItem, _ int) bool { return c.Type == "text" })

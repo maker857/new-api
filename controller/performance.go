@@ -13,6 +13,8 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 )
 
@@ -262,6 +264,179 @@ func GetLogFiles(c *gin.Context) {
 		resp.NewestTime = &newest
 	}
 	common.ApiSuccess(c, resp)
+}
+
+func GetDiagnosticCaptureStorage(c *gin.Context) {
+	status, err := service.GetDiagnosticCaptureStorageStatus()
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, status)
+}
+
+// DiagnosticCaptureSettingsRequest contains the complete set of options that
+// control diagnostic capture. Keeping this as one request prevents a partially
+// saved capture configuration when validation or persistence fails.
+type DiagnosticCaptureSettingsRequest struct {
+	Enabled                      bool    `json:"enabled"`
+	CaptureDir                   string  `json:"capture_dir"`
+	TempDir                      string  `json:"temp_dir"`
+	TempRetentionMinutes         int64   `json:"temp_retention_minutes"`
+	AutoCleanupEnabled           bool    `json:"auto_cleanup_enabled"`
+	MaxStorageBytes              int64   `json:"max_storage_bytes"`
+	CleanupPercent               int64   `json:"cleanup_percent"`
+	CleanupRateMB                int64   `json:"cleanup_rate_mb"`
+	MinRetentionMinutes          int64   `json:"min_retention_minutes"`
+	IncompleteTimeoutMinutes     int64   `json:"incomplete_timeout_minutes"`
+	Paths                        string  `json:"paths"`
+	ErrorRewriteEnabled          *bool   `json:"error_rewrite_enabled"`
+	ErrorRewriteSource           *string `json:"error_rewrite_source"`
+	ErrorRewriteSyncToken        *string `json:"error_rewrite_sync_token"`
+	ErrorRewriteRulesJSON        *string `json:"error_rewrite_rules_json"`
+	ErrorRewriteRulesURL         *string `json:"error_rewrite_rules_url"`
+	ErrorRewriteFallbackMessage  *string `json:"error_rewrite_fallback_message"`
+	ErrorRewriteRefreshSeconds   *int64  `json:"error_rewrite_refresh_seconds"`
+	ErrorRewriteRequestTimeoutMS *int64  `json:"error_rewrite_request_timeout_ms"`
+	ErrorRewriteSQLDriver        *string `json:"error_rewrite_sql_driver"`
+	ErrorRewriteSQLQuery         *string `json:"error_rewrite_sql_query"`
+}
+
+func UpdateDiagnosticCaptureSettings(c *gin.Context) {
+	var request DiagnosticCaptureSettingsRequest
+	if err := common.DecodeJson(c.Request.Body, &request); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	const maxRetentionMinutes = int64(24 * 365 * 10 * 60)
+	if strings.TrimSpace(request.CaptureDir) == "" {
+		common.ApiErrorMsg(c, "diagnostic capture directory cannot be empty")
+		return
+	}
+	if strings.TrimSpace(request.TempDir) == "" {
+		common.ApiErrorMsg(c, "diagnostic capture temporary directory cannot be empty")
+		return
+	}
+	if err := service.ValidateDiagnosticCaptureDirectories(request.CaptureDir, request.TempDir); err != nil {
+		common.ApiErrorMsg(c, err.Error())
+		return
+	}
+	if request.TempRetentionMinutes < 1 || request.TempRetentionMinutes > maxRetentionMinutes {
+		common.ApiErrorMsg(c, "diagnostic capture temporary file retention must be between 1 and 5256000 minutes")
+		return
+	}
+	if request.MaxStorageBytes < 0 || request.MaxStorageBytes > int64(10)<<40 {
+		common.ApiErrorMsg(c, "diagnostic capture storage limit must be between 0 and 10 TB")
+		return
+	}
+	if request.CleanupPercent < 0 || request.CleanupPercent > 90 {
+		common.ApiErrorMsg(c, "diagnostic capture cleanup percentage must be between 0 and 90")
+		return
+	}
+	if request.CleanupRateMB < 0 || request.CleanupRateMB > 10240 {
+		common.ApiErrorMsg(c, "diagnostic capture cleanup rate must be between 0 and 10240 MB/s")
+		return
+	}
+	if request.MinRetentionMinutes < 0 || request.MinRetentionMinutes > maxRetentionMinutes {
+		common.ApiErrorMsg(c, "diagnostic capture minimum retention must be between 0 and 5256000 minutes")
+		return
+	}
+	if request.IncompleteTimeoutMinutes < 0 || request.IncompleteTimeoutMinutes > maxRetentionMinutes {
+		common.ApiErrorMsg(c, "diagnostic capture incomplete timeout must be between 0 and 5256000 minutes")
+		return
+	}
+	if request.ErrorRewriteRulesJSON != nil {
+		if _, err := service.ParseErrorRewriteRulesJSON(*request.ErrorRewriteRulesJSON); err != nil {
+			common.ApiErrorMsg(c, "error rewrite rules JSON is invalid: "+err.Error())
+			return
+		}
+	}
+	if request.ErrorRewriteSource != nil {
+		source := strings.ToLower(strings.TrimSpace(*request.ErrorRewriteSource))
+		if source != "local" && source != "http" && source != "sql" {
+			common.ApiErrorMsg(c, "error rewrite source must be local, http, or sql")
+			return
+		}
+	}
+	if request.ErrorRewriteSQLDriver != nil {
+		driver := strings.ToLower(strings.TrimSpace(*request.ErrorRewriteSQLDriver))
+		if driver != "mysql" && driver != "postgres" && driver != "postgresql" && driver != "sqlite" {
+			common.ApiErrorMsg(c, "error rewrite SQL driver must be mysql, postgres, or sqlite")
+			return
+		}
+	}
+	if request.ErrorRewriteSQLQuery != nil {
+		query := strings.ToLower(strings.TrimSpace(*request.ErrorRewriteSQLQuery))
+		if query != "" && !strings.HasPrefix(query, "select") {
+			common.ApiErrorMsg(c, "error rewrite SQL query must be a SELECT statement")
+			return
+		}
+	}
+	if request.ErrorRewriteRefreshSeconds != nil && *request.ErrorRewriteRefreshSeconds < 1 {
+		common.ApiErrorMsg(c, "error rewrite refresh interval must be greater than 0")
+		return
+	}
+	if request.ErrorRewriteRequestTimeoutMS != nil && *request.ErrorRewriteRequestTimeoutMS < 100 {
+		common.ApiErrorMsg(c, "error rewrite request timeout must be at least 100ms")
+		return
+	}
+
+	values := map[string]string{
+		service.DiagnosticCaptureEnabledKey:                  strconv.FormatBool(request.Enabled),
+		service.DiagnosticCaptureModeKey:                     "full",
+		service.DiagnosticCaptureDirKey:                      strings.TrimSpace(request.CaptureDir),
+		service.DiagnosticCaptureTempDirKey:                  strings.TrimSpace(request.TempDir),
+		service.DiagnosticCaptureTempRetentionMinutesKey:     strconv.FormatInt(request.TempRetentionMinutes, 10),
+		service.DiagnosticCaptureAutoCleanupEnabledKey:       strconv.FormatBool(request.AutoCleanupEnabled),
+		service.DiagnosticCaptureMaxStorageBytesKey:          strconv.FormatInt(request.MaxStorageBytes, 10),
+		service.DiagnosticCaptureCleanupPercentKey:           strconv.FormatInt(request.CleanupPercent, 10),
+		service.DiagnosticCaptureCleanupRateMBKey:            strconv.FormatInt(request.CleanupRateMB, 10),
+		service.DiagnosticCaptureMinRetentionMinutesKey:      strconv.FormatInt(request.MinRetentionMinutes, 10),
+		service.DiagnosticCaptureIncompleteTimeoutMinutesKey: strconv.FormatInt(request.IncompleteTimeoutMinutes, 10),
+		service.DiagnosticCaptureMinRetentionHoursKey:        strconv.FormatInt(request.MinRetentionMinutes/60, 10),
+		service.DiagnosticCaptureIncompleteTimeoutHoursKey:   strconv.FormatInt(request.IncompleteTimeoutMinutes/60, 10),
+		service.DiagnosticCaptureNextCleanupEligibleAtKey:    "0",
+		service.DiagnosticCapturePathsKey:                    strings.TrimSpace(request.Paths),
+	}
+	if request.ErrorRewriteEnabled != nil {
+		values[service.ErrorRewriteEnabledKey] = strconv.FormatBool(*request.ErrorRewriteEnabled)
+	}
+	if request.ErrorRewriteSource != nil {
+		values[service.ErrorRewriteSourceKey] = strings.ToLower(strings.TrimSpace(*request.ErrorRewriteSource))
+	}
+	if request.ErrorRewriteSyncToken != nil {
+		values[service.ErrorRewriteSyncTokenKey] = strings.TrimSpace(*request.ErrorRewriteSyncToken)
+	}
+	if request.ErrorRewriteRulesJSON != nil {
+		values[service.ErrorRewriteRulesJSONKey] = strings.TrimSpace(*request.ErrorRewriteRulesJSON)
+	}
+	if request.ErrorRewriteRulesURL != nil {
+		values[service.ErrorRewriteRulesURLKey] = strings.TrimSpace(*request.ErrorRewriteRulesURL)
+	}
+	if request.ErrorRewriteFallbackMessage != nil {
+		values[service.ErrorRewriteFallbackMessageKey] = strings.TrimSpace(*request.ErrorRewriteFallbackMessage)
+	}
+	if request.ErrorRewriteRefreshSeconds != nil {
+		values[service.ErrorRewriteRefreshSecondsKey] = strconv.FormatInt(*request.ErrorRewriteRefreshSeconds, 10)
+	}
+	if request.ErrorRewriteRequestTimeoutMS != nil {
+		values[service.ErrorRewriteRequestTimeoutMSKey] = strconv.FormatInt(*request.ErrorRewriteRequestTimeoutMS, 10)
+	}
+	if request.ErrorRewriteSQLDriver != nil {
+		values[service.ErrorRewriteSQLDriverKey] = strings.ToLower(strings.TrimSpace(*request.ErrorRewriteSQLDriver))
+	}
+	if request.ErrorRewriteSQLQuery != nil {
+		values[service.ErrorRewriteSQLQueryKey] = strings.TrimSpace(*request.ErrorRewriteSQLQuery)
+	}
+	if err := model.UpdateOptionsBulk(values); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	service.NotifyDiagnosticCaptureCleanupSettingsChanged()
+
+	recordManageAudit(c, "diagnostic_capture.settings.update", nil)
+	common.ApiSuccess(c, request)
 }
 
 // CleanupLogFiles 清理过期日志文件

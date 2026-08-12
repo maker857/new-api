@@ -58,6 +58,7 @@ type ResponsesUsageInfo struct {
 type ChannelMeta struct {
 	ChannelType          int
 	ChannelId            int
+	ChannelName          string
 	ChannelIsMultiKey    bool
 	ChannelMultiKeyIndex int
 	ChannelBaseUrl       string
@@ -193,6 +194,7 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	channelMeta := &ChannelMeta{
 		ChannelType:          channelType,
 		ChannelId:            common.GetContextKeyInt(c, constant.ContextKeyChannelId),
+		ChannelName:          common.GetContextKeyString(c, constant.ContextKeyChannelName),
 		ChannelIsMultiKey:    common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey),
 		ChannelMultiKeyIndex: common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex),
 		ChannelBaseUrl:       common.GetContextKeyString(c, constant.ContextKeyChannelBaseUrl),
@@ -386,6 +388,18 @@ func GenRelayInfoOpenAIAudio(c *gin.Context, request dto.Request) *RelayInfo {
 	return info
 }
 
+func GenRelayInfoVolcengineTTSNative(c *gin.Context, request dto.Request) *RelayInfo {
+	info := genBaseRelayInfo(c, request)
+	info.RelayFormat = types.RelayFormatVolcengineTTSNative
+	return info
+}
+
+func GenRelayInfoVolcengineASRNative(c *gin.Context, request dto.Request) *RelayInfo {
+	info := genBaseRelayInfo(c, request)
+	info.RelayFormat = types.RelayFormatVolcengineASRNative
+	return info
+}
+
 func GenRelayInfoEmbedding(c *gin.Context, request dto.Request) *RelayInfo {
 	info := genBaseRelayInfo(c, request)
 	info.RelayFormat = types.RelayFormatEmbedding
@@ -564,6 +578,9 @@ func cloneRequestHeaders(c *gin.Context) map[string]string {
 	}
 	headers := make(map[string]string, len(c.Request.Header))
 	for key := range c.Request.Header {
+		if strings.EqualFold(key, "X-Diagnostic-Trace-Id") || strings.EqualFold(key, "X-Diagnostic-Channel") {
+			continue
+		}
 		value := strings.TrimSpace(c.Request.Header.Get(key))
 		if value == "" {
 			continue
@@ -584,6 +601,10 @@ func GenRelayInfo(c *gin.Context, relayFormat types.RelayFormat, request dto.Req
 		info = GenRelayInfoOpenAI(c, request)
 	case types.RelayFormatOpenAIAudio:
 		info = GenRelayInfoOpenAIAudio(c, request)
+	case types.RelayFormatVolcengineTTSNative:
+		info = GenRelayInfoVolcengineTTSNative(c, request)
+	case types.RelayFormatVolcengineASRNative:
+		info = GenRelayInfoVolcengineASRNative(c, request)
 	case types.RelayFormatOpenAIImage:
 		info = GenRelayInfoImage(c, request)
 	case types.RelayFormatOpenAIRealtime:
@@ -876,6 +897,7 @@ type TaskSubmitReq struct {
 	Seconds        string                 `json:"seconds,omitempty"`
 	InputReference string                 `json:"input_reference,omitempty"`
 	Metadata       map[string]interface{} `json:"metadata,omitempty"`
+	Extra          map[string]interface{} `json:"-"`
 }
 
 func (t *TaskSubmitReq) GetPrompt() string {
@@ -920,7 +942,6 @@ func (t *TaskSubmitReq) UnmarshalJSON(data []byte) error {
 			var metadataObj map[string]interface{}
 			if err := common.Unmarshal([]byte(metadataStr), &metadataObj); err == nil {
 				t.Metadata = metadataObj
-				return nil
 			}
 		}
 
@@ -928,6 +949,20 @@ func (t *TaskSubmitReq) UnmarshalJSON(data []byte) error {
 		if err := common.Unmarshal(aux.Metadata, &metadataObj); err == nil {
 			t.Metadata = metadataObj
 		}
+	}
+
+	var fields map[string]interface{}
+	if err := common.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	for _, key := range []string{
+		"prompt", "model", "mode", "image", "images", "size", "duration",
+		"seconds", "input_reference", "metadata",
+	} {
+		delete(fields, key)
+	}
+	if len(fields) > 0 {
+		t.Extra = fields
 	}
 
 	return nil

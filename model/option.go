@@ -176,6 +176,9 @@ func InitOptionMap() {
 	common.OptionMap["AutomaticDisableStatusCodes"] = operation_setting.AutomaticDisableStatusCodesToString()
 	common.OptionMap["AutomaticRetryStatusCodes"] = operation_setting.AutomaticRetryStatusCodesToString()
 	common.OptionMap["ExposeRatioEnabled"] = strconv.FormatBool(ratio_setting.IsExposeRatioEnabled())
+	for k, v := range defaultDiagnosticOptions() {
+		common.OptionMap[k] = v
+	}
 
 	// 自动添加所有注册的模型配置
 	modelConfigs := config.GlobalConfig.ExportAllConfigs()
@@ -194,6 +197,41 @@ func loadOptionsFromDatabase() {
 		if err != nil {
 			common.SysLog("failed to update option map: " + err.Error())
 		}
+	}
+}
+
+func defaultDiagnosticOptions() map[string]string {
+	return map[string]string{
+		"DiagnosticCaptureEnabled":                  "false",
+		"DiagnosticCaptureMode":                     "full",
+		"DiagnosticCaptureDir":                      "captures",
+		"DiagnosticCaptureTempDir":                  "diagnostic-capture-temp",
+		"DiagnosticCaptureTempRetentionMinutes":     "60",
+		"DiagnosticCaptureMaxBodyMB":                "10",
+		"DiagnosticCaptureAutoCleanupEnabled":       "false",
+		"DiagnosticCaptureMaxStorageBytes":          "0",
+		"DiagnosticCaptureCleanupPercent":           "0",
+		"DiagnosticCaptureCleanupRateMB":            "0",
+		"DiagnosticCaptureMinRetentionMinutes":      "0",
+		"DiagnosticCaptureIncompleteTimeoutMinutes": "1440",
+		"DiagnosticCaptureMinRetentionHours":        "0",
+		"DiagnosticCaptureIncompleteTimeoutHours":   "24",
+		"DiagnosticCapturePaths":                    "/v1/*,/v1beta/*,/pg/*,/mj/*,*/mj/*,/suno/*,/kling/v1/*,/jimeng/*",
+		"ErrorRewriteEnabled":                       "false",
+		"ErrorRewriteSource":                        "local",
+		"ErrorRewriteRulesJSON":                     "[]",
+		"ErrorRewriteMonitorRulesJSON":              "[]",
+		"ErrorRewriteMonitorRulesVersion":           "0",
+		"ErrorRewriteMonitorLastSyncAt":             "0",
+		"ErrorRewriteMonitorLastPullAt":             "0",
+		"ErrorRewriteSyncToken":                     "",
+		"ErrorRewriteRulesURL":                      "",
+		"ErrorRewriteFallbackMessage":               "request blocked by monitoring system",
+		"ErrorRewriteRefreshSeconds":                "60",
+		"ErrorRewriteRequestTimeoutMS":              "3000",
+		"ErrorRewriteSQLDriver":                     "mysql",
+		"ErrorRewriteSQLDSN":                        "",
+		"ErrorRewriteSQLQuery":                      "SELECT keyword, rule_type FROM error_rewrite_rules WHERE enabled = 1",
 	}
 }
 

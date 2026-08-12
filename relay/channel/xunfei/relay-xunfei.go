@@ -13,9 +13,10 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/relay/helper"
-	"github.com/QuantumNous/new-api/relaykit/dto"
-	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/types"
 	"github.com/samber/lo"
 
 	"github.com/gin-gonic/gin"
@@ -130,7 +131,7 @@ func buildXunfeiAuthUrl(hostUrl string, apiKey, apiSecret string) string {
 
 func xunfeiStreamHandler(c *gin.Context, textRequest dto.GeneralOpenAIRequest, appId string, apiSecret string, apiKey string) (*dto.Usage, *types.NewAPIError) {
 	domain, authUrl := getXunfeiAuthUrl(c, apiKey, apiSecret, textRequest.Model)
-	dataChan, stopChan, err := xunfeiMakeRequest(textRequest, domain, authUrl, appId)
+	dataChan, stopChan, err := xunfeiMakeRequest(c, textRequest, domain, authUrl, appId)
 	if err != nil {
 		return nil, types.NewError(err, types.ErrorCodeDoRequestFailed)
 	}
@@ -160,7 +161,7 @@ func xunfeiStreamHandler(c *gin.Context, textRequest dto.GeneralOpenAIRequest, a
 
 func xunfeiHandler(c *gin.Context, textRequest dto.GeneralOpenAIRequest, appId string, apiSecret string, apiKey string) (*dto.Usage, *types.NewAPIError) {
 	domain, authUrl := getXunfeiAuthUrl(c, apiKey, apiSecret, textRequest.Model)
-	dataChan, stopChan, err := xunfeiMakeRequest(textRequest, domain, authUrl, appId)
+	dataChan, stopChan, err := xunfeiMakeRequest(c, textRequest, domain, authUrl, appId)
 	if err != nil {
 		return nil, types.NewError(err, types.ErrorCodeDoRequestFailed)
 	}
@@ -200,20 +201,47 @@ func xunfeiHandler(c *gin.Context, textRequest dto.GeneralOpenAIRequest, appId s
 	return &usage, nil
 }
 
-func xunfeiMakeRequest(textRequest dto.GeneralOpenAIRequest, domain, authUrl, appId string) (chan XunfeiChatResponse, chan bool, error) {
+func xunfeiMakeRequest(c *gin.Context, textRequest dto.GeneralOpenAIRequest, domain, authUrl, appId string) (chan XunfeiChatResponse, chan bool, error) {
 	d := websocket.Dialer{
 		HandshakeTimeout: 5 * time.Second,
 	}
+	upstreamURL := strings.Split(authUrl, "?")[0]
+	_, diagnosticFlow := service.PrepareDiagnosticOutboundRequest(c, nil, "GET", upstreamURL, nil, nil)
 	conn, resp, err := d.Dial(authUrl, nil)
-	if err != nil || resp.StatusCode != 101 {
+	if err != nil {
+		service.RecordDiagnosticOutboundFailure(diagnosticFlow, err)
 		return nil, nil, err
 	}
+	if resp == nil || resp.StatusCode != 101 {
+		status := 0
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		service.RecordDiagnosticOutboundResponseMetadata(diagnosticFlow, status, nil)
+		return nil, nil, fmt.Errorf("unexpected websocket handshake status: %d", status)
+	}
+	service.RecordDiagnosticOutboundResponseMetadata(diagnosticFlow, resp.StatusCode, resp.Header)
 
 	data := requestOpenAI2Xunfei(textRequest, appId, domain)
-	err = conn.WriteJSON(data)
+	payload, marshalErr := common.Marshal(data)
+	if marshalErr != nil {
+		service.RecordDiagnosticWebSocketFailure(c, upstreamURL, marshalErr)
+		return nil, nil, marshalErr
+	}
+	// gorilla/websocket.WriteJSON uses encoding/json.Encoder, which writes a
+	// trailing newline after the JSON value. Preserve that wire representation
+	// so the sidecar captures the exact bytes sent upstream.
+	payload = append(payload, '\n')
+	err = conn.WriteMessage(websocket.TextMessage, payload)
 	if err != nil {
+		// The write reached the transport layer but did not complete. Preserve
+		// the exact attempted frame and its failure without changing the error
+		// returned to the relay handler.
+		service.RecordDiagnosticWebSocketFrame(c, upstreamURL, "request", payload)
+		service.RecordDiagnosticWebSocketFailure(c, upstreamURL, err)
 		return nil, nil, err
 	}
+	service.RecordDiagnosticWebSocketFrame(c, upstreamURL, "request", payload)
 
 	dataChan := make(chan XunfeiChatResponse)
 	stopChan := make(chan bool)
@@ -227,6 +255,7 @@ func xunfeiMakeRequest(textRequest dto.GeneralOpenAIRequest, domain, authUrl, ap
 				common.SysLog("error reading stream response: " + err.Error())
 				break
 			}
+			service.RecordDiagnosticWebSocketFrame(c, upstreamURL, "response", msg)
 			var response XunfeiChatResponse
 			err = json.Unmarshal(msg, &response)
 			if err != nil {

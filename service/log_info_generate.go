@@ -266,6 +266,12 @@ func GenerateAudioOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, 
 	info["text_output"] = usage.CompletionTokenDetails.TextTokens
 	info["audio_ratio"] = audioRatio
 	info["audio_completion_ratio"] = audioCompletionRatio
+	if relayInfo != nil && relayInfo.ChannelMeta != nil && relayInfo.ChannelType == constant.ChannelTypeVolcEngine {
+		if config := relayInfo.ChannelOtherSettings.VolcTTS; config != nil && config.IsV3() {
+			info["volc_tts_protocol"] = config.EffectiveProtocol()
+			info["volc_tts_resource_id"] = config.ResourceID
+		}
+	}
 	return info
 }
 

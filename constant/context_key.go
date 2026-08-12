@@ -68,6 +68,10 @@ const (
 	ContextKeyLanguage ContextKey = "language"
 	ContextKeyIsStream ContextKey = "is_stream"
 
+	// ContextKeyNativeSeedanceResponse selects the Volcengine-native response
+	// body for a Seedance task submission.
+	ContextKeyNativeSeedanceResponse ContextKey = "native_seedance_response"
+
 	// ContextKeyAuditLogged marks that the current request has already recorded
 	// a manage/operation audit log inside the handler. When set, the admin-audit
 	// fallback in authHelper (finishAdminAudit) skips its record to avoid

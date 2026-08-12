@@ -19,7 +19,6 @@ For commercial licensing, please contact support@quantumnous.com
 import { z } from 'zod'
 
 import {
-  CHANNEL_TYPE_NEW_API,
   CHANNEL_STATUS,
   ERROR_MESSAGES,
   MODEL_FETCHABLE_TYPES,
@@ -33,6 +32,18 @@ import {
   stringifyAdvancedCustomConfig,
   validateAdvancedCustomConfig,
 } from './advanced-custom'
+import {
+  parseVolcASRSettings,
+  serializeVolcASRSettings,
+  VOLC_ASR_AUTH_MODES,
+  VOLC_ASR_PROTOCOLS,
+} from './volcengine-asr'
+import {
+  parseVolcTTSSettings,
+  serializeVolcTTSSettings,
+  VOLC_TTS_AUTH_MODES,
+  VOLC_TTS_PROTOCOLS,
+} from './volcengine-tts'
 
 // ============================================================================
 // Form Validation Schema
@@ -68,37 +79,6 @@ function isOptionalProxyURL(value: string | undefined): boolean {
   } catch {
     return false
   }
-}
-
-export const HTTP_PROTOCOL_AUTO = 'auto'
-export const HTTP_PROTOCOL_HTTP1 = 'http1'
-export const MAX_HTTP2_CONNECTION_SHARDS = 8
-
-export function normalizeHttpProtocol(
-  value: string | undefined | null
-): 'auto' | 'http1' {
-  const normalized = String(value || '')
-    .trim()
-    .toLowerCase()
-  if (normalized === HTTP_PROTOCOL_HTTP1) {
-    return HTTP_PROTOCOL_HTTP1
-  }
-  return HTTP_PROTOCOL_AUTO
-}
-
-export function normalizeHttp2ConnectionShards(
-  value: number | undefined | null
-): number {
-  if (value == null || Number.isNaN(value) || value === 0) {
-    return 1
-  }
-  if (value < 1) {
-    return 1
-  }
-  if (value > MAX_HTTP2_CONNECTION_SHARDS) {
-    return MAX_HTTP2_CONNECTION_SHARDS
-  }
-  return value
 }
 
 function parseOptionalJson(value: string | undefined): unknown {
@@ -256,16 +236,24 @@ export const channelFormSchema = z
       .string()
       .optional()
       .refine(isOptionalProxyURL, ERROR_MESSAGES.INVALID_PROXY),
-    http_protocol: z.enum(['auto', 'http1']).optional(),
-    http2_connection_shards: z.number().int().optional(),
     pass_through_body_enabled: z.boolean().optional(),
     system_prompt: z.string().optional(),
     system_prompt_override: z.boolean().optional(),
+    error_rewrite_enabled: z.boolean().optional(),
+    diagnostic_capture_enabled: z.boolean().optional(),
     // Type-specific settings (stored in settings JSON)
     is_enterprise_account: z.boolean().optional(), // OpenRouter specific
     vertex_key_type: z.enum(['json', 'api_key']).optional(), // Vertex AI specific
     aws_key_type: z.enum(['ak_sk', 'api_key']).optional(), // AWS specific
     azure_responses_version: z.string().optional(), // Azure specific
+    volc_tts_protocol: z.enum(VOLC_TTS_PROTOCOLS).optional(),
+    volc_tts_resource_id: z.string().optional(),
+    volc_tts_auth_mode: z.enum(VOLC_TTS_AUTH_MODES).optional(),
+    volc_tts_require_usage: z.boolean().optional(),
+    volc_asr_enabled: z.boolean().optional(),
+    volc_asr_protocol: z.enum(VOLC_ASR_PROTOCOLS).optional(),
+    volc_asr_resource_id: z.string().optional(),
+    volc_asr_auth_mode: z.enum(VOLC_ASR_AUTH_MODES).optional(),
     // Field passthrough controls (stored in settings JSON)
     allow_service_tier: z.boolean().optional(), // OpenAI/Anthropic
     disable_store: z.boolean().optional(), // OpenAI only
@@ -281,10 +269,7 @@ export const channelFormSchema = z
     upstream_model_update_ignored_models: z.string().optional(),
   })
   .superRefine((data, ctx) => {
-    if (
-      [3, 8, 36, 45, CHANNEL_TYPE_NEW_API].includes(data.type) &&
-      !data.base_url?.trim()
-    ) {
+    if ([3, 8, 36, 45].includes(data.type) && !data.base_url?.trim()) {
       addRequiredIssue(
         ctx,
         'base_url',
@@ -374,21 +359,61 @@ export const channelFormSchema = z
       )
     }
 
-    const protocol = normalizeHttpProtocol(data.http_protocol)
-    const shards = data.http2_connection_shards ?? 1
-    if (shards < 1 || shards > MAX_HTTP2_CONNECTION_SHARDS) {
-      addRequiredIssue(
-        ctx,
-        'http2_connection_shards',
-        ERROR_MESSAGES.INVALID_HTTP2_CONNECTION_SHARDS
-      )
-    }
-    if (protocol === HTTP_PROTOCOL_HTTP1 && shards > 1) {
-      addRequiredIssue(
-        ctx,
-        'http2_connection_shards',
-        ERROR_MESSAGES.INVALID_HTTP1_WITH_SHARDS
-      )
+    if (data.type === 45) {
+      const protocol = data.volc_tts_protocol || 'v1_ws_binary'
+      const isV3 = protocol === 'v3_ws_uni' || protocol === 'v3_http_chunked'
+      if (isV3 && !data.volc_tts_resource_id?.trim()) {
+        addRequiredIssue(
+          ctx,
+          'volc_tts_resource_id',
+          'Resource ID is required for VolcEngine v3 TTS'
+        )
+      }
+      const key = data.key.trim()
+      if (isV3 && data.volc_tts_auth_mode === 'legacy' && key) {
+        const parts = key.split('|')
+        if (parts.length !== 2 || !parts[0]?.trim() || !parts[1]?.trim()) {
+          addRequiredIssue(
+            ctx,
+            'key',
+            'Legacy VolcEngine TTS credentials must use appid|access_token'
+          )
+        }
+      }
+      if (isV3 && data.volc_tts_auth_mode !== 'legacy' && key.includes('|')) {
+        addRequiredIssue(
+          ctx,
+          'key',
+          'New console VolcEngine TTS credentials must use a single API key'
+        )
+      }
+
+      if (data.volc_asr_enabled === true) {
+        if (!data.volc_asr_resource_id?.trim()) {
+          addRequiredIssue(
+            ctx,
+            'volc_asr_resource_id',
+            'Resource ID is required for VolcEngine v3 ASR'
+          )
+        }
+        if (data.volc_asr_auth_mode === 'legacy' && key) {
+          const parts = key.split('|')
+          if (parts.length !== 2 || !parts[0]?.trim() || !parts[1]?.trim()) {
+            addRequiredIssue(
+              ctx,
+              'key',
+              'Legacy VolcEngine ASR credentials must use appid|access_token'
+            )
+          }
+        }
+        if (data.volc_asr_auth_mode !== 'legacy' && key.includes('|')) {
+          addRequiredIssue(
+            ctx,
+            'key',
+            'New console VolcEngine ASR credentials must use a single API key'
+          )
+        }
+      }
     }
   })
 
@@ -428,16 +453,24 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   force_format: false,
   thinking_to_content: false,
   proxy: '',
-  http_protocol: HTTP_PROTOCOL_AUTO,
-  http2_connection_shards: 1,
   pass_through_body_enabled: false,
   system_prompt: '',
   system_prompt_override: false,
+  error_rewrite_enabled: false,
+  diagnostic_capture_enabled: false,
   // Type-specific settings
   is_enterprise_account: false,
   vertex_key_type: 'json',
   aws_key_type: 'ak_sk',
   azure_responses_version: '',
+  volc_tts_protocol: 'v1_ws_binary',
+  volc_tts_resource_id: '',
+  volc_tts_auth_mode: 'new_console',
+  volc_tts_require_usage: true,
+  volc_asr_enabled: false,
+  volc_asr_protocol: 'v3_auc',
+  volc_asr_resource_id: '',
+  volc_asr_auth_mode: 'new_console',
   // Field passthrough controls
   allow_service_tier: false,
   disable_store: false,
@@ -464,34 +497,33 @@ export function transformChannelToFormDefaults(
   channel: Channel
 ): ChannelFormValues {
   // Parse channel extra settings from setting field
+  const errorRewriteEnabled =
+    channel.channel_info?.error_rewrite_enabled === true
+  const diagnosticCaptureEnabled =
+    channel.channel_info?.diagnostic_capture_enabled === true
   let extraSettings = {
     force_format: false,
     thinking_to_content: false,
     proxy: '',
-    http_protocol: HTTP_PROTOCOL_AUTO as 'auto' | 'http1',
-    http2_connection_shards: 1,
     pass_through_body_enabled: false,
     system_prompt: '',
     system_prompt_override: false,
+    error_rewrite_enabled: errorRewriteEnabled,
+    diagnostic_capture_enabled: diagnosticCaptureEnabled,
   }
 
   if (channel.setting) {
     try {
       const parsed = JSON.parse(channel.setting)
-      const protocol = normalizeHttpProtocol(parsed.http_protocol)
-      const shards = normalizeHttp2ConnectionShards(
-        parsed.http2_connection_shards
-      )
       extraSettings = {
         force_format: parsed.force_format || false,
         thinking_to_content: parsed.thinking_to_content || false,
         proxy: parsed.proxy || '',
-        http_protocol: protocol,
-        http2_connection_shards:
-          protocol === HTTP_PROTOCOL_HTTP1 ? 1 : shards,
         pass_through_body_enabled: parsed.pass_through_body_enabled || false,
         system_prompt: parsed.system_prompt || '',
         system_prompt_override: parsed.system_prompt_override || false,
+        error_rewrite_enabled: errorRewriteEnabled,
+        diagnostic_capture_enabled: diagnosticCaptureEnabled,
       }
     } catch (error) {
       // eslint-disable-next-line no-console
@@ -516,6 +548,8 @@ export function transformChannelToFormDefaults(
   let upstreamModelUpdateAutoSyncEnabled = false
   let upstreamModelUpdateIgnoredModels = ''
   let advancedCustom = ''
+  const volcTTSDefaults = parseVolcTTSSettings(channel.settings)
+  const volcASRDefaults = parseVolcASRSettings(channel.settings)
 
   if (channel.settings) {
     try {
@@ -595,14 +629,16 @@ export function transformChannelToFormDefaults(
     upstream_model_update_auto_sync_enabled: upstreamModelUpdateAutoSyncEnabled,
     upstream_model_update_ignored_models: upstreamModelUpdateIgnoredModels,
     advanced_custom: advancedCustom,
+    ...volcTTSDefaults,
+    ...volcASRDefaults,
   }
 }
 
 /**
  * Build the setting JSON string from form extra settings
  */
-export function buildSettingJSON(formData: ChannelFormValues): string {
-  const settingObj: Record<string, unknown> = {
+function buildSettingJSON(formData: ChannelFormValues): string {
+  const settingObj = {
     force_format: formData.force_format || false,
     thinking_to_content: formData.thinking_to_content || false,
     proxy: formData.proxy?.trim() || '',
@@ -610,20 +646,6 @@ export function buildSettingJSON(formData: ChannelFormValues): string {
     system_prompt: formData.system_prompt || '',
     system_prompt_override: formData.system_prompt_override || false,
   }
-
-  const protocol = normalizeHttpProtocol(formData.http_protocol)
-  const shards =
-    protocol === HTTP_PROTOCOL_HTTP1
-      ? 1
-      : normalizeHttp2ConnectionShards(formData.http2_connection_shards)
-
-  // Omit defaults so unchanged channels keep equivalent JSON.
-  if (protocol === HTTP_PROTOCOL_HTTP1) {
-    settingObj.http_protocol = HTTP_PROTOCOL_HTTP1
-  } else if (shards > 1) {
-    settingObj.http2_connection_shards = shards
-  }
-
   return JSON.stringify(settingObj)
 }
 
@@ -756,7 +778,22 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
     delete settingsObj.advanced_custom
   }
 
-  return JSON.stringify(settingsObj)
+  const settingsWithTTS = serializeVolcTTSSettings(
+    JSON.stringify(settingsObj),
+    formData.type,
+    {
+      volc_tts_protocol: formData.volc_tts_protocol,
+      volc_tts_resource_id: formData.volc_tts_resource_id,
+      volc_tts_auth_mode: formData.volc_tts_auth_mode,
+      volc_tts_require_usage: formData.volc_tts_require_usage,
+    }
+  )
+  return serializeVolcASRSettings(settingsWithTTS, formData.type, {
+    volc_asr_enabled: formData.volc_asr_enabled,
+    volc_asr_protocol: formData.volc_asr_protocol,
+    volc_asr_resource_id: formData.volc_asr_resource_id,
+    volc_asr_auth_mode: formData.volc_asr_auth_mode,
+  })
 }
 
 function normalizeBaseUrl(value: string | undefined): string {
@@ -798,6 +835,14 @@ export function transformFormDataToCreatePayload(formData: ChannelFormValues): {
     header_override: formData.header_override || null,
     settings: buildSettingsJSON(formData),
     other: formData.other || '',
+    channel_info: {
+      is_multi_key: false,
+      multi_key_size: 0,
+      multi_key_polling_index: 0,
+      multi_key_mode: formData.multi_key_type || 'random',
+      error_rewrite_enabled: formData.error_rewrite_enabled === true,
+      diagnostic_capture_enabled: formData.diagnostic_capture_enabled === true,
+    },
   }
 
   // Clean up empty strings to null for optional fields
@@ -845,6 +890,14 @@ export function transformFormDataToUpdatePayload(
     header_override: formData.header_override || null,
     settings: buildSettingsJSON(formData),
     other: formData.other || '',
+    channel_info: {
+      is_multi_key: false,
+      multi_key_size: 0,
+      multi_key_polling_index: 0,
+      multi_key_mode: formData.multi_key_type || 'random',
+      error_rewrite_enabled: formData.error_rewrite_enabled === true,
+      diagnostic_capture_enabled: formData.diagnostic_capture_enabled === true,
+    },
   }
 
   // Only include key if it was changed (not empty)

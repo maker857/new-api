@@ -189,6 +189,8 @@ import {
   ChannelBasicSection,
   ChannelEditorLoadingState,
   ChannelModelsSection,
+  VolcEngineASRSection,
+  VolcEngineTTSSection,
 } from './sections'
 
 type ChannelMutateDrawerProps = {
@@ -2068,6 +2070,56 @@ export function ChannelMutateDrawer({
                           />
                         )}
 
+                        <FormField
+                          control={form.control}
+                          name='error_rewrite_enabled'
+                          render={({ field }) => (
+                            <FormItem
+                              className={sideDrawerSwitchItemClassName()}
+                            >
+                              <div className='flex flex-col gap-0.5'>
+                                <FormLabel>{t('黑名单错误改写')}</FormLabel>
+                                <FormDescription className='text-xs'>
+                                  {t(
+                                    '全局错误改写开启时，本渠道是否参与黑名单筛选并改写上游错误返回。'
+                                  )}
+                                </FormDescription>
+                              </div>
+                              <FormControl>
+                                <Switch
+                                  checked={field.value !== false}
+                                  onCheckedChange={field.onChange}
+                                />
+                              </FormControl>
+                            </FormItem>
+                          )}
+                        />
+
+                        <FormField
+                          control={form.control}
+                          name='diagnostic_capture_enabled'
+                          render={({ field }) => (
+                            <FormItem
+                              className={sideDrawerSwitchItemClassName()}
+                            >
+                              <div className='flex flex-col gap-0.5'>
+                                <FormLabel>{t('日志写入')}</FormLabel>
+                                <FormDescription className='text-xs'>
+                                  {t(
+                                    '全局日志保存开启时，本渠道是否写入诊断请求和响应日志。'
+                                  )}
+                                </FormDescription>
+                              </div>
+                              <FormControl>
+                                <Switch
+                                  checked={field.value !== false}
+                                  onCheckedChange={field.onChange}
+                                />
+                              </FormControl>
+                            </FormItem>
+                          )}
+                        />
+
                         {currentType === 1 && (
                           <fieldset
                             disabled={sensitiveLocked}
@@ -3242,6 +3294,20 @@ export function ChannelMutateDrawer({
                         </div>
                       </ChannelApiAccessSection>
                     </div>
+
+                    {currentType === 45 && (
+                      <VolcEngineTTSSection
+                        form={form}
+                        disabled={sensitiveLocked}
+                      />
+                    )}
+
+                    {currentType === 45 && (
+                      <VolcEngineASRSection
+                        form={form}
+                        disabled={sensitiveLocked}
+                      />
+                    )}
 
                     {/* ── Models & Groups ── */}
                     <div

@@ -5,7 +5,8 @@ import (
 	"github.com/QuantumNous/new-api/controller"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/relay"
-	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
 )
@@ -14,6 +15,7 @@ func SetRelayRouter(router *gin.Engine) {
 	router.Use(middleware.CORS())
 	router.Use(middleware.DecompressRequestMiddleware())
 	router.Use(middleware.BodyStorageCleanup()) // 清理请求体存储
+	router.Use(service.DiagnosticCaptureMiddleware())
 	router.Use(middleware.StatsMiddleware())
 	// https://platform.openai.com/docs/api-reference/introduction
 	modelsRouter := router.Group("/v1/models")
@@ -25,7 +27,7 @@ func SetRelayRouter(router *gin.Engine) {
 			case c.GetHeader("x-api-key") != "" && c.GetHeader("anthropic-version") != "":
 				controller.ListModels(c, constant.ChannelTypeAnthropic)
 			case c.GetHeader("x-goog-api-key") != "" || c.Query("key") != "": // 单独的适配
-				controller.ListModels(c, constant.ChannelTypeGemini)
+				controller.RetrieveModel(c, constant.ChannelTypeGemini)
 			default:
 				controller.ListModels(c, constant.ChannelTypeOpenAI)
 			}
@@ -169,6 +171,29 @@ func SetRelayRouter(router *gin.Engine) {
 		httpRouter.GET("/fine-tunes/:id/events", controller.RelayNotImplemented)
 		httpRouter.DELETE("/models/:model", controller.RelayNotImplemented)
 	}
+
+	volcengineTTSRouter := router.Group("/api/v3/tts")
+	volcengineTTSRouter.Use(middleware.RouteTag("relay"))
+	volcengineTTSRouter.Use(middleware.SystemPerformanceCheck())
+	volcengineTTSRouter.Use(middleware.TokenAuth())
+	volcengineTTSRouter.Use(middleware.ModelRequestRateLimit())
+	volcengineTTSRouter.Use(middleware.Distribute())
+	volcengineTTSRouter.POST("/unidirectional", func(c *gin.Context) {
+		controller.Relay(c, types.RelayFormatVolcengineTTSNative)
+	})
+
+	volcengineASRRouter := router.Group("/api/v3/auc/bigmodel")
+	volcengineASRRouter.Use(middleware.RouteTag("relay"))
+	volcengineASRRouter.Use(middleware.SystemPerformanceCheck())
+	volcengineASRRouter.Use(middleware.TokenAuth())
+	volcengineASRRouter.Use(middleware.ModelRequestRateLimit())
+	volcengineASRRouter.Use(middleware.Distribute())
+	volcengineASRRouter.POST("/submit", func(c *gin.Context) {
+		controller.Relay(c, types.RelayFormatVolcengineASRNative)
+	})
+	volcengineASRRouter.POST("/query", func(c *gin.Context) {
+		controller.Relay(c, types.RelayFormatVolcengineASRNative)
+	})
 
 	relayMjRouter := router.Group("/mj")
 	relayMjRouter.Use(middleware.RouteTag("relay"))

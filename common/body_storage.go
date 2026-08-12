@@ -37,6 +37,45 @@ type ReplayableBody interface {
 	NewReader() (io.ReadCloser, error)
 }
 
+// OpenBodyStorageReader returns an independent reader for diagnostic and other
+// sidecar consumers. Unlike Seek on BodyStorage, it does not disturb the
+// reader currently used by the relay request path.
+func OpenBodyStorageReader(storage BodyStorage) (io.ReadCloser, error) {
+	if storage == nil {
+		return nil, fmt.Errorf("body storage is nil")
+	}
+	switch value := storage.(type) {
+	case *memoryStorage:
+		value.mu.Lock()
+		defer value.mu.Unlock()
+		if atomic.LoadInt32(&value.closed) == 1 {
+			return nil, ErrStorageClosed
+		}
+		return io.NopCloser(bytes.NewReader(value.data)), nil
+	case *diskStorage:
+		value.mu.Lock()
+		if atomic.LoadInt32(&value.closed) == 1 {
+			value.mu.Unlock()
+			return nil, ErrStorageClosed
+		}
+		value.readers++
+		file, err := os.Open(value.filePath)
+		if err != nil {
+			value.readers--
+			value.mu.Unlock()
+			return nil, err
+		}
+		value.mu.Unlock()
+		return &bodyStorageReader{ReadCloser: file, release: value.releaseReader}, nil
+	default:
+		data, err := storage.Bytes()
+		if err != nil {
+			return nil, err
+		}
+		return io.NopCloser(bytes.NewReader(data)), nil
+	}
+}
+
 // ErrStorageClosed 存储已关闭错误
 var ErrStorageClosed = fmt.Errorf("body storage is closed")
 
@@ -122,6 +161,22 @@ type diskStorage struct {
 	size     int64
 	closed   int32
 	mu       sync.Mutex
+	readers  int
+	removed  bool
+}
+
+type bodyStorageReader struct {
+	io.ReadCloser
+	release func()
+}
+
+func (r *bodyStorageReader) Close() error {
+	err := r.ReadCloser.Close()
+	if r.release != nil {
+		r.release()
+		r.release = nil
+	}
+	return err
 }
 
 func newDiskStorage(data []byte, cachePath string) (*diskStorage, error) {
@@ -215,11 +270,34 @@ func (d *diskStorage) Close() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if atomic.CompareAndSwapInt32(&d.closed, 0, 1) {
-		d.file.Close()
-		os.Remove(d.filePath)
-		DecrementDiskFiles(d.size)
+		_ = d.file.Close()
+		if d.readers == 0 {
+			d.removeLocked()
+		}
 	}
 	return nil
+}
+
+func (d *diskStorage) removeLocked() {
+	if d.removed {
+		return
+	}
+	if err := os.Remove(d.filePath); err != nil {
+		return
+	}
+	d.removed = true
+	DecrementDiskFiles(d.size)
+}
+
+func (d *diskStorage) releaseReader() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.readers > 0 {
+		d.readers--
+	}
+	if atomic.LoadInt32(&d.closed) == 1 && d.readers == 0 {
+		d.removeLocked()
+	}
 }
 
 func (d *diskStorage) Bytes() ([]byte, error) {

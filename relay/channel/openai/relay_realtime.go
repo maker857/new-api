@@ -24,6 +24,7 @@ func OpenaiRealtimeHandler(c *gin.Context, info *relaycommon.RelayInfo) (*types.
 	info.IsStream = true
 	clientConn := info.ClientWs
 	targetConn := info.TargetWs
+	upstreamURL := c.GetString("diagnostic_websocket_upstream_url")
 
 	clientClosed := make(chan struct{})
 	targetClosed := make(chan struct{})
@@ -83,9 +84,12 @@ func OpenaiRealtimeHandler(c *gin.Context, info *relaycommon.RelayInfo) (*types.
 
 				err = helper.WssString(c, targetConn, string(message))
 				if err != nil {
+					service.RecordDiagnosticWebSocketFrame(c, upstreamURL, "request", message)
+					service.RecordDiagnosticWebSocketFailure(c, upstreamURL, err)
 					errChan <- fmt.Errorf("error writing to target: %v", err)
 					return
 				}
+				service.RecordDiagnosticWebSocketFrame(c, upstreamURL, "request", message)
 
 				select {
 				case sendChan <- message:
@@ -109,12 +113,14 @@ func OpenaiRealtimeHandler(c *gin.Context, info *relaycommon.RelayInfo) (*types.
 				_, message, err := targetConn.ReadMessage()
 				if err != nil {
 					if !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+						service.RecordDiagnosticWebSocketFailure(c, upstreamURL, err)
 						errChan <- fmt.Errorf("error reading from target: %v", err)
 					}
 					close(targetClosed)
 					return
 				}
 				info.SetFirstResponseTime()
+				service.RecordDiagnosticWebSocketFrame(c, upstreamURL, "response", message)
 				realtimeEvent := &dto.RealtimeEvent{}
 				err = common.Unmarshal(message, realtimeEvent)
 				if err != nil {

@@ -1,0 +1,2492 @@
+package service
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/base64"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"time"
+
+	"github.com/QuantumNous/new-api/common"
+)
+
+const (
+	diagnosticCaptureEventBuffer = 256
+	diagnosticCaptureChunkSize   = 64 * 1024
+	// Keep diagnostic disk work bounded while allowing independent traces to finish together.
+	diagnosticCaptureFinalizeConcurrency   = 4
+	diagnosticCaptureSpoolWriteConcurrency = 12
+	diagnosticWebSocketFramesPerPart       = 1000
+	diagnosticWebSocketPartMaxBytes        = 64 * 1024 * 1024
+	diagnosticWebSocketFrameHeaderV1Bytes  = 24
+	diagnosticWebSocketFrameHeaderBytes    = 40
+	diagnosticWebSocketFrameStart          = 1
+	diagnosticWebSocketFrameEnd            = 2
+	diagnosticCaptureCleanupInterval       = 10 * time.Minute
+	diagnosticCaptureRetryMaxDelay         = 6 * time.Hour
+	diagnosticCaptureRetryWindow           = time.Hour
+)
+
+type diagnosticCaptureEventKind uint8
+
+const (
+	diagnosticCapturePartStart diagnosticCaptureEventKind = iota
+	diagnosticCapturePartChunk
+	diagnosticCapturePartEnd
+	diagnosticCaptureWebSocketFrame
+)
+
+type diagnosticCaptureEvent struct {
+	kind         diagnosticCaptureEventKind
+	partID       string
+	sequence     int64
+	role         string
+	part         string
+	meta         map[string]any
+	data         []byte
+	originalSize int64
+	complete     bool
+	upstreamURL  string
+	timestamp    int64
+}
+
+type diagnosticCaptureSession struct {
+	cfg           DiagnosticCaptureConfig
+	events        chan diagnosticCaptureEvent
+	pendingMu     sync.Mutex
+	pending       []diagnosticCaptureEvent
+	pendingHead   int
+	pendingClosed bool
+	pendingWake   chan struct{}
+	producers     sync.WaitGroup
+	failed        atomic.Bool
+	discard       atomic.Bool
+	stateMu       sync.RWMutex
+	closed        bool
+	closing       bool
+	failCause     string
+	finalFlow     DiagnosticFlow
+	activeTraceID string
+	spoolDir      string
+}
+
+var diagnosticCaptureFinalizeState = struct {
+	sync.Mutex
+	locks map[string]*diagnosticCaptureFinalizeLock
+}{locks: make(map[string]*diagnosticCaptureFinalizeLock)}
+
+var diagnosticCaptureFinalizeSlots = make(chan struct{}, diagnosticCaptureFinalizeConcurrency)
+
+// Limit simultaneous spool writes across requests. Relay handlers only append
+// to their asynchronous queue, so this bounds disk contention without making
+// upstream or downstream traffic wait for logging I/O.
+var diagnosticCaptureSpoolWriteSlots = make(chan struct{}, diagnosticCaptureSpoolWriteConcurrency)
+
+type diagnosticCaptureFinalizeLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
+type diagnosticCapturePartState struct {
+	partID          string
+	sequence        int64
+	role            string
+	part            string
+	meta            map[string]any
+	file            *os.File
+	tempPath        string
+	tempPaths       []string
+	savedSize       int64
+	originalSize    int64
+	complete        bool
+	jsonBody        bool
+	webSocketFrames bool
+}
+
+type diagnosticCaptureWebSocketGroup struct {
+	state      *diagnosticCapturePartState
+	frameCount int
+	fileSize   int64
+}
+
+const diagnosticWebSocketFrameFormat = "segmented-v2"
+
+type diagnosticCaptureFailureRecord struct {
+	TraceID       string                         `json:"newapi_request_id"`
+	Channel       string                         `json:"channel"`
+	StartedAt     int64                          `json:"started_at"`
+	FirstFailedAt int64                          `json:"first_failed_at"`
+	AttemptCount  int                            `json:"attempt_count"`
+	LastError     string                         `json:"last_error"`
+	LastAttemptAt int64                          `json:"last_attempt_at"`
+	NextRetryAt   int64                          `json:"next_retry_at,omitempty"`
+	Retryable     bool                           `json:"retryable"`
+	Parts         []diagnosticCaptureFailurePart `json:"parts"`
+}
+
+type diagnosticCaptureFailurePart struct {
+	PartID        string         `json:"part_id"`
+	Sequence      int64          `json:"sequence"`
+	Role          string         `json:"role"`
+	Part          string         `json:"part"`
+	Meta          map[string]any `json:"meta,omitempty"`
+	FileName      string         `json:"file_name,omitempty"`
+	TempFileName  string         `json:"temp_file_name,omitempty"`
+	FileNames     []string       `json:"file_names,omitempty"`
+	TempFileNames []string       `json:"temp_file_names,omitempty"`
+	SavedSize     int64          `json:"saved_size"`
+	OriginalSize  int64          `json:"original_size"`
+	Complete      bool           `json:"complete"`
+}
+
+type diagnosticCaptureStream struct {
+	reader   io.Reader
+	closer   io.Closer
+	session  *diagnosticCaptureSession
+	partID   string
+	total    int64
+	finished bool
+	mu       sync.Mutex
+}
+
+type diagnosticNDJSONCaptureStream struct {
+	reader       io.Reader
+	closer       io.Closer
+	session      *diagnosticCaptureSession
+	partID       string
+	maxLineSize  int
+	secrets      []string
+	lineBuffer   []byte
+	total        int64
+	finished     bool
+	captureLimit bool
+	mu           sync.Mutex
+}
+
+func newDiagnosticCaptureSession(cfg DiagnosticCaptureConfig, flow *DiagnosticFlow) *diagnosticCaptureSession {
+	if flow == nil {
+		return nil
+	}
+	session := &diagnosticCaptureSession{
+		cfg:           cfg,
+		events:        make(chan diagnosticCaptureEvent, diagnosticCaptureEventBuffer),
+		pendingWake:   make(chan struct{}, 1),
+		activeTraceID: safeTraceID(flow.TraceID),
+	}
+	tempRoot := cfg.TempDir
+	if tempRoot == "" {
+		tempRoot = "diagnostic-capture-temp"
+	}
+	session.spoolDir = filepath.Join(tempRoot, flow.Started.Format("2006-01-02"), session.activeTraceID)
+	markDiagnosticCaptureActive(session.activeTraceID)
+	// The janitor also removes empty request directories. Mark the directory
+	// before the first part file exists so it cannot win the small race between
+	// MkdirAll and CreateTemp below.
+	markDiagnosticTempFileActive(session.spoolDir)
+	go session.dispatch()
+	go session.run()
+	return session
+}
+
+func (s *diagnosticCaptureSession) fail(reason string) {
+	if s == nil {
+		return
+	}
+	s.failed.Store(true)
+	s.stateMu.Lock()
+	if s.failCause == "" {
+		s.failCause = reason
+	}
+	s.stateMu.Unlock()
+}
+
+func (s *diagnosticCaptureSession) tryEvent(event diagnosticCaptureEvent) bool {
+	if s == nil || s.failed.Load() || s.discard.Load() {
+		return false
+	}
+	s.stateMu.RLock()
+	if s.closed {
+		s.stateMu.RUnlock()
+		return false
+	}
+	s.pendingMu.Lock()
+	s.pending = append(s.pending, event)
+	s.pendingMu.Unlock()
+	s.stateMu.RUnlock()
+	select {
+	case s.pendingWake <- struct{}{}:
+	default:
+	}
+	return true
+}
+
+// dispatch keeps relay reads and writes non-blocking. Events are copied before
+// they arrive here, then emitted to the disk worker in their original order.
+// The pending queue intentionally has no drop-on-full branch: a full logging
+// queue must never silently turn a successfully proxied request into a partial
+// diagnostic record.
+func (s *diagnosticCaptureSession) dispatch() {
+	defer close(s.events)
+	for {
+		s.pendingMu.Lock()
+		if s.pendingHead >= len(s.pending) {
+			if s.pendingClosed {
+				s.pendingMu.Unlock()
+				return
+			}
+			s.pendingMu.Unlock()
+			<-s.pendingWake
+			continue
+		}
+		event := s.pending[s.pendingHead]
+		s.pending[s.pendingHead] = diagnosticCaptureEvent{}
+		s.pendingHead++
+		if s.pendingHead == len(s.pending) {
+			s.pending = nil
+			s.pendingHead = 0
+		}
+		s.pendingMu.Unlock()
+		s.events <- event
+	}
+}
+
+func (s *diagnosticCaptureSession) startPart(partID string, sequence int64, role, part string, meta map[string]any) {
+	s.tryEvent(diagnosticCaptureEvent{
+		kind:     diagnosticCapturePartStart,
+		partID:   partID,
+		sequence: sequence,
+		role:     role,
+		part:     part,
+		meta:     meta,
+	})
+}
+
+func (s *diagnosticCaptureSession) writeChunk(partID string, data []byte) {
+	if s == nil || s.failed.Load() || len(data) == 0 {
+		return
+	}
+	for len(data) > 0 {
+		chunkSize := len(data)
+		if chunkSize > diagnosticCaptureChunkSize {
+			chunkSize = diagnosticCaptureChunkSize
+		}
+		chunk := append([]byte(nil), data[:chunkSize]...)
+		if !s.tryEvent(diagnosticCaptureEvent{
+			kind:   diagnosticCapturePartChunk,
+			partID: partID,
+			data:   chunk,
+		}) {
+			return
+		}
+		data = data[chunkSize:]
+	}
+}
+
+func (s *diagnosticCaptureSession) endPart(partID string, meta map[string]any, originalSize int64, complete bool) {
+	s.tryEvent(diagnosticCaptureEvent{
+		kind:         diagnosticCapturePartEnd,
+		partID:       partID,
+		meta:         meta,
+		originalSize: originalSize,
+		complete:     complete,
+	})
+}
+
+func (s *diagnosticCaptureSession) writeWebSocketFrame(sequence int64, upstreamURL, part string, payload []byte) {
+	if s == nil || s.failed.Load() {
+		return
+	}
+	s.tryEvent(diagnosticCaptureEvent{
+		kind:        diagnosticCaptureWebSocketFrame,
+		sequence:    sequence,
+		part:        part,
+		data:        append([]byte(nil), payload...),
+		upstreamURL: upstreamURL,
+		timestamp:   time.Now().UnixNano(),
+	})
+}
+
+func (s *diagnosticCaptureSession) close(flow *DiagnosticFlow) {
+	if s == nil {
+		return
+	}
+	s.stateMu.Lock()
+	if s.closed || s.closing {
+		s.stateMu.Unlock()
+		return
+	}
+	if flow != nil {
+		s.finalFlow = *flow
+	}
+	s.closing = true
+	s.stateMu.Unlock()
+	go func() {
+		s.producers.Wait()
+		s.stateMu.Lock()
+		s.closed = true
+		s.stateMu.Unlock()
+		s.pendingMu.Lock()
+		s.pendingClosed = true
+		s.pendingMu.Unlock()
+		select {
+		case s.pendingWake <- struct{}{}:
+		default:
+		}
+	}()
+}
+
+func (s *diagnosticCaptureSession) cancel(flow *DiagnosticFlow) {
+	if s == nil {
+		return
+	}
+	s.discard.Store(true)
+	s.close(flow)
+}
+
+func (s *diagnosticCaptureSession) run() {
+	defer markDiagnosticCaptureInactive(s.activeTraceID)
+	defer markDiagnosticTempFileInactive(s.spoolDir)
+	parts := make(map[string]*diagnosticCapturePartState)
+	orderedParts := make([]*diagnosticCapturePartState, 0, 4)
+	webSocketGroups := make(map[string]*diagnosticCaptureWebSocketGroup)
+	for event := range s.events {
+		switch event.kind {
+		case diagnosticCapturePartStart:
+			if _, exists := parts[event.partID]; exists {
+				continue
+			}
+			state := &diagnosticCapturePartState{
+				partID:   event.partID,
+				sequence: event.sequence,
+				role:     event.role,
+				part:     event.part,
+				meta:     event.meta,
+			}
+			parts[event.partID] = state
+			orderedParts = append(orderedParts, state)
+		case diagnosticCapturePartChunk:
+			state := parts[event.partID]
+			if state == nil || s.failed.Load() {
+				continue
+			}
+			if state.file == nil {
+				spoolDir := s.spoolDir
+				prepareDiagnosticCaptureTempDir(s.cfg)
+				if err := os.MkdirAll(spoolDir, 0o700); err != nil {
+					s.fail("failed to create diagnostic capture temp dir: " + err.Error())
+					continue
+				}
+				prefix := safeCaptureName(state.partID, "part") + "-"
+				file, err := os.CreateTemp(spoolDir, prefix+"*.part")
+				if err != nil {
+					s.fail("failed to create diagnostic temp file: " + err.Error())
+					continue
+				}
+				state.file = file
+				state.tempPath = file.Name()
+				markDiagnosticTempFileActive(state.tempPath)
+			}
+			diagnosticCaptureSpoolWriteSlots <- struct{}{}
+			_, writeErr := state.file.Write(event.data)
+			<-diagnosticCaptureSpoolWriteSlots
+			if writeErr != nil {
+				s.fail("failed to write diagnostic body spool: " + writeErr.Error())
+				continue
+			}
+			state.savedSize += int64(len(event.data))
+			enforceDiagnosticCaptureStorage(s.cfg, "", 0, int64(len(event.data)))
+			recordDiagnosticCaptureTempBytesChange(s.cfg, int64(len(event.data)))
+		case diagnosticCapturePartEnd:
+			state := parts[event.partID]
+			if state == nil {
+				continue
+			}
+			if event.meta != nil {
+				state.meta = event.meta
+			}
+			state.originalSize = event.originalSize
+			state.complete = event.complete
+		case diagnosticCaptureWebSocketFrame:
+			groupKey := event.part + "\x00" + event.upstreamURL
+			group := webSocketGroups[groupKey]
+			payload := event.data
+			firstSegment := true
+			var frameGroup *diagnosticCaptureWebSocketGroup
+			for firstSegment || len(payload) > 0 {
+				if group == nil || (firstSegment && group.frameCount >= diagnosticWebSocketFramesPerPart) {
+					state, err := s.newDiagnosticWebSocketPart(event)
+					if err != nil {
+						s.fail(err.Error())
+						break
+					}
+					parts[state.partID] = state
+					orderedParts = append(orderedParts, state)
+					group = &diagnosticCaptureWebSocketGroup{state: state}
+					webSocketGroups[groupKey] = group
+				}
+				if group.fileSize+diagnosticWebSocketFrameHeaderBytes >= diagnosticWebSocketPartMaxBytes {
+					if err := s.rotateDiagnosticWebSocketPartFile(group.state); err != nil {
+						s.fail(err.Error())
+						break
+					}
+					group.fileSize = 0
+				}
+				if firstSegment {
+					frameGroup = group
+				}
+				available := diagnosticWebSocketPartMaxBytes - group.fileSize - diagnosticWebSocketFrameHeaderBytes
+				segmentSize := len(payload)
+				if int64(segmentSize) > available {
+					segmentSize = int(available)
+				}
+				segment := payload[:segmentSize]
+				flags := uint64(0)
+				if firstSegment {
+					flags |= diagnosticWebSocketFrameStart
+				}
+				if segmentSize == len(payload) {
+					flags |= diagnosticWebSocketFrameEnd
+				}
+				var header [diagnosticWebSocketFrameHeaderBytes]byte
+				binary.BigEndian.PutUint64(header[0:8], uint64(event.sequence))
+				binary.BigEndian.PutUint64(header[8:16], uint64(event.timestamp))
+				binary.BigEndian.PutUint64(header[16:24], uint64(len(event.data)))
+				binary.BigEndian.PutUint64(header[24:32], uint64(segmentSize))
+				binary.BigEndian.PutUint64(header[32:40], flags)
+				diagnosticCaptureSpoolWriteSlots <- struct{}{}
+				_, headerErr := group.state.file.Write(header[:])
+				var payloadErr error
+				if headerErr == nil {
+					_, payloadErr = group.state.file.Write(segment)
+				}
+				<-diagnosticCaptureSpoolWriteSlots
+				if headerErr != nil {
+					s.fail("failed to write diagnostic websocket frame header: " + headerErr.Error())
+					break
+				}
+				if payloadErr != nil {
+					s.fail("failed to write diagnostic websocket frame: " + payloadErr.Error())
+					break
+				}
+				frameSize := int64(diagnosticWebSocketFrameHeaderBytes + segmentSize)
+				group.fileSize += frameSize
+				group.state.savedSize += frameSize
+				group.state.originalSize += int64(segmentSize)
+				enforceDiagnosticCaptureStorage(s.cfg, "", 0, frameSize)
+				recordDiagnosticCaptureTempBytesChange(s.cfg, frameSize)
+				payload = payload[segmentSize:]
+				firstSegment = false
+			}
+			if frameGroup != nil {
+				frameGroup.frameCount++
+			}
+		}
+	}
+
+	s.stateMu.RLock()
+	flow := s.finalFlow
+	failCause := s.failCause
+	s.stateMu.RUnlock()
+	if s.discard.Load() {
+		for _, state := range orderedParts {
+			if state.file != nil {
+				_ = state.file.Close()
+			}
+			if state.tempPath != "" {
+				removeDiagnosticCaptureTempFile(s.cfg, state)
+			}
+		}
+		return
+	}
+	if flow.TraceID == "" {
+		flow.TraceID = fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	if flow.Channel == "" {
+		flow.Channel = "unknown"
+	}
+	if flow.Started.IsZero() {
+		flow.Started = time.Now()
+	}
+
+	base := filepath.Join(
+		s.cfg.CaptureDir,
+		safeCaptureName(flow.Channel, "unknown"),
+		flow.Started.Format("2006-01-02"),
+		safeTraceID(flow.TraceID),
+	)
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		s.fail("failed to create diagnostic capture dir: " + err.Error())
+	}
+
+	for _, state := range orderedParts {
+		if state.file != nil {
+			if err := state.file.Close(); err != nil {
+				s.fail("failed to close diagnostic temp file: " + err.Error())
+			}
+		}
+		if state.tempPath == "" || state.savedSize == 0 || s.cfg.Mode != "full" || state.webSocketFrames {
+			continue
+		}
+		jsonBody, err := diagnosticCaptureJSONFile(state.tempPath)
+		if err != nil {
+			s.fail("failed to inspect diagnostic capture body: " + err.Error())
+			continue
+		}
+		state.jsonBody = jsonBody
+	}
+	captureFailed := s.failed.Load()
+	writeErr := writeDiagnosticCaptureSession(s.cfg, &flow, orderedParts)
+	if writeErr != nil {
+		s.fail("failed to write diagnostic request-log.json: " + writeErr.Error())
+	}
+	if captureFailed || writeErr != nil {
+		cause := s.failCause
+		if cause == "" && writeErr != nil {
+			cause = writeErr.Error()
+		}
+		if persistErr := persistDiagnosticCaptureFailure(s.cfg, &flow, orderedParts, cause, !captureFailed); persistErr != nil {
+			logDiagnosticCaptureFailure("failed to retain diagnostic capture retry data: " + persistErr.Error())
+		}
+	} else {
+		for _, state := range orderedParts {
+			if state.tempPath != "" {
+				removeDiagnosticCaptureTempFile(s.cfg, state)
+			}
+		}
+	}
+
+	if !s.failed.Load() {
+		markDiagnosticCaptureComplete(s.cfg, &flow)
+	} else {
+		s.stateMu.RLock()
+		failCause = s.failCause
+		s.stateMu.RUnlock()
+		if failCause == "" {
+			failCause = "diagnostic capture incomplete"
+		}
+		logDiagnosticCaptureFailure("diagnostic capture incomplete: " + failCause)
+	}
+}
+
+func (s *diagnosticCaptureSession) newDiagnosticWebSocketPart(event diagnosticCaptureEvent) (*diagnosticCapturePartState, error) {
+	state := &diagnosticCapturePartState{
+		partID:          fmt.Sprintf("websocket-%s-%06d", event.part, event.sequence),
+		sequence:        event.sequence,
+		role:            "outbound",
+		part:            event.part,
+		complete:        true,
+		webSocketFrames: true,
+		meta: map[string]any{
+			"captured_at":            time.Unix(0, event.timestamp).UTC().Format(time.RFC3339Nano),
+			"role":                   "outbound",
+			"transport":              "websocket",
+			"upstream_url":           event.upstreamURL,
+			"websocket_frames":       true,
+			"websocket_frame_format": diagnosticWebSocketFrameFormat,
+		},
+	}
+	if event.part == "request" {
+		state.meta["method"] = "WEBSOCKET"
+		state.meta["url"] = event.upstreamURL
+	}
+	prepareDiagnosticCaptureTempDir(s.cfg)
+	if err := os.MkdirAll(s.spoolDir, 0o700); err != nil {
+		return nil, fmt.Errorf("failed to create diagnostic capture temp dir: %w", err)
+	}
+	file, err := os.CreateTemp(s.spoolDir, safeCaptureName(state.partID, "websocket")+"-*.part")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create diagnostic websocket temp file: %w", err)
+	}
+	state.file = file
+	state.tempPath = file.Name()
+	state.tempPaths = []string{state.tempPath}
+	markDiagnosticTempFileActive(state.tempPath)
+	return state, nil
+}
+
+func (s *diagnosticCaptureSession) rotateDiagnosticWebSocketPartFile(state *diagnosticCapturePartState) error {
+	if state == nil || state.file == nil {
+		return errors.New("diagnostic websocket part has no open temporary file")
+	}
+	if err := state.file.Close(); err != nil {
+		return fmt.Errorf("failed to close diagnostic websocket temp file: %w", err)
+	}
+	file, err := os.CreateTemp(s.spoolDir, safeCaptureName(state.partID, "websocket")+"-*.part")
+	if err != nil {
+		return fmt.Errorf("failed to rotate diagnostic websocket temp file: %w", err)
+	}
+	state.file = file
+	state.tempPaths = append(state.tempPaths, file.Name())
+	markDiagnosticTempFileActive(file.Name())
+	return nil
+}
+
+func newDiagnosticCaptureStream(reader io.Reader, session *diagnosticCaptureSession, partID string) *diagnosticCaptureStream {
+	stream := &diagnosticCaptureStream{reader: reader, session: session, partID: partID}
+	if closer, ok := reader.(io.Closer); ok {
+		stream.closer = closer
+	}
+	return stream
+}
+
+func newDiagnosticNDJSONCaptureStream(reader io.Reader, session *diagnosticCaptureSession, partID string, maxLineSize int, secrets ...string) *diagnosticNDJSONCaptureStream {
+	stream := &diagnosticNDJSONCaptureStream{reader: reader, session: session, partID: partID, maxLineSize: maxLineSize, secrets: secrets}
+	if closer, ok := reader.(io.Closer); ok {
+		stream.closer = closer
+	}
+	return stream
+}
+
+func (s *diagnosticNDJSONCaptureStream) Read(p []byte) (int, error) {
+	n, err := s.reader.Read(p)
+	if n > 0 {
+		s.total += int64(n)
+		s.capture(p[:n])
+	}
+	if err == io.EOF {
+		s.flushLine()
+		s.finish(true)
+	}
+	return n, err
+}
+
+func (s *diagnosticNDJSONCaptureStream) Close() error {
+	s.flushLine()
+	s.finish(false)
+	if s.closer != nil {
+		return s.closer.Close()
+	}
+	return nil
+}
+
+func (s *diagnosticNDJSONCaptureStream) capture(data []byte) {
+	if s.captureLimit {
+		return
+	}
+	for len(data) > 0 {
+		newline := bytes.IndexByte(data, '\n')
+		if newline < 0 {
+			if s.maxLineSize > 0 && len(s.lineBuffer)+len(data) > s.maxLineSize {
+				s.captureLimit = true
+				s.lineBuffer = nil
+				return
+			}
+			s.lineBuffer = append(s.lineBuffer, data...)
+			return
+		}
+		segment := data[:newline+1]
+		if s.maxLineSize > 0 && len(s.lineBuffer)+len(segment) > s.maxLineSize {
+			s.captureLimit = true
+			s.lineBuffer = nil
+			return
+		}
+		s.lineBuffer = append(s.lineBuffer, segment...)
+		s.flushLine()
+		data = data[newline+1:]
+	}
+}
+
+func (s *diagnosticNDJSONCaptureStream) flushLine() {
+	if s.captureLimit || len(s.lineBuffer) == 0 {
+		return
+	}
+	line := string(s.lineBuffer)
+	for _, secret := range s.secrets {
+		if secret != "" {
+			line = strings.ReplaceAll(line, secret, "[REDACTED]")
+		}
+	}
+	s.session.writeChunk(s.partID, []byte(line))
+	s.lineBuffer = nil
+}
+
+func (s *diagnosticNDJSONCaptureStream) finish(complete bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.finished {
+		return
+	}
+	s.finished = true
+	s.session.endPart(s.partID, nil, s.total, complete)
+}
+
+func (s *diagnosticCaptureStream) Read(p []byte) (int, error) {
+	n, err := s.reader.Read(p)
+	if n > 0 {
+		s.total += int64(n)
+		s.session.writeChunk(s.partID, p[:n])
+	}
+	if err == io.EOF {
+		s.finish(true)
+	}
+	return n, err
+}
+
+func (s *diagnosticCaptureStream) Close() error {
+	s.finish(false)
+	if s.closer != nil {
+		return s.closer.Close()
+	}
+	return nil
+}
+
+func (s *diagnosticCaptureStream) finish(complete bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.finished {
+		return
+	}
+	s.finished = true
+	s.session.endPart(s.partID, nil, s.total, complete)
+}
+
+func (s *diagnosticCaptureStream) finishWithMeta(meta map[string]any, complete bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.finished {
+		return
+	}
+	s.finished = true
+	s.session.endPart(s.partID, meta, s.total, complete)
+}
+
+var diagnosticCaptureTempJanitor struct {
+	sync.Mutex
+	last    map[string]time.Time
+	running map[string]bool
+}
+
+var diagnosticCaptureTempCleanupMu sync.Mutex
+
+var diagnosticCaptureCleanupLoop sync.Once
+
+func prepareDiagnosticCaptureTempDir(cfg DiagnosticCaptureConfig) {
+	tempDir := strings.TrimSpace(cfg.TempDir)
+	if tempDir == "" {
+		return
+	}
+	diagnosticCaptureTempJanitor.Lock()
+	if diagnosticCaptureTempJanitor.last == nil {
+		diagnosticCaptureTempJanitor.last = make(map[string]time.Time)
+	}
+	if diagnosticCaptureTempJanitor.running == nil {
+		diagnosticCaptureTempJanitor.running = make(map[string]bool)
+	}
+	last := diagnosticCaptureTempJanitor.last[tempDir]
+	now := time.Now()
+	if diagnosticCaptureTempJanitor.running[tempDir] || (!last.IsZero() && now.Sub(last) < 10*time.Minute) {
+		diagnosticCaptureTempJanitor.Unlock()
+		return
+	}
+	diagnosticCaptureTempJanitor.last[tempDir] = now
+	diagnosticCaptureTempJanitor.running[tempDir] = true
+	diagnosticCaptureTempJanitor.Unlock()
+
+	retention := time.Duration(cfg.TempRetentionMinutes) * time.Minute
+	if retention <= 0 {
+		retention = time.Hour
+	}
+	cutoff := now.Add(-retention)
+	go func() {
+		defer func() {
+			diagnosticCaptureTempJanitor.Lock()
+			diagnosticCaptureTempJanitor.running[tempDir] = false
+			diagnosticCaptureTempJanitor.Unlock()
+		}()
+		deletedCount, freedBytes := cleanupDiagnosticCaptureTempFilesAtRate(tempDir, cutoff, cfg.CleanupRateBytesPerSecond)
+		recordDiagnosticCaptureTempCleanup(deletedCount, freedBytes)
+		recordDiagnosticCaptureTempStorageDeletion(cfg, freedBytes)
+	}()
+}
+
+// StartDiagnosticCaptureCleanup performs diagnostic-file maintenance outside
+// the relay request path.
+func StartDiagnosticCaptureCleanup() {
+	diagnosticCaptureCleanupLoop.Do(func() {
+		go func() {
+			for {
+				now := time.Now().In(time.FixedZone("CST", 8*60*60))
+				next := time.Date(now.Year(), now.Month(), now.Day(), 3, 0, 0, 0, now.Location())
+				if !next.After(now) {
+					next = next.AddDate(0, 0, 1)
+				}
+				time.Sleep(time.Until(next))
+				reconcileDiagnosticCaptureStorage()
+			}
+		}()
+		go func() {
+			runDiagnosticCaptureCleanup()
+			ticker := time.NewTicker(diagnosticCaptureCleanupInterval)
+			defer ticker.Stop()
+			for range ticker.C {
+				runDiagnosticCaptureCleanup()
+			}
+		}()
+	})
+}
+
+func runDiagnosticCaptureCleanup() {
+	cfg := DiagnosticCaptureConfigFromOptions()
+	prepareDiagnosticCaptureTempDir(cfg)
+	refreshDiagnosticCaptureStorageState(cfg)
+	retryDiagnosticCaptureFailures(cfg)
+	cleanupDiagnosticCaptureStorageIfNeeded(cfg)
+}
+
+func diagnosticCaptureFailureDir(captureDir string) string {
+	captureDir = strings.TrimSpace(captureDir)
+	if captureDir == "" {
+		captureDir = "captures"
+	}
+	return filepath.Join(filepath.Dir(filepath.Clean(captureDir)), "diagnostic-capture-failures")
+}
+
+func ValidateDiagnosticCaptureDirectories(captureDir, tempDir string) error {
+	capturePath, err := resolveDiagnosticCaptureDirectory(captureDir)
+	if err != nil {
+		return fmt.Errorf("resolve diagnostic capture directory: %w", err)
+	}
+	tempPath, err := resolveDiagnosticCaptureDirectory(tempDir)
+	if err != nil {
+		return fmt.Errorf("resolve diagnostic capture temporary directory: %w", err)
+	}
+	failurePath, err := resolveDiagnosticCaptureDirectory(diagnosticCaptureFailureDir(capturePath))
+	if err != nil {
+		return fmt.Errorf("resolve diagnostic capture failure directory: %w", err)
+	}
+
+	directories := []struct {
+		name string
+		path string
+	}{
+		{name: "formal", path: filepath.Clean(capturePath)},
+		{name: "temporary", path: filepath.Clean(tempPath)},
+		{name: "failure", path: filepath.Clean(failurePath)},
+	}
+	for left := 0; left < len(directories); left++ {
+		for right := left + 1; right < len(directories); right++ {
+			leftToRight, relErr := filepath.Rel(directories[left].path, directories[right].path)
+			if relErr != nil {
+				return fmt.Errorf("compare diagnostic capture directories: %w", relErr)
+			}
+			rightToLeft, relErr := filepath.Rel(directories[right].path, directories[left].path)
+			if relErr != nil {
+				return fmt.Errorf("compare diagnostic capture directories: %w", relErr)
+			}
+			leftContainsRight := leftToRight == "." || (!filepath.IsAbs(leftToRight) && leftToRight != ".." && !strings.HasPrefix(leftToRight, ".."+string(os.PathSeparator)))
+			rightContainsLeft := rightToLeft == "." || (!filepath.IsAbs(rightToLeft) && rightToLeft != ".." && !strings.HasPrefix(rightToLeft, ".."+string(os.PathSeparator)))
+			if leftContainsRight || rightContainsLeft {
+				return fmt.Errorf("diagnostic capture %s and %s directories must not overlap", directories[left].name, directories[right].name)
+			}
+		}
+	}
+	return nil
+}
+
+// resolveDiagnosticCaptureDirectory follows every existing path component so
+// a symlink cannot make two apparently separate capture roots overlap.
+func resolveDiagnosticCaptureDirectory(path string) (string, error) {
+	absPath, err := filepath.Abs(strings.TrimSpace(path))
+	if err != nil {
+		return "", err
+	}
+	absPath = filepath.Clean(absPath)
+	missing := make([]string, 0)
+	resolvedBase := absPath
+	for {
+		if _, statErr := os.Lstat(resolvedBase); statErr == nil {
+			break
+		} else if !os.IsNotExist(statErr) {
+			return "", statErr
+		}
+		parent := filepath.Dir(resolvedBase)
+		if parent == resolvedBase {
+			return "", fmt.Errorf("no existing parent for %s", absPath)
+		}
+		missing = append(missing, filepath.Base(resolvedBase))
+		resolvedBase = parent
+	}
+	resolvedBase, err = filepath.EvalSymlinks(resolvedBase)
+	if err != nil {
+		return "", err
+	}
+	for index := len(missing) - 1; index >= 0; index-- {
+		resolvedBase = filepath.Join(resolvedBase, missing[index])
+	}
+	return filepath.Clean(resolvedBase), nil
+}
+
+func diagnosticCaptureFailureRecordPath(cfg DiagnosticCaptureConfig, flow *DiagnosticFlow) string {
+	return filepath.Join(
+		cfg.FailureDir,
+		safeCaptureName(flow.Channel, "unknown"),
+		flow.Started.Format("2006-01-02"),
+		safeTraceID(flow.TraceID),
+		"capture-failure.json",
+	)
+}
+
+func persistDiagnosticCaptureFailure(cfg DiagnosticCaptureConfig, flow *DiagnosticFlow, parts []*diagnosticCapturePartState, cause string, retryable bool) error {
+	if flow == nil {
+		return fmt.Errorf("capture flow is missing")
+	}
+	path := diagnosticCaptureFailureRecordPath(cfg, flow)
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	previousSize, err := diagnosticCaptureDirectorySize(dir)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	ensureDiagnosticCaptureTimestamp(dir)
+	movedBytes := int64(0)
+	defer func() {
+		currentSize, sizeErr := diagnosticCaptureDirectorySize(dir)
+		if sizeErr == nil {
+			// Renames move already-accounted temporary bytes into the failure
+			// directory. Only the failure metadata itself is a net addition.
+			enforceDiagnosticCaptureStorage(cfg, "", previousSize, currentSize-movedBytes)
+		}
+	}()
+	record := diagnosticCaptureFailureRecord{
+		TraceID:       flow.TraceID,
+		Channel:       flow.Channel,
+		StartedAt:     flow.Started.UnixNano(),
+		FirstFailedAt: time.Now().UnixNano(),
+		AttemptCount:  1,
+		LastError:     cause,
+		LastAttemptAt: time.Now().UnixNano(),
+		Retryable:     retryable,
+		Parts:         make([]diagnosticCaptureFailurePart, 0, len(parts)),
+	}
+	for index, state := range parts {
+		if state == nil {
+			continue
+		}
+		part := diagnosticCaptureFailurePart{
+			PartID:       state.partID,
+			Sequence:     state.sequence,
+			Role:         state.role,
+			Part:         state.part,
+			Meta:         state.meta,
+			SavedSize:    state.savedSize,
+			OriginalSize: state.originalSize,
+			Complete:     state.complete,
+		}
+		for pathIndex, tempPath := range diagnosticCapturePartTempPaths(state) {
+			part.FileNames = append(part.FileNames, fmt.Sprintf("%03d-%03d.part", index, pathIndex))
+			part.TempFileNames = append(part.TempFileNames, filepath.Base(tempPath))
+		}
+		if len(part.FileNames) == 1 {
+			part.FileName = part.FileNames[0]
+			part.TempFileName = part.TempFileNames[0]
+		}
+		record.Parts = append(record.Parts, part)
+	}
+	// Persist the retry index before moving any source data. A crash or I/O
+	// error can then leave an incomplete failure directory, but never an
+	// unindexed collection of otherwise recoverable body fragments.
+	if err := writeDiagnosticCaptureFailureRecord(path, record); err != nil {
+		return err
+	}
+	recordPartIndex := 0
+	for _, state := range parts {
+		if state == nil {
+			continue
+		}
+		part := record.Parts[recordPartIndex]
+		recordPartIndex++
+		paths := diagnosticCapturePartTempPaths(state)
+		if len(paths) == 0 {
+			continue
+		}
+		if len(part.FileNames) == 0 {
+			part.FileNames = []string{part.FileName}
+		}
+		if len(part.FileNames) != len(paths) {
+			return errors.New("diagnostic capture retry fragment count mismatch")
+		}
+		state.tempPaths = make([]string, 0, len(paths))
+		for pathIndex, tempPath := range paths {
+			destination := filepath.Join(dir, part.FileNames[pathIndex])
+			if err := moveDiagnosticCaptureFragment(tempPath, destination); err != nil {
+				return err
+			}
+			if info, err := os.Stat(destination); err == nil {
+				movedBytes += info.Size()
+			}
+			markDiagnosticTempFileInactive(tempPath)
+			state.tempPaths = append(state.tempPaths, destination)
+		}
+		state.tempPath = state.tempPaths[0]
+		recordDiagnosticCaptureTempBytesChange(cfg, -state.savedSize)
+	}
+	return nil
+}
+
+// moveDiagnosticCaptureFragment keeps retry data available when the temporary
+// and failure directories are separate filesystem mounts. os.Rename is the
+// normal fast path; Docker volume mounts require copy-and-remove instead.
+func moveDiagnosticCaptureFragment(source, destination string) error {
+	if err := os.Rename(source, destination); err == nil {
+		return nil
+	} else if !errors.Is(err, syscall.EXDEV) {
+		return err
+	}
+
+	if _, err := os.Stat(destination); err == nil {
+		return fmt.Errorf("diagnostic capture fragment destination already exists: %s", destination)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	sourceFile, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+	temporaryFile, err := os.CreateTemp(filepath.Dir(destination), ".capture-fragment-*.tmp")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporaryFile.Name()
+	defer os.Remove(temporaryPath)
+	if _, err = io.CopyBuffer(temporaryFile, sourceFile, make([]byte, diagnosticCaptureChunkSize)); err != nil {
+		_ = temporaryFile.Close()
+		return err
+	}
+	if err = temporaryFile.Close(); err != nil {
+		return err
+	}
+	if err = os.Rename(temporaryPath, destination); err != nil {
+		return err
+	}
+	return os.Remove(source)
+}
+
+// writeDiagnosticCaptureFailureRecord protects the retry index independently
+// from the formal capture directory. Failure metadata is not synchronized as
+// a formal request log, so a same-directory temporary file is safe here.
+func writeDiagnosticCaptureFailureRecord(path string, record diagnosticCaptureFailureRecord) error {
+	data, err := common.Marshal(record)
+	if err != nil {
+		return err
+	}
+	file, err := os.CreateTemp(filepath.Dir(path), ".capture-failure-*.tmp")
+	if err != nil {
+		return err
+	}
+	tempPath := file.Name()
+	defer os.Remove(tempPath)
+	if _, err = file.Write(data); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err = file.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tempPath, path)
+}
+
+func updateDiagnosticCaptureFailureRecord(cfg DiagnosticCaptureConfig, path string, record diagnosticCaptureFailureRecord) error {
+	previousSize := int64(0)
+	if info, err := os.Stat(path); err == nil {
+		previousSize = info.Size()
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if err := writeDiagnosticCaptureFailureRecord(path, record); err != nil {
+		return err
+	}
+	if info, err := os.Stat(path); err == nil {
+		enforceDiagnosticCaptureStorage(cfg, "", previousSize, info.Size())
+	}
+	return nil
+}
+
+// stopDiagnosticCaptureRetry preserves the terminal failure record but moves
+// it below a reserved directory name. The retry walker skips that subtree,
+// while capacity cleanup still sees it as an ordinary dated capture directory.
+func stopDiagnosticCaptureRetry(cfg DiagnosticCaptureConfig, path string, record *diagnosticCaptureFailureRecord, reason string) {
+	if record == nil {
+		return
+	}
+	record.Retryable = false
+	record.NextRetryAt = 0
+	record.LastError = reason
+	record.LastAttemptAt = time.Now().UnixNano()
+	if err := updateDiagnosticCaptureFailureRecord(cfg, path, *record); err != nil {
+		common.SysError("failed to persist stopped diagnostic capture retry: " + err.Error())
+		return
+	}
+	failureDir := filepath.Dir(path)
+	name := filepath.Base(failureDir)
+	if strings.HasPrefix(name, ".abandoned-") {
+		return
+	}
+	if err := os.Rename(failureDir, filepath.Join(filepath.Dir(failureDir), ".abandoned-"+name)); err != nil {
+		common.SysError("failed to archive stopped diagnostic capture retry: " + err.Error())
+	}
+}
+
+func retryDiagnosticCaptureFailures(cfg DiagnosticCaptureConfig) {
+	if cfg.FailureDir == "" {
+		return
+	}
+	_ = filepath.WalkDir(cfg.FailureDir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if entry.IsDir() && strings.HasPrefix(entry.Name(), ".abandoned-") {
+			return filepath.SkipDir
+		}
+		if entry.IsDir() || entry.Name() != "capture-failure.json" {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		var record diagnosticCaptureFailureRecord
+		if common.Unmarshal(data, &record) != nil || !record.Retryable || record.TraceID == "" || record.StartedAt <= 0 {
+			return nil
+		}
+		now := time.Now()
+		if record.NextRetryAt > now.UnixNano() {
+			return filepath.SkipDir
+		}
+		firstFailedAt := record.FirstFailedAt
+		if firstFailedAt == 0 {
+			firstFailedAt = record.LastAttemptAt
+			if firstFailedAt == 0 {
+				firstFailedAt = record.StartedAt
+			}
+			record.FirstFailedAt = firstFailedAt
+		}
+		if firstFailedAt > 0 && now.Sub(time.Unix(0, firstFailedAt)) >= diagnosticCaptureRetryWindow {
+			stopDiagnosticCaptureRetry(cfg, path, &record, "capture retry stopped: one-hour retry window expired")
+			return filepath.SkipDir
+		}
+		// A retry writes a formal record for an older request. Keep that request
+		// out of capacity cleanup until the retry either completes or records its
+		// updated failure state.
+		markDiagnosticCaptureActive(record.TraceID)
+		defer markDiagnosticCaptureInactive(record.TraceID)
+		flow := &DiagnosticFlow{TraceID: record.TraceID, Channel: record.Channel, Started: time.Unix(0, record.StartedAt)}
+		parts := make([]*diagnosticCapturePartState, 0, len(record.Parts))
+		for _, part := range record.Parts {
+			state := &diagnosticCapturePartState{
+				partID:       part.PartID,
+				sequence:     part.Sequence,
+				role:         part.Role,
+				part:         part.Part,
+				meta:         part.Meta,
+				savedSize:    part.SavedSize,
+				originalSize: part.OriginalSize,
+				complete:     part.Complete,
+			}
+			if value, ok := part.Meta["websocket_frames"].(bool); ok {
+				state.webSocketFrames = value
+			}
+			fileNames := part.FileNames
+			if len(fileNames) == 0 && part.FileName != "" {
+				fileNames = []string{part.FileName}
+			}
+			for _, fileName := range fileNames {
+				state.tempPaths = append(state.tempPaths, filepath.Join(filepath.Dir(path), filepath.Base(fileName)))
+			}
+			if len(state.tempPaths) > 0 {
+				state.tempPath = state.tempPaths[0]
+			}
+			parts = append(parts, state)
+		}
+		failureDir := filepath.Dir(path)
+		// Recovery can race the temporary-file janitor after a restart, when
+		// no in-memory activity marker exists yet. Claim and move each retained
+		// fragment under the same lock used by the janitor.
+		diagnosticCaptureTempCleanupMu.Lock()
+		for index, part := range record.Parts {
+			if index >= len(parts) {
+				continue
+			}
+			fileNames := part.FileNames
+			tempFileNames := part.TempFileNames
+			if len(fileNames) == 0 && part.FileName != "" {
+				fileNames = []string{part.FileName}
+				tempFileNames = []string{part.TempFileName}
+			}
+			if len(fileNames) == 0 || len(fileNames) != len(tempFileNames) {
+				continue
+			}
+			movedAny := false
+			for pathIndex, fileName := range fileNames {
+				destination := filepath.Join(failureDir, filepath.Base(fileName))
+				if _, statErr := os.Stat(destination); statErr == nil {
+					continue
+				}
+				recoveryPart := part
+				recoveryPart.TempFileName = tempFileNames[pathIndex]
+				tempPath := diagnosticCaptureFailureTempPartPath(cfg, flow, recoveryPart)
+				if tempPath == "" {
+					diagnosticCaptureTempCleanupMu.Unlock()
+					stopDiagnosticCaptureRetry(cfg, path, &record, "capture retry stopped: retained body fragment is missing")
+					return filepath.SkipDir
+				}
+				if err := moveDiagnosticCaptureFragment(tempPath, destination); err != nil {
+					markDiagnosticTempFileInactive(tempPath)
+					diagnosticCaptureTempCleanupMu.Unlock()
+					stopDiagnosticCaptureRetry(cfg, path, &record, "capture retry stopped: failed to restore retained body fragment: "+err.Error())
+					return filepath.SkipDir
+				}
+				markDiagnosticTempFileInactive(tempPath)
+				movedAny = true
+			}
+			if movedAny {
+				recordDiagnosticCaptureTempBytesChange(cfg, -parts[index].savedSize)
+			}
+		}
+		diagnosticCaptureTempCleanupMu.Unlock()
+		for _, state := range parts {
+			if state.tempPath == "" || state.savedSize == 0 || cfg.Mode != "full" || state.webSocketFrames {
+				continue
+			}
+			jsonBody, inspectErr := diagnosticCaptureJSONFile(state.tempPath)
+			if inspectErr != nil {
+				stopDiagnosticCaptureRetry(cfg, path, &record, "capture retry stopped: failed to inspect retained body fragment: "+inspectErr.Error())
+				return filepath.SkipDir
+			}
+			state.jsonBody = jsonBody
+		}
+		record.AttemptCount++
+		record.LastAttemptAt = now.UnixNano()
+		if err := writeDiagnosticCaptureSession(cfg, flow, parts); err != nil {
+			record.LastError = err.Error()
+			nextRetryAt := now.Add(diagnosticCaptureRetryDelay(record.AttemptCount))
+			if nextRetryAt.Sub(time.Unix(0, firstFailedAt)) >= diagnosticCaptureRetryWindow {
+				stopDiagnosticCaptureRetry(cfg, path, &record, "capture retry stopped: next retry would exceed one-hour retry window: "+err.Error())
+			} else {
+				record.NextRetryAt = nextRetryAt.UnixNano()
+				_ = updateDiagnosticCaptureFailureRecord(cfg, path, record)
+			}
+			return nil
+		}
+		markDiagnosticCaptureComplete(cfg, flow)
+		if size, err := diagnosticCaptureDirectorySize(failureDir); err == nil {
+			if os.RemoveAll(failureDir) == nil {
+				enforceDiagnosticCaptureStorage(cfg, "", size, 0)
+				removeEmptyDiagnosticCaptureDirectories(cfg.FailureDir, filepath.Dir(failureDir))
+			}
+		}
+		return filepath.SkipDir
+	})
+}
+
+func diagnosticCaptureRetryDelay(attemptCount int) time.Duration {
+	if attemptCount <= 1 {
+		return diagnosticCaptureCleanupInterval
+	}
+	delay := diagnosticCaptureCleanupInterval
+	for attempt := 1; attempt < attemptCount && delay < diagnosticCaptureRetryMaxDelay; attempt++ {
+		delay *= 2
+		if delay > diagnosticCaptureRetryMaxDelay {
+			return diagnosticCaptureRetryMaxDelay
+		}
+	}
+	return delay
+}
+
+// diagnosticCaptureFailureTempPartPath restores a fragment that was still in
+// its request-scoped temporary directory when the process stopped between
+// writing the retry index and moving the fragment into the failure directory.
+func diagnosticCaptureFailureTempPartPath(cfg DiagnosticCaptureConfig, flow *DiagnosticFlow, part diagnosticCaptureFailurePart) string {
+	if flow == nil {
+		return ""
+	}
+	tempRoot := cfg.TempDir
+	if tempRoot == "" {
+		tempRoot = "diagnostic-capture-temp"
+	}
+	dir := filepath.Join(tempRoot, flow.Started.Format("2006-01-02"), safeTraceID(flow.TraceID))
+	if part.TempFileName != "" {
+		candidate := filepath.Join(dir, filepath.Base(part.TempFileName))
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			markDiagnosticTempFileActive(candidate)
+			return candidate
+		}
+		// Newer failure records name every retained fragment explicitly. Falling
+		// back to another file with the same prefix could substitute a different
+		// segment of one oversized WebSocket message and corrupt recovery.
+		return ""
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	prefix := safeCaptureName(part.PartID, "part") + "-"
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), prefix) || !strings.HasSuffix(entry.Name(), ".part") {
+			continue
+		}
+		candidate := filepath.Join(dir, entry.Name())
+		markDiagnosticTempFileActive(candidate)
+		return candidate
+	}
+	return ""
+}
+
+func cleanupDiagnosticCaptureTempFiles(tempDir string, cutoff time.Time) (int64, int64) {
+	return cleanupDiagnosticCaptureTempFilesAtRate(tempDir, cutoff, 0)
+}
+
+func cleanupDiagnosticCaptureTempFilesAtRate(tempDir string, cutoff time.Time, rateBytesPerSecond int64) (int64, int64) {
+	// Both the periodic janitor and capacity cleanup can request this scan.
+	// Let the active scan finish instead of traversing and deleting the same
+	// temporary tree concurrently.
+	if !diagnosticCaptureTempCleanupMu.TryLock() {
+		return 0, 0
+	}
+	defer diagnosticCaptureTempCleanupMu.Unlock()
+
+	var deletedCount int64
+	var freedBytes int64
+	batchFreedBytes := int64(0)
+	batchStartedAt := time.Now()
+	directories := make([]string, 0)
+	_ = filepath.WalkDir(tempDir, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		if entry.IsDir() {
+			if filepath.Clean(path) != filepath.Clean(tempDir) {
+				directories = append(directories, path)
+			}
+			return nil
+		}
+		// The request directory is marked active before any fragment is created.
+		// Checking it as well closes the race between CreateTemp and marking the
+		// individual file active while a concurrent cleanup walk is in progress.
+		parentDir := filepath.Clean(filepath.Dir(path))
+		// Files directly below the configured root are not request-scoped. Do
+		// not let an unrelated active request below that root retain stale
+		// sibling files indefinitely.
+		if isDiagnosticTempFileActive(path) || (parentDir != filepath.Clean(tempDir) && hasDiagnosticActiveTempPathUnder(parentDir)) {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil || !info.ModTime().Before(cutoff) {
+			return nil
+		}
+		if os.Remove(path) != nil {
+			return nil
+		}
+		deletedCount++
+		freedBytes += info.Size()
+		batchFreedBytes += info.Size()
+		if batchFreedBytes > 0 && rateBytesPerSecond > 0 {
+			expected := diagnosticCaptureRateDuration(batchFreedBytes, rateBytesPerSecond)
+			if remaining := expected - time.Since(batchStartedAt); remaining > 0 {
+				time.Sleep(remaining)
+			}
+			batchFreedBytes = 0
+			batchStartedAt = time.Now()
+		}
+		return nil
+	})
+	for index := len(directories) - 1; index >= 0; index-- {
+		if !hasDiagnosticActiveTempPathUnder(directories[index]) {
+			_ = os.Remove(directories[index])
+		}
+	}
+	return deletedCount, freedBytes
+}
+
+var diagnosticActiveTempFiles struct {
+	sync.RWMutex
+	paths map[string]struct{}
+}
+
+func markDiagnosticTempFileActive(path string) {
+	diagnosticActiveTempFiles.Lock()
+	if diagnosticActiveTempFiles.paths == nil {
+		diagnosticActiveTempFiles.paths = make(map[string]struct{})
+	}
+	diagnosticActiveTempFiles.paths[filepath.Clean(path)] = struct{}{}
+	diagnosticActiveTempFiles.Unlock()
+}
+
+func markDiagnosticTempFileInactive(path string) {
+	diagnosticActiveTempFiles.Lock()
+	delete(diagnosticActiveTempFiles.paths, filepath.Clean(path))
+	diagnosticActiveTempFiles.Unlock()
+}
+
+func isDiagnosticTempFileActive(path string) bool {
+	diagnosticActiveTempFiles.RLock()
+	_, active := diagnosticActiveTempFiles.paths[filepath.Clean(path)]
+	diagnosticActiveTempFiles.RUnlock()
+	return active
+}
+
+func hasDiagnosticActiveTempPathUnder(path string) bool {
+	path = filepath.Clean(path)
+	prefix := path + string(os.PathSeparator)
+	diagnosticActiveTempFiles.RLock()
+	defer diagnosticActiveTempFiles.RUnlock()
+	for activePath := range diagnosticActiveTempFiles.paths {
+		if activePath == path || strings.HasPrefix(activePath, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func diagnosticCapturePartTempPaths(state *diagnosticCapturePartState) []string {
+	if state == nil {
+		return nil
+	}
+	if len(state.tempPaths) > 0 {
+		return state.tempPaths
+	}
+	if state.tempPath != "" {
+		return []string{state.tempPath}
+	}
+	return nil
+}
+
+func removeDiagnosticCaptureTempFile(cfg DiagnosticCaptureConfig, state *diagnosticCapturePartState) {
+	paths := diagnosticCapturePartTempPaths(state)
+	if len(paths) == 0 {
+		return
+	}
+	var removedBytes int64
+	for _, path := range paths {
+		markDiagnosticTempFileInactive(path)
+		info, err := os.Stat(path)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		if os.Remove(path) == nil {
+			removedBytes += info.Size()
+		}
+	}
+	if removedBytes > 0 {
+		enforceDiagnosticCaptureStorage(cfg, "", removedBytes, 0)
+		recordDiagnosticCaptureTempBytesChange(cfg, -removedBytes)
+		removeEmptyDiagnosticCaptureDirectories(cfg.TempDir, filepath.Dir(paths[0]))
+	}
+}
+
+type diagnosticCaptureJSONWriter struct {
+	writer    *bufio.Writer
+	formatter *diagnosticCaptureJSONFormatter
+	err       error
+}
+
+func (w *diagnosticCaptureJSONWriter) raw(value string) {
+	if w.err != nil {
+		return
+	}
+	_, w.err = w.formatter.Write([]byte(value))
+}
+
+func (w *diagnosticCaptureJSONWriter) bytes(value []byte) {
+	if w.err != nil {
+		return
+	}
+	_, w.err = w.formatter.Write(value)
+}
+
+func (w *diagnosticCaptureJSONWriter) finish() {
+	if w.err == nil {
+		_, w.err = w.writer.WriteString("\n")
+	}
+}
+
+func (w *diagnosticCaptureJSONWriter) value(value any) {
+	if w.err != nil {
+		return
+	}
+	data, err := common.Marshal(value)
+	if err != nil {
+		w.err = err
+		return
+	}
+	w.bytes(data)
+}
+
+// diagnosticCaptureJSONFormatter emits readable JSON while keeping the capture
+// stream bounded: it never keeps the completed log, request body, or WebSocket
+// payload in memory. JSON strings are copied unchanged, so large base64 payloads
+// remain streamed directly to disk.
+type diagnosticCaptureJSONFormatter struct {
+	writer    *bufio.Writer
+	depth     int
+	inString  bool
+	escaped   bool
+	lineStart bool
+}
+
+func (f *diagnosticCaptureJSONFormatter) Write(data []byte) (int, error) {
+	for _, value := range data {
+		if f.inString {
+			if err := f.writeByte(value); err != nil {
+				return 0, err
+			}
+			if f.escaped {
+				f.escaped = false
+				continue
+			}
+			if value == '\\' {
+				f.escaped = true
+			} else if value == '"' {
+				f.inString = false
+			}
+			continue
+		}
+
+		switch value {
+		case ' ', '\n', '\r', '\t':
+			continue
+		case '"':
+			if err := f.writeByte(value); err != nil {
+				return 0, err
+			}
+			f.inString = true
+		case '{', '[':
+			if err := f.writeByte(value); err != nil {
+				return 0, err
+			}
+			f.depth++
+			if err := f.writeNewline(); err != nil {
+				return 0, err
+			}
+		case '}', ']':
+			f.depth--
+			if f.lineStart {
+				if err := f.writeIndent(); err != nil {
+					return 0, err
+				}
+			} else if err := f.writeNewline(); err != nil {
+				return 0, err
+			} else if err := f.writeIndent(); err != nil {
+				return 0, err
+			}
+			if err := f.writer.WriteByte(value); err != nil {
+				return 0, err
+			}
+			f.lineStart = false
+		case ',':
+			if err := f.writeByte(value); err != nil {
+				return 0, err
+			}
+			if err := f.writeNewline(); err != nil {
+				return 0, err
+			}
+		case ':':
+			if err := f.writeByte(value); err != nil {
+				return 0, err
+			}
+			if err := f.writer.WriteByte(' '); err != nil {
+				return 0, err
+			}
+		default:
+			if err := f.writeByte(value); err != nil {
+				return 0, err
+			}
+		}
+	}
+	return len(data), nil
+}
+
+func (f *diagnosticCaptureJSONFormatter) writeByte(value byte) error {
+	if f.lineStart {
+		if err := f.writeIndent(); err != nil {
+			return err
+		}
+	}
+	if err := f.writer.WriteByte(value); err != nil {
+		return err
+	}
+	f.lineStart = false
+	return nil
+}
+
+func (f *diagnosticCaptureJSONFormatter) writeNewline() error {
+	if !f.lineStart {
+		if err := f.writer.WriteByte('\n'); err != nil {
+			return err
+		}
+	}
+	f.lineStart = true
+	return nil
+}
+
+func (f *diagnosticCaptureJSONFormatter) writeIndent() error {
+	for index := 0; index < f.depth; index++ {
+		if _, err := f.writer.WriteString("  "); err != nil {
+			return err
+		}
+	}
+	f.lineStart = false
+	return nil
+}
+
+func writeDiagnosticCaptureSession(cfg DiagnosticCaptureConfig, flow *DiagnosticFlow, parts []*diagnosticCapturePartState) error {
+	if flow == nil {
+		return nil
+	}
+	base := filepath.Join(
+		cfg.CaptureDir,
+		safeCaptureName(flow.Channel, "unknown"),
+		flow.Started.Format("2006-01-02"),
+		safeTraceID(flow.TraceID),
+	)
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		return err
+	}
+	timestampPath := filepath.Join(base, ".capture-created-at")
+	previousTimestampSize := int64(0)
+	if info, err := os.Stat(timestampPath); err == nil {
+		previousTimestampSize = info.Size()
+	}
+	ensureDiagnosticCaptureTimestamp(base)
+	currentTimestampSize := int64(0)
+	if info, err := os.Stat(timestampPath); err == nil {
+		currentTimestampSize = info.Size()
+	}
+	path := filepath.Join(base, "request-log.json")
+	release := acquireDiagnosticCaptureFinalize(filepath.Clean(base))
+	defer release()
+	var previousSize int64
+	if info, err := os.Stat(path); err == nil {
+		previousSize = info.Size()
+	}
+
+	var inboundRequest *diagnosticCapturePartState
+	var inboundResponse *diagnosticCapturePartState
+	apiRequests := make([]*diagnosticCapturePartState, 0)
+	apiResponses := make([]*diagnosticCapturePartState, 0)
+	for _, state := range parts {
+		if state == nil {
+			continue
+		}
+		switch {
+		case state.role == "inbound" && state.part == "request":
+			inboundRequest = state
+		case state.role == "inbound" && state.part == "response":
+			inboundResponse = state
+		case state.role == "outbound" && state.part == "request":
+			apiRequests = append(apiRequests, state)
+		case state.role == "outbound" && state.part == "response":
+			apiResponses = append(apiResponses, state)
+		}
+	}
+	sort.Slice(apiRequests, func(i, j int) bool { return apiRequests[i].sequence < apiRequests[j].sequence })
+	sort.Slice(apiResponses, func(i, j int) bool { return apiResponses[i].sequence < apiResponses[j].sequence })
+
+	temporaryFile, err := os.CreateTemp(base, ".request-log-*.tmp")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporaryFile.Name()
+	defer os.Remove(temporaryPath)
+	file := temporaryFile
+	bufferedWriter := bufio.NewWriterSize(file, diagnosticCaptureChunkSize)
+	stream := &diagnosticCaptureJSONWriter{
+		writer:    bufferedWriter,
+		formatter: &diagnosticCaptureJSONFormatter{writer: bufferedWriter},
+	}
+	stream.raw(`{"format":"cpa-sections-json","version":1`)
+	if flow.ProxyTraceID != "" {
+		stream.raw(`,"proxy_trace_id":`)
+		stream.value(flow.ProxyTraceID)
+	}
+	if flow.TraceID != "" {
+		stream.raw(`,"newapi_request_id":`)
+		stream.value(flow.TraceID)
+	}
+	if inboundRequest != nil {
+		content := buildDiagnosticCPAJSON(cfg, flow, inboundRequest.sequence, inboundRequest.role, inboundRequest.part, inboundRequest.meta, captureBody{})
+		if content.RequestInfo != nil {
+			stream.raw(`,"request_info":`)
+			stream.value(content.RequestInfo)
+		}
+		if content.Headers != nil {
+			stream.raw(`,"headers":`)
+			stream.value(content.Headers)
+		}
+		stream.raw(`,"request_body":`)
+		writeDiagnosticCaptureBody(stream, cfg, inboundRequest)
+	}
+	if len(apiRequests) > 0 {
+		stream.raw(`,"api_requests":[`)
+		for i, state := range apiRequests {
+			if i > 0 {
+				stream.raw(",")
+			}
+			writeDiagnosticAPIRequest(stream, cfg, flow, state)
+		}
+		stream.raw("]")
+	}
+	if len(apiResponses) > 0 {
+		stream.raw(`,"api_responses":[`)
+		for i, state := range apiResponses {
+			if i > 0 {
+				stream.raw(",")
+			}
+			writeDiagnosticAPIResponse(stream, cfg, flow, state)
+		}
+		stream.raw("]")
+	}
+	if inboundResponse != nil {
+		stream.raw(`,"response":`)
+		writeDiagnosticInboundResponse(stream, cfg, flow, inboundResponse)
+	}
+	stream.raw("}")
+	stream.finish()
+	if stream.err == nil {
+		stream.err = stream.writer.Flush()
+	}
+	closeErr := file.Close()
+	if stream.err == nil {
+		stream.err = closeErr
+	}
+	if stream.err != nil {
+		return stream.err
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return err
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	enforceDiagnosticCaptureStorage(cfg, path, previousSize, info.Size()+currentTimestampSize-previousTimestampSize)
+	return nil
+}
+
+func acquireDiagnosticCaptureFinalize(key string) func() {
+	diagnosticCaptureFinalizeState.Lock()
+	lock := diagnosticCaptureFinalizeState.locks[key]
+	if lock == nil {
+		lock = &diagnosticCaptureFinalizeLock{}
+		diagnosticCaptureFinalizeState.locks[key] = lock
+	}
+	lock.refs++
+	diagnosticCaptureFinalizeState.Unlock()
+
+	lock.mu.Lock()
+	diagnosticCaptureFinalizeSlots <- struct{}{}
+	return func() {
+		<-diagnosticCaptureFinalizeSlots
+		lock.mu.Unlock()
+		diagnosticCaptureFinalizeState.Lock()
+		lock.refs--
+		if lock.refs == 0 {
+			delete(diagnosticCaptureFinalizeState.locks, key)
+		}
+		diagnosticCaptureFinalizeState.Unlock()
+	}
+}
+
+func writeDiagnosticAPIRequest(w *diagnosticCaptureJSONWriter, cfg DiagnosticCaptureConfig, flow *DiagnosticFlow, state *diagnosticCapturePartState) {
+	if diagnosticCapturePartHasWebSocketFrames(state) {
+		writeDiagnosticWebSocketFrameGroup(w, cfg, state, true)
+		return
+	}
+	content := buildDiagnosticCPAJSON(cfg, flow, state.sequence, state.role, state.part, state.meta, captureBody{})
+	request := content.APIRequest
+	w.raw("{")
+	w.raw(`"sequence":`)
+	w.value(request.Sequence)
+	w.raw(`,"timestamp":`)
+	w.value(request.Timestamp)
+	w.raw(`,"upstream_url":`)
+	w.value(request.UpstreamURL)
+	w.raw(`,"http_method":`)
+	w.value(request.HTTPMethod)
+	if request.Headers != nil {
+		w.raw(`,"headers":`)
+		w.value(request.Headers)
+	}
+	w.raw(`,"body":`)
+	writeDiagnosticCaptureBody(w, cfg, state)
+	w.raw("}")
+}
+
+func writeDiagnosticAPIResponse(w *diagnosticCaptureJSONWriter, cfg DiagnosticCaptureConfig, flow *DiagnosticFlow, state *diagnosticCapturePartState) {
+	if diagnosticCapturePartHasWebSocketFrames(state) {
+		writeDiagnosticWebSocketFrameGroup(w, cfg, state, false)
+		return
+	}
+	content := buildDiagnosticCPAJSON(cfg, flow, state.sequence, state.role, state.part, state.meta, captureBody{})
+	response := content.APIResponse
+	w.raw("{")
+	w.raw(`"sequence":`)
+	w.value(response.Sequence)
+	w.raw(`,"timestamp":`)
+	w.value(response.Timestamp)
+	if response.Status != 0 {
+		w.raw(`,"status":`)
+		w.value(response.Status)
+	}
+	if response.Headers != nil {
+		w.raw(`,"headers":`)
+		w.value(response.Headers)
+	}
+	w.raw(`,"body":`)
+	writeDiagnosticCaptureBody(w, cfg, state)
+	if response.Error != "" {
+		w.raw(`,"error":`)
+		w.value(response.Error)
+	}
+	w.raw("}")
+}
+
+func diagnosticCapturePartHasWebSocketFrames(state *diagnosticCapturePartState) bool {
+	if state == nil {
+		return false
+	}
+	if state.webSocketFrames {
+		return true
+	}
+	value, ok := state.meta["websocket_frames"].(bool)
+	return ok && value
+}
+
+func writeDiagnosticWebSocketFrameGroup(w *diagnosticCaptureJSONWriter, cfg DiagnosticCaptureConfig, state *diagnosticCapturePartState, request bool) {
+	if format, _ := state.meta["websocket_frame_format"].(string); format == diagnosticWebSocketFrameFormat {
+		writeDiagnosticSegmentedWebSocketFrameGroup(w, cfg, state, request)
+		return
+	}
+	if w.err != nil || state == nil {
+		return
+	}
+	file, err := os.Open(state.tempPath)
+	if err != nil {
+		w.err = err
+		return
+	}
+	defer file.Close()
+
+	upstreamURL, _ := state.meta["upstream_url"].(string)
+	w.raw("{")
+	w.raw(`"sequence":`)
+	w.value(state.sequence)
+	w.raw(`,"timestamp":`)
+	w.value(state.meta["captured_at"])
+	w.raw(`,"transport":"websocket"`)
+	if upstreamURL != "" {
+		w.raw(`,"upstream_url":`)
+		w.value(upstreamURL)
+	}
+	if request {
+		w.raw(`,"http_method":"WEBSOCKET"`)
+	}
+	w.raw(`,"websocket_frames":[`)
+	first := true
+	for w.err == nil {
+		var header [diagnosticWebSocketFrameHeaderV1Bytes]byte
+		_, err = io.ReadFull(file, header[:])
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			w.err = err
+			break
+		}
+		sequence := int64(binary.BigEndian.Uint64(header[0:8]))
+		timestamp := int64(binary.BigEndian.Uint64(header[8:16]))
+		payloadSize := binary.BigEndian.Uint64(header[16:24])
+		if payloadSize > uint64(1<<63-1) {
+			w.err = fmt.Errorf("diagnostic websocket frame is too large")
+			break
+		}
+		if !first {
+			w.raw(",")
+		}
+		first = false
+		w.raw("{")
+		w.raw(`"sequence":`)
+		w.value(sequence)
+		w.raw(`,"timestamp":`)
+		w.value(time.Unix(0, timestamp).UTC().Format(time.RFC3339Nano))
+		w.raw(`,"body":{"mode":`)
+		w.value(cfg.Mode)
+		w.raw(`,"encoding":"base64","original_size":`)
+		w.value(int64(payloadSize))
+		w.raw(`,"saved_size":`)
+		w.value(int64(payloadSize))
+		w.raw(`,"truncated":false,"base64":"`)
+		encoder := base64.NewEncoder(base64.StdEncoding, w.formatter)
+		_, copyErr := io.CopyN(encoder, file, int64(payloadSize))
+		closeErr := encoder.Close()
+		if copyErr != nil {
+			w.err = copyErr
+		} else if closeErr != nil {
+			w.err = closeErr
+		}
+		w.raw(`"}}`)
+	}
+	w.raw("]}")
+}
+
+func writeDiagnosticSegmentedWebSocketFrameGroup(w *diagnosticCaptureJSONWriter, cfg DiagnosticCaptureConfig, state *diagnosticCapturePartState, request bool) {
+	if w.err != nil || state == nil {
+		return
+	}
+	paths := diagnosticCapturePartTempPaths(state)
+	if len(paths) == 0 {
+		w.err = errors.New("diagnostic websocket frame has no temporary file")
+		return
+	}
+	readers := make([]*os.File, 0, len(paths))
+	for _, path := range paths {
+		file, err := os.Open(path)
+		if err != nil {
+			for _, reader := range readers {
+				_ = reader.Close()
+			}
+			w.err = err
+			return
+		}
+		readers = append(readers, file)
+	}
+	defer func() {
+		for _, reader := range readers {
+			_ = reader.Close()
+		}
+	}()
+
+	upstreamURL, _ := state.meta["upstream_url"].(string)
+	w.raw("{")
+	w.raw(`"sequence":`)
+	w.value(state.sequence)
+	w.raw(`,"timestamp":`)
+	w.value(state.meta["captured_at"])
+	w.raw(`,"transport":"websocket"`)
+	if upstreamURL != "" {
+		w.raw(`,"upstream_url":`)
+		w.value(upstreamURL)
+	}
+	if request {
+		w.raw(`,"http_method":"WEBSOCKET"`)
+	}
+	w.raw(`,"websocket_frames":[`)
+	first := true
+	readerIndex := 0
+	readHeader := func() ([diagnosticWebSocketFrameHeaderBytes]byte, error) {
+		var header [diagnosticWebSocketFrameHeaderBytes]byte
+		for readerIndex < len(readers) {
+			_, err := io.ReadFull(readers[readerIndex], header[:])
+			if err == io.EOF {
+				readerIndex++
+				continue
+			}
+			return header, err
+		}
+		return header, io.EOF
+	}
+	copySegment := func(size int64, encoder io.WriteCloser) error {
+		remaining := size
+		for remaining > 0 {
+			if readerIndex >= len(readers) {
+				return io.ErrUnexpectedEOF
+			}
+			copied, err := io.CopyN(encoder, readers[readerIndex], remaining)
+			remaining -= copied
+			if err == io.EOF && remaining > 0 {
+				readerIndex++
+				continue
+			}
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	for w.err == nil {
+		header, err := readHeader()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			w.err = err
+			break
+		}
+		sequence := int64(binary.BigEndian.Uint64(header[0:8]))
+		timestamp := int64(binary.BigEndian.Uint64(header[8:16]))
+		totalSize := binary.BigEndian.Uint64(header[16:24])
+		segmentSize := binary.BigEndian.Uint64(header[24:32])
+		flags := binary.BigEndian.Uint64(header[32:40])
+		if totalSize > uint64(1<<63-1) || segmentSize > totalSize || flags&diagnosticWebSocketFrameStart == 0 {
+			w.err = errors.New("invalid diagnostic websocket frame segment")
+			break
+		}
+		if !first {
+			w.raw(",")
+		}
+		first = false
+		w.raw("{")
+		w.raw(`"sequence":`)
+		w.value(sequence)
+		w.raw(`,"timestamp":`)
+		w.value(time.Unix(0, timestamp).UTC().Format(time.RFC3339Nano))
+		w.raw(`,"body":{"mode":`)
+		w.value(cfg.Mode)
+		w.raw(`,"encoding":"base64","original_size":`)
+		w.value(int64(totalSize))
+		w.raw(`,"saved_size":`)
+		w.value(int64(totalSize))
+		w.raw(`,"truncated":false,"base64":"`)
+		encoder := base64.NewEncoder(base64.StdEncoding, w.formatter)
+		copiedSize := int64(0)
+		for {
+			if copyErr := copySegment(int64(segmentSize), encoder); copyErr != nil {
+				w.err = copyErr
+				break
+			}
+			copiedSize += int64(segmentSize)
+			if flags&diagnosticWebSocketFrameEnd != 0 {
+				if copiedSize != int64(totalSize) {
+					w.err = errors.New("diagnostic websocket frame segment size mismatch")
+				}
+				break
+			}
+			header, err = readHeader()
+			if err != nil {
+				w.err = err
+				break
+			}
+			nextSequence := int64(binary.BigEndian.Uint64(header[0:8]))
+			nextTimestamp := int64(binary.BigEndian.Uint64(header[8:16]))
+			nextTotalSize := binary.BigEndian.Uint64(header[16:24])
+			segmentSize = binary.BigEndian.Uint64(header[24:32])
+			flags = binary.BigEndian.Uint64(header[32:40])
+			if nextSequence != sequence || nextTimestamp != timestamp || nextTotalSize != totalSize || flags&diagnosticWebSocketFrameStart != 0 || segmentSize > totalSize || copiedSize+int64(segmentSize) > int64(totalSize) {
+				w.err = errors.New("invalid diagnostic websocket frame continuation")
+				break
+			}
+		}
+		if closeErr := encoder.Close(); w.err == nil && closeErr != nil {
+			w.err = closeErr
+		}
+		w.raw(`"}}`)
+	}
+	w.raw("]}")
+}
+
+func writeDiagnosticInboundResponse(w *diagnosticCaptureJSONWriter, cfg DiagnosticCaptureConfig, flow *DiagnosticFlow, state *diagnosticCapturePartState) {
+	content := buildDiagnosticCPAJSON(cfg, flow, state.sequence, state.role, state.part, state.meta, captureBody{})
+	response := content.Response
+	w.raw("{")
+	first := true
+	if response.Status != 0 {
+		w.raw(`"status":`)
+		w.value(response.Status)
+		first = false
+	}
+	if response.DurationMS != 0 {
+		if !first {
+			w.raw(",")
+		}
+		w.raw(`"duration_ms":`)
+		w.value(response.DurationMS)
+		first = false
+	}
+	if response.Headers != nil {
+		if !first {
+			w.raw(",")
+		}
+		w.raw(`"headers":`)
+		w.value(response.Headers)
+		first = false
+	}
+	if !first {
+		w.raw(",")
+	}
+	w.raw(`"body":`)
+	writeDiagnosticCaptureBody(w, cfg, state)
+	w.raw("}")
+}
+
+func writeDiagnosticCaptureBody(w *diagnosticCaptureJSONWriter, cfg DiagnosticCaptureConfig, state *diagnosticCapturePartState) {
+	truncated := !state.complete || state.originalSize != state.savedSize
+	w.raw(`{"mode":`)
+	w.value(cfg.Mode)
+	encoding := "empty"
+	jsonBody := state.jsonBody
+	if cfg.Mode != "full" {
+		encoding = "metadata-only"
+	} else if state.tempPath != "" && state.savedSize > 0 {
+		if jsonBody {
+			encoding = "json"
+		} else {
+			encoding = "base64"
+		}
+	}
+	w.raw(`,"encoding":`)
+	w.value(encoding)
+	w.raw(`,"original_size":`)
+	w.value(state.originalSize)
+	w.raw(`,"saved_size":`)
+	w.value(state.savedSize)
+	w.raw(`,"truncated":`)
+	w.value(truncated)
+	if jsonBody {
+		w.raw(`,"json":`)
+		streamDiagnosticCaptureFile(w, state.tempPath)
+	} else if encoding == "base64" {
+		w.raw(`,"base64":"`)
+		streamDiagnosticCaptureFileBase64(w, state.tempPath)
+		w.raw(`"`)
+	}
+	w.raw("}")
+}
+
+// diagnosticCaptureJSONFile validates a body without retaining it in memory.
+// Formal logs can therefore embed JSON bodies as raw JSON while all other
+// payloads are streamed as base64 instead of being materialized as text.
+func diagnosticCaptureJSONFile(path string) (bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+	return diagnosticJSONStreamValid(bufio.NewReaderSize(file, diagnosticCaptureChunkSize))
+}
+
+func streamDiagnosticCaptureFile(w *diagnosticCaptureJSONWriter, path string) {
+	if w.err != nil {
+		return
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		w.err = err
+		return
+	}
+	defer file.Close()
+	buffer := make([]byte, diagnosticCaptureChunkSize)
+	for w.err == nil {
+		count, err := file.Read(buffer)
+		if count > 0 {
+			w.bytes(buffer[:count])
+		}
+		if err == io.EOF {
+			return
+		}
+		if err != nil {
+			w.err = err
+			return
+		}
+	}
+}
+
+func streamDiagnosticCaptureFileBase64(w *diagnosticCaptureJSONWriter, path string) {
+	if w.err != nil {
+		return
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		w.err = err
+		return
+	}
+	defer file.Close()
+	encoder := base64.NewEncoder(base64.StdEncoding, w.formatter)
+	_, w.err = io.CopyBuffer(encoder, file, make([]byte, diagnosticCaptureChunkSize))
+	if closeErr := encoder.Close(); w.err == nil {
+		w.err = closeErr
+	}
+}
+
+type diagnosticJSONContainer uint8
+
+const (
+	diagnosticJSONObject diagnosticJSONContainer = iota
+	diagnosticJSONArray
+)
+
+type diagnosticJSONState uint8
+
+const (
+	diagnosticJSONRootValue diagnosticJSONState = iota
+	diagnosticJSONRootDone
+	diagnosticJSONObjectKeyOrEnd
+	diagnosticJSONObjectColon
+	diagnosticJSONObjectValue
+	diagnosticJSONObjectCommaOrEnd
+	diagnosticJSONArrayValueOrEnd
+	diagnosticJSONArrayCommaOrEnd
+)
+
+type diagnosticJSONFrame struct {
+	kind     diagnosticJSONContainer
+	state    diagnosticJSONState
+	allowEnd bool
+}
+
+// diagnosticJSONStreamValid is a small streaming JSON grammar validator. It
+// deliberately stores no token values, including very large string values.
+func diagnosticJSONStreamValid(reader *bufio.Reader) (bool, error) {
+	state := diagnosticJSONRootValue
+	frames := make([]diagnosticJSONFrame, 0, 16)
+	inString, stringKey, escaped := false, false, false
+	unicodeDigits, literalIndex, numberState := 0, 0, -1
+	literal := ""
+	seenValue := false
+
+	completeValue := func() bool {
+		seenValue = true
+		if len(frames) == 0 {
+			if state != diagnosticJSONRootValue {
+				return false
+			}
+			state = diagnosticJSONRootDone
+			return true
+		}
+		frame := &frames[len(frames)-1]
+		switch frame.state {
+		case diagnosticJSONObjectValue:
+			frame.state = diagnosticJSONObjectCommaOrEnd
+		case diagnosticJSONArrayValueOrEnd:
+			frame.state = diagnosticJSONArrayCommaOrEnd
+		default:
+			return false
+		}
+		return true
+	}
+
+	for {
+		value, err := reader.ReadByte()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return false, err
+		}
+		reprocess := true
+		for reprocess {
+			reprocess = false
+			if inString {
+				if unicodeDigits > 0 {
+					if !((value >= '0' && value <= '9') || (value >= 'a' && value <= 'f') || (value >= 'A' && value <= 'F')) {
+						return false, nil
+					}
+					unicodeDigits--
+					continue
+				}
+				if escaped {
+					escaped = false
+					if value == 'u' {
+						unicodeDigits = 4
+					} else if !strings.ContainsRune(`"\\/bfnrt`, rune(value)) {
+						return false, nil
+					}
+					continue
+				}
+				if value == '\\' {
+					escaped = true
+					continue
+				}
+				if value < 0x20 {
+					return false, nil
+				}
+				if value != '"' {
+					continue
+				}
+				inString = false
+				if stringKey {
+					if len(frames) == 0 || frames[len(frames)-1].state != diagnosticJSONObjectKeyOrEnd {
+						return false, nil
+					}
+					frames[len(frames)-1].state = diagnosticJSONObjectColon
+				} else if !completeValue() {
+					return false, nil
+				}
+				continue
+			}
+
+			if literal != "" {
+				if value != literal[literalIndex] {
+					return false, nil
+				}
+				literalIndex++
+				if literalIndex == len(literal) {
+					literal = ""
+					if !completeValue() {
+						return false, nil
+					}
+				}
+				continue
+			}
+
+			if numberState >= 0 {
+				if value >= '0' && value <= '9' {
+					switch numberState {
+					case 0:
+						if value == '0' {
+							numberState = 1
+						} else {
+							numberState = 2
+						}
+					case 1:
+						return false, nil
+					case 2, 4, 6:
+					case 3:
+						numberState = 4
+					case 5:
+						numberState = 6
+					}
+					continue
+				}
+				if value == '.' && (numberState == 1 || numberState == 2) {
+					numberState = 3
+					continue
+				}
+				if (value == 'e' || value == 'E') && (numberState == 1 || numberState == 2 || numberState == 4) {
+					numberState = 5
+					continue
+				}
+				if (value == '+' || value == '-') && numberState == 5 {
+					numberState = 6
+					continue
+				}
+				if numberState != 1 && numberState != 2 && numberState != 4 && numberState != 6 {
+					return false, nil
+				}
+				numberState = -1
+				if !completeValue() {
+					return false, nil
+				}
+				reprocess = true
+				continue
+			}
+
+			if value == ' ' || value == '\n' || value == '\r' || value == '\t' {
+				continue
+			}
+			if state == diagnosticJSONRootDone {
+				return false, nil
+			}
+			if len(frames) > 0 {
+				frame := &frames[len(frames)-1]
+				switch frame.state {
+				case diagnosticJSONObjectKeyOrEnd:
+					if value == '}' {
+						if !frame.allowEnd {
+							return false, nil
+						}
+						frames = frames[:len(frames)-1]
+						if !completeValue() {
+							return false, nil
+						}
+						continue
+					}
+					if value != '"' {
+						return false, nil
+					}
+					inString, stringKey = true, true
+					continue
+				case diagnosticJSONObjectColon:
+					if value != ':' {
+						return false, nil
+					}
+					frame.state = diagnosticJSONObjectValue
+					continue
+				case diagnosticJSONObjectCommaOrEnd:
+					if value == ',' {
+						frame.state = diagnosticJSONObjectKeyOrEnd
+						frame.allowEnd = false
+						continue
+					}
+					if value == '}' {
+						frames = frames[:len(frames)-1]
+						if !completeValue() {
+							return false, nil
+						}
+						continue
+					}
+					return false, nil
+				case diagnosticJSONArrayValueOrEnd:
+					if value == ']' {
+						if !frame.allowEnd {
+							return false, nil
+						}
+						frames = frames[:len(frames)-1]
+						if !completeValue() {
+							return false, nil
+						}
+						continue
+					}
+				case diagnosticJSONArrayCommaOrEnd:
+					if value == ',' {
+						frame.state = diagnosticJSONArrayValueOrEnd
+						frame.allowEnd = false
+						continue
+					}
+					if value == ']' {
+						frames = frames[:len(frames)-1]
+						if !completeValue() {
+							return false, nil
+						}
+						continue
+					}
+					return false, nil
+				}
+			}
+			switch value {
+			case '{':
+				frames = append(frames, diagnosticJSONFrame{kind: diagnosticJSONObject, state: diagnosticJSONObjectKeyOrEnd, allowEnd: true})
+			case '[':
+				frames = append(frames, diagnosticJSONFrame{kind: diagnosticJSONArray, state: diagnosticJSONArrayValueOrEnd, allowEnd: true})
+			case '"':
+				inString, stringKey = true, false
+			case 't':
+				literal, literalIndex = "true", 1
+			case 'f':
+				literal, literalIndex = "false", 1
+			case 'n':
+				literal, literalIndex = "null", 1
+			case '-':
+				numberState = 0
+			case '0':
+				numberState = 1
+			default:
+				if value >= '1' && value <= '9' {
+					numberState = 2
+				} else {
+					return false, nil
+				}
+			}
+		}
+	}
+	if inString || escaped || unicodeDigits != 0 || literal != "" || len(frames) != 0 {
+		return false, nil
+	}
+	if numberState >= 0 {
+		if numberState != 1 && numberState != 2 && numberState != 4 && numberState != 6 {
+			return false, nil
+		}
+		return completeValue(), nil
+	}
+	return seenValue && state == diagnosticJSONRootDone, nil
+}
+
+func init() {
+	diagnosticCaptureTempJanitor.last = make(map[string]time.Time)
+}
+
+func logDiagnosticCaptureFailure(message string) {
+	common.SysError(message)
+}

@@ -21,20 +21,17 @@ import (
 )
 
 const (
-	diagnosticCaptureEventBuffer = 256
-	diagnosticCaptureChunkSize   = 64 * 1024
-	// Keep diagnostic disk work bounded while allowing independent traces to finish together.
-	diagnosticCaptureFinalizeConcurrency   = 4
-	diagnosticCaptureSpoolWriteConcurrency = 12
-	diagnosticWebSocketFramesPerPart       = 1000
-	diagnosticWebSocketPartMaxBytes        = 64 * 1024 * 1024
-	diagnosticWebSocketFrameHeaderV1Bytes  = 24
-	diagnosticWebSocketFrameHeaderBytes    = 40
-	diagnosticWebSocketFrameStart          = 1
-	diagnosticWebSocketFrameEnd            = 2
-	diagnosticCaptureCleanupInterval       = 10 * time.Minute
-	diagnosticCaptureRetryMaxDelay         = 6 * time.Hour
-	diagnosticCaptureRetryWindow           = time.Hour
+	diagnosticCaptureEventBuffer          = 256
+	diagnosticCaptureChunkSize            = 64 * 1024
+	diagnosticWebSocketFramesPerPart      = 1000
+	diagnosticWebSocketPartMaxBytes       = 64 * 1024 * 1024
+	diagnosticWebSocketFrameHeaderV1Bytes = 24
+	diagnosticWebSocketFrameHeaderBytes   = 40
+	diagnosticWebSocketFrameStart         = 1
+	diagnosticWebSocketFrameEnd           = 2
+	diagnosticCaptureCleanupInterval      = 10 * time.Minute
+	diagnosticCaptureRetryMaxDelay        = 6 * time.Hour
+	diagnosticCaptureRetryWindow          = time.Hour
 )
 
 type diagnosticCaptureEventKind uint8
@@ -84,13 +81,6 @@ var diagnosticCaptureFinalizeState = struct {
 	sync.Mutex
 	locks map[string]*diagnosticCaptureFinalizeLock
 }{locks: make(map[string]*diagnosticCaptureFinalizeLock)}
-
-var diagnosticCaptureFinalizeSlots = make(chan struct{}, diagnosticCaptureFinalizeConcurrency)
-
-// Limit simultaneous spool writes across requests. Relay handlers only append
-// to their asynchronous queue, so this bounds disk contention without making
-// upstream or downstream traffic wait for logging I/O.
-var diagnosticCaptureSpoolWriteSlots = make(chan struct{}, diagnosticCaptureSpoolWriteConcurrency)
 
 type diagnosticCaptureFinalizeLock struct {
 	mu   sync.Mutex
@@ -400,9 +390,7 @@ func (s *diagnosticCaptureSession) run() {
 				state.tempPath = file.Name()
 				markDiagnosticTempFileActive(state.tempPath)
 			}
-			diagnosticCaptureSpoolWriteSlots <- struct{}{}
 			_, writeErr := state.file.Write(event.data)
-			<-diagnosticCaptureSpoolWriteSlots
 			if writeErr != nil {
 				s.fail("failed to write diagnostic body spool: " + writeErr.Error())
 				continue
@@ -467,13 +455,11 @@ func (s *diagnosticCaptureSession) run() {
 				binary.BigEndian.PutUint64(header[16:24], uint64(len(event.data)))
 				binary.BigEndian.PutUint64(header[24:32], uint64(segmentSize))
 				binary.BigEndian.PutUint64(header[32:40], flags)
-				diagnosticCaptureSpoolWriteSlots <- struct{}{}
 				_, headerErr := group.state.file.Write(header[:])
 				var payloadErr error
 				if headerErr == nil {
 					_, payloadErr = group.state.file.Write(segment)
 				}
-				<-diagnosticCaptureSpoolWriteSlots
 				if headerErr != nil {
 					s.fail("failed to write diagnostic websocket frame header: " + headerErr.Error())
 					break
@@ -1813,6 +1799,14 @@ func writeDiagnosticCaptureSession(cfg DiagnosticCaptureConfig, flow *Diagnostic
 		stream.raw(`,"newapi_request_id":`)
 		stream.value(flow.TraceID)
 	}
+	if flow.Identity != (DiagnosticFlow{}.Identity) {
+		stream.raw(`,"identity":`)
+		stream.value(flow.Identity)
+	}
+	if flow.Context != (DiagnosticFlow{}.Context) {
+		stream.raw(`,"request_context":`)
+		stream.value(flow.Context)
+	}
 	if inboundRequest != nil {
 		content := buildDiagnosticCPAJSON(cfg, flow, inboundRequest.sequence, inboundRequest.role, inboundRequest.part, inboundRequest.meta, captureBody{})
 		if content.RequestInfo != nil {
@@ -1884,9 +1878,7 @@ func acquireDiagnosticCaptureFinalize(key string) func() {
 	diagnosticCaptureFinalizeState.Unlock()
 
 	lock.mu.Lock()
-	diagnosticCaptureFinalizeSlots <- struct{}{}
 	return func() {
-		<-diagnosticCaptureFinalizeSlots
 		lock.mu.Unlock()
 		diagnosticCaptureFinalizeState.Lock()
 		lock.refs--

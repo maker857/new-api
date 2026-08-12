@@ -93,6 +93,9 @@ type DiagnosticFlow struct {
 	ProxyTraceID string
 	Channel      string
 	Started      time.Time
+	RequestInfo  diagnosticRequestInfoJSON
+	Identity     diagnosticIdentityJSON
+	Context      diagnosticRequestContextJSON
 	session      *diagnosticCaptureSession
 	writer       *diagnosticResponseWriter
 }
@@ -124,6 +127,8 @@ type diagnosticCombinedCPAJSON struct {
 	ProxyTraceID    string                        `json:"proxy_trace_id,omitempty"`
 	NewAPIRequestID string                        `json:"newapi_request_id,omitempty"`
 	RequestInfo     *diagnosticRequestInfoJSON    `json:"request_info,omitempty"`
+	Identity        *diagnosticIdentityJSON       `json:"identity,omitempty"`
+	RequestContext  *diagnosticRequestContextJSON `json:"request_context,omitempty"`
 	Request         *diagnosticRequestPayloadJSON `json:"request,omitempty"`
 	APIRequests     []diagnosticAPIRequestJSON    `json:"api_requests,omitempty"`
 	APIResponses    []diagnosticAPIResponseJSON   `json:"api_responses,omitempty"`
@@ -131,13 +136,38 @@ type diagnosticCombinedCPAJSON struct {
 }
 
 type diagnosticRequestInfoJSON struct {
-	AppVersion          string `json:"version"`
-	URL                 string `json:"url"`
-	Method              string `json:"method"`
-	DownstreamTransport string `json:"downstream_transport,omitempty"`
-	UpstreamTransport   string `json:"upstream_transport,omitempty"`
-	Timestamp           string `json:"timestamp"`
-	RemoteAddr          string `json:"remote_addr,omitempty"`
+	AppVersion      string `json:"version,omitempty"`
+	ProtocolVersion string `json:"protocol_version,omitempty"`
+	BaseURL         string `json:"base_url,omitempty"`
+	URL             string `json:"url,omitempty"`
+	Method          string `json:"method,omitempty"`
+	Timestamp       string `json:"timestamp,omitempty"`
+	RemoteAddr      string `json:"remote_addr,omitempty"`
+}
+
+type diagnosticIdentityJSON struct {
+	UserID         int    `json:"user_id,omitempty"`
+	Username       string `json:"username,omitempty"`
+	TokenName      string `json:"token_name,omitempty"`
+	TokenKeyMasked string `json:"token_key_masked,omitempty"`
+	ChannelID      int    `json:"channel_id,omitempty"`
+	ChannelName    string `json:"channel_name,omitempty"`
+	Group          string `json:"group,omitempty"`
+}
+
+type diagnosticRequestContextJSON struct {
+	RequestID         string `json:"request_id,omitempty"`
+	UpstreamRequestID string `json:"upstream_request_id,omitempty"`
+	ModelName         string `json:"model_name,omitempty"`
+	UpstreamModelName string `json:"upstream_model_name,omitempty"`
+	Status            string `json:"status,omitempty"`
+	StreamStatus      string `json:"stream_status,omitempty"`
+	DurationMS        int64  `json:"duration_ms,omitempty"`
+	FirstResponseMS   int64  `json:"first_response_ms,omitempty"`
+	PromptTokens      int    `json:"prompt_tokens,omitempty"`
+	CompletionTokens  int    `json:"completion_tokens,omitempty"`
+	RetryCount        int    `json:"retry_count,omitempty"`
+	BillingSource     string `json:"billing_source,omitempty"`
 }
 
 type diagnosticAPIRequestJSON struct {
@@ -427,11 +457,19 @@ func DiagnosticCaptureMiddleware() gin.HandlerFunc {
 		if !ok || diagnosticFlow == nil || diagnosticFlow.session == nil || diagnosticFlow.writer == nil {
 			return
 		}
+		populateDiagnosticFlowFromContext(diagnosticFlow, c, nil)
+		diagnosticFlow.Context.DurationMS = time.Since(diagnosticFlow.Started).Milliseconds()
+		statusCode := c.Writer.Status()
+		if statusCode >= http.StatusBadRequest {
+			diagnosticFlow.Context.Status = "error"
+		} else if statusCode > 0 {
+			diagnosticFlow.Context.Status = "success"
+		}
 		diagnosticFlow.writer.finish(map[string]any{
 			"captured_at":  time.Now().UTC().Format(time.RFC3339Nano),
 			"role":         "inbound",
-			"status_code":  c.Writer.Status(),
-			"duration_ms":  time.Since(diagnosticFlow.Started).Milliseconds(),
+			"status_code":  statusCode,
+			"duration_ms":  diagnosticFlow.Context.DurationMS,
 			"headers":      redactHeaders(c.Writer.Header()),
 			"body_capture": diagnosticFlow.session.cfg.Mode,
 		})
@@ -477,6 +515,7 @@ func startDiagnosticCaptureForChannel(c *gin.Context, channelID int, channelName
 		Channel:      safeCaptureName(channelName, "unknown"),
 		Started:      time.Now(),
 	}
+	populateDiagnosticFlowFromContext(flow, c, nil)
 	flow.session = newDiagnosticCaptureSession(cfg, flow)
 	if flow.session == nil {
 		return
@@ -529,7 +568,7 @@ func startDiagnosticCaptureForChannel(c *gin.Context, channelID int, channelName
 		flow.session.endPart("inbound-request", nil, 0, true)
 	}
 	flow.session.startPart("inbound-response", sequence, "inbound", "response", nil)
-	flow.writer = newDiagnosticResponseWriter(c.Writer, flow.session, "inbound-response", cfg.Mode == "full")
+	flow.writer = newDiagnosticResponseWriter(c.Writer, flow.session, flow, "inbound-response", cfg.Mode == "full")
 	c.Writer = flow.writer
 }
 
@@ -557,10 +596,11 @@ func PrepareDiagnosticOutboundRequest(c *gin.Context, info *relaycommon.RelayInf
 		}
 		StartDiagnosticCaptureForChannel(c, channelID, channelName)
 		flow = getOrCreateDiagnosticFlow(c)
-		if flow.session == nil {
-			return body, nil
-		}
+	if flow.session == nil {
+		return body, nil
 	}
+	}
+	populateDiagnosticFlowFromContext(flow, c, info)
 	channelID := 0
 	if info != nil && info.ChannelMeta != nil {
 		channelID = info.ChannelMeta.ChannelId
@@ -629,6 +669,12 @@ func WrapDiagnosticOutboundResponse(c *gin.Context, resp *http.Response, exchang
 		"duration_ms": time.Since(exchange.Started).Milliseconds(),
 		"headers":     redactHeaders(resp.Header),
 	})
+	flow.Context.DurationMS = time.Since(flow.Started).Milliseconds()
+	if resp.StatusCode >= http.StatusBadRequest {
+		flow.Context.Status = "error"
+	} else if resp.StatusCode > 0 {
+		flow.Context.Status = "success"
+	}
 	if flow.session.cfg.Mode != "full" || resp.Body == nil {
 		flow.session.endPart(partID, nil, 0, true)
 		return
@@ -652,6 +698,12 @@ func WrapDiagnosticOutboundNDJSONResponse(resp *http.Response, exchange *Diagnos
 		"duration_ms": time.Since(exchange.Started).Milliseconds(),
 		"headers":     redactHeaders(resp.Header),
 	})
+	flow.Context.DurationMS = time.Since(flow.Started).Milliseconds()
+	if resp.StatusCode >= http.StatusBadRequest {
+		flow.Context.Status = "error"
+	} else if resp.StatusCode > 0 {
+		flow.Context.Status = "success"
+	}
 	if flow.session.cfg.Mode != "full" || resp.Body == nil {
 		flow.session.endPart(partID, nil, 0, true)
 		return
@@ -673,6 +725,8 @@ func RecordDiagnosticOutboundFailure(exchange *DiagnosticExchange, requestErr er
 		"duration_ms": time.Since(exchange.Started).Milliseconds(),
 		"error":       requestErr.Error(),
 	})
+	flow.Context.DurationMS = time.Since(flow.Started).Milliseconds()
+	flow.Context.Status = "error"
 	flow.session.endPart(partID, nil, 0, true)
 }
 
@@ -692,6 +746,12 @@ func RecordDiagnosticOutboundResponseMetadata(exchange *DiagnosticExchange, stat
 		"duration_ms": time.Since(exchange.Started).Milliseconds(),
 		"headers":     redactHeaders(headers),
 	})
+	flow.Context.DurationMS = time.Since(flow.Started).Milliseconds()
+	if status >= http.StatusBadRequest {
+		flow.Context.Status = "error"
+	} else {
+		flow.Context.Status = "success"
+	}
 	flow.session.endPart(partID, nil, 0, true)
 }
 
@@ -906,6 +966,21 @@ func writeCombinedCapture(path string, flow *DiagnosticFlow, content diagnosticC
 	if flow != nil {
 		if combined.NewAPIRequestID == "" {
 			combined.NewAPIRequestID = flow.TraceID
+		}
+		if combined.RequestInfo == nil && flow.RequestInfo != (diagnosticRequestInfoJSON{}) {
+			combined.RequestInfo = &flow.RequestInfo
+		}
+		if combined.Identity == nil {
+			identity := flow.Identity
+			if identity != (diagnosticIdentityJSON{}) {
+				combined.Identity = &identity
+			}
+		}
+		if combined.RequestContext == nil {
+			ctx := flow.Context
+			if ctx != (diagnosticRequestContextJSON{}) {
+				combined.RequestContext = &ctx
+			}
 		}
 	}
 	switch {
@@ -1803,13 +1878,13 @@ func buildDiagnosticCPAJSON(cfg DiagnosticCaptureConfig, flow *DiagnosticFlow, s
 			return content
 		}
 		content.RequestInfo = &diagnosticRequestInfoJSON{
-			AppVersion:          stringFromMeta(meta, "protocol"),
-			URL:                 stringFromMeta(meta, "path"),
-			Method:              stringFromMeta(meta, "method"),
-			DownstreamTransport: "http",
-			UpstreamTransport:   "http",
-			Timestamp:           capturedAt,
-			RemoteAddr:          stringFromMeta(meta, "remote_addr"),
+			AppVersion:     flow.RequestInfo.AppVersion,
+			ProtocolVersion: stringFromMeta(meta, "protocol"),
+			BaseURL:        flow.RequestInfo.BaseURL,
+			URL:            flow.RequestInfo.URL,
+			Method:         flow.RequestInfo.Method,
+			Timestamp:      capturedAt,
+			RemoteAddr:     flow.RequestInfo.RemoteAddr,
 		}
 		if content.RequestInfo.AppVersion == "" {
 			content.RequestInfo.AppVersion = common.Version
@@ -1834,6 +1909,9 @@ func buildDiagnosticCPAJSON(cfg DiagnosticCaptureConfig, flow *DiagnosticFlow, s
 		DurationMS: int64FromMeta(meta, "duration_ms"),
 		Response:   diagnosticResponsePayloadJSON{Headers: headers, Body: bodyJSON},
 	}
+	if flow != nil {
+		content.Meta = mergeDiagnosticFlowMeta(content.Meta, flow, meta)
+	}
 	return content
 }
 
@@ -1851,6 +1929,191 @@ func compactCaptureMeta(meta map[string]any) map[string]any {
 		return nil
 	}
 	return result
+}
+
+func mergeDiagnosticFlowMeta(meta map[string]any, flow *DiagnosticFlow, partMeta map[string]any) map[string]any {
+	if flow == nil {
+		return meta
+	}
+	merged := make(map[string]any)
+	if meta != nil {
+		for k, v := range meta {
+			merged[k] = v
+		}
+	}
+	if len(flow.RequestInfo.BaseURL) > 0 {
+		merged["base_url"] = flow.RequestInfo.BaseURL
+	}
+	if len(flow.Identity.Username) > 0 {
+		merged["username"] = flow.Identity.Username
+	}
+	if len(flow.Identity.TokenName) > 0 {
+		merged["token_name"] = flow.Identity.TokenName
+	}
+	if len(flow.Identity.TokenKeyMasked) > 0 {
+		merged["token_key_masked"] = flow.Identity.TokenKeyMasked
+	}
+	if flow.Identity.ChannelID > 0 {
+		merged["channel_id"] = flow.Identity.ChannelID
+	}
+	if len(flow.Identity.ChannelName) > 0 {
+		merged["channel_name"] = flow.Identity.ChannelName
+	}
+	if len(flow.Identity.Group) > 0 {
+		merged["group"] = flow.Identity.Group
+	}
+	if len(flow.Context.RequestID) > 0 {
+		merged["request_id"] = flow.Context.RequestID
+	}
+	if len(flow.Context.UpstreamRequestID) > 0 {
+		merged["upstream_request_id"] = flow.Context.UpstreamRequestID
+	}
+	if len(flow.Context.ModelName) > 0 {
+		merged["model_name"] = flow.Context.ModelName
+	}
+	if len(flow.Context.UpstreamModelName) > 0 {
+		merged["upstream_model_name"] = flow.Context.UpstreamModelName
+	}
+	if len(flow.Context.Status) > 0 {
+		merged["status"] = flow.Context.Status
+	}
+	if len(flow.Context.StreamStatus) > 0 {
+		merged["stream_status"] = flow.Context.StreamStatus
+	}
+	if flow.Context.DurationMS > 0 {
+		merged["duration_ms"] = flow.Context.DurationMS
+	}
+	if flow.Context.FirstResponseMS > 0 {
+		merged["first_response_ms"] = flow.Context.FirstResponseMS
+	}
+	if flow.Context.PromptTokens > 0 {
+		merged["prompt_tokens"] = flow.Context.PromptTokens
+	}
+	if flow.Context.CompletionTokens > 0 {
+		merged["completion_tokens"] = flow.Context.CompletionTokens
+	}
+	if flow.Context.RetryCount > 0 {
+		merged["retry_count"] = flow.Context.RetryCount
+	}
+	if len(flow.Context.BillingSource) > 0 {
+		merged["billing_source"] = flow.Context.BillingSource
+	}
+	if partMeta != nil {
+		for k, v := range partMeta {
+			if _, exists := merged[k]; !exists {
+				merged[k] = v
+			}
+		}
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	return merged
+}
+
+func populateDiagnosticFlowFromContext(flow *DiagnosticFlow, c *gin.Context, info *relaycommon.RelayInfo) {
+	if flow == nil || c == nil {
+		return
+	}
+	if flow.RequestInfo.AppVersion == "" {
+		flow.RequestInfo.AppVersion = common.Version
+	}
+	if flow.RequestInfo.ProtocolVersion == "" && c.Request != nil {
+		flow.RequestInfo.ProtocolVersion = c.Request.Proto
+	}
+	if flow.RequestInfo.Timestamp == "" {
+		flow.RequestInfo.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	if flow.RequestInfo.RemoteAddr == "" && c.Request != nil {
+		flow.RequestInfo.RemoteAddr = c.ClientIP()
+	}
+	if flow.RequestInfo.URL == "" && c.Request != nil {
+		flow.RequestInfo.URL = c.Request.URL.RequestURI()
+	}
+	if flow.RequestInfo.Method == "" && c.Request != nil {
+		flow.RequestInfo.Method = c.Request.Method
+	}
+	if flow.RequestInfo.BaseURL == "" {
+		if c.Request != nil {
+			scheme := c.Request.URL.Scheme
+			if scheme == "" {
+				scheme = "http"
+			}
+			host := c.Request.Host
+			if host != "" {
+				flow.RequestInfo.BaseURL = scheme + "://" + host
+			}
+		}
+	}
+	if flow.Identity.Username == "" {
+		flow.Identity.Username = c.GetString("username")
+	}
+	if flow.Identity.UserID == 0 {
+		flow.Identity.UserID = common.GetContextKeyInt(c, constant.ContextKeyUserId)
+	}
+	if flow.Identity.TokenName == "" {
+		if value := c.GetString("token_name"); value != "" {
+			flow.Identity.TokenName = value
+		}
+	}
+	if flow.Identity.TokenKeyMasked == "" {
+		if key := common.GetContextKeyString(c, constant.ContextKeyTokenKey); key != "" {
+			flow.Identity.TokenKeyMasked = maskDiagnosticTokenKey(key)
+		}
+	}
+	if flow.Identity.ChannelID == 0 {
+		flow.Identity.ChannelID = common.GetContextKeyInt(c, constant.ContextKeyChannelId)
+	}
+	if flow.Identity.ChannelName == "" {
+		flow.Identity.ChannelName = common.GetContextKeyString(c, constant.ContextKeyChannelName)
+	}
+	if flow.Identity.Group == "" {
+		if group := common.GetContextKeyString(c, constant.ContextKeyUsingGroup); group != "" {
+			flow.Identity.Group = group
+		} else {
+			flow.Identity.Group = common.GetContextKeyString(c, constant.ContextKeyUserGroup)
+		}
+	}
+	if flow.Context.RequestID == "" {
+		flow.Context.RequestID = c.GetString(common.RequestIdKey)
+	}
+	if flow.Context.UpstreamRequestID == "" {
+		flow.Context.UpstreamRequestID = c.GetString(common.UpstreamRequestIdKey)
+	}
+	if flow.Context.ModelName == "" {
+		flow.Context.ModelName = common.GetContextKeyString(c, constant.ContextKeyOriginalModel)
+	}
+	if info != nil {
+		if flow.Context.UpstreamModelName == "" {
+			flow.Context.UpstreamModelName = info.OriginModelName
+		}
+		if flow.Context.RetryCount == 0 {
+			flow.Context.RetryCount = info.RetryIndex
+		}
+		if flow.Context.BillingSource == "" {
+			flow.Context.BillingSource = info.BillingSource
+		}
+		if flow.Identity.ChannelID == 0 && info.ChannelMeta != nil {
+			flow.Identity.ChannelID = info.ChannelMeta.ChannelId
+		}
+		if flow.Identity.ChannelName == "" && info.ChannelMeta != nil {
+			flow.Identity.ChannelName = info.ChannelMeta.ChannelName
+		}
+		if flow.Identity.TokenName == "" {
+			flow.Identity.TokenName = common.GetContextKeyString(c, "token_name")
+		}
+	}
+}
+
+func maskDiagnosticTokenKey(key string) string {
+	if key == "" {
+		return ""
+	}
+	runes := []rune(key)
+	if len(runes) <= 12 {
+		return model.MaskTokenKey(key)
+	}
+	return string(runes[:6]) + "******" + string(runes[len(runes)-6:])
 }
 
 func encodeDiagnosticBody(mode string, body captureBody) diagnosticBodyJSON {

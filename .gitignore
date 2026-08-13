@@ -44,6 +44,7 @@ service/openaicompat/chat_responses_live_local_test.go
 # Local diagnostic captures and runtime logs
 captures/
 local-newapi*.log
+diagnostic-capture-temp/
 
 # Local infrastructure details
 run-local-newapi.ps1

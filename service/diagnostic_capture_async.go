@@ -21,20 +21,17 @@ import (
 )
 
 const (
-	diagnosticCaptureEventBuffer = 256
-	diagnosticCaptureChunkSize   = 64 * 1024
-	// Keep diagnostic disk work bounded while allowing independent traces to finish together.
-	diagnosticCaptureFinalizeConcurrency   = 4
-	diagnosticCaptureSpoolWriteConcurrency = 12
-	diagnosticWebSocketFramesPerPart       = 1000
-	diagnosticWebSocketPartMaxBytes        = 64 * 1024 * 1024
-	diagnosticWebSocketFrameHeaderV1Bytes  = 24
-	diagnosticWebSocketFrameHeaderBytes    = 40
-	diagnosticWebSocketFrameStart          = 1
-	diagnosticWebSocketFrameEnd            = 2
-	diagnosticCaptureCleanupInterval       = 10 * time.Minute
-	diagnosticCaptureRetryMaxDelay         = 6 * time.Hour
-	diagnosticCaptureRetryWindow           = time.Hour
+	diagnosticCaptureEventBuffer          = 256
+	diagnosticCaptureChunkSize            = 64 * 1024
+	diagnosticWebSocketFramesPerPart      = 1000
+	diagnosticWebSocketPartMaxBytes       = 64 * 1024 * 1024
+	diagnosticWebSocketFrameHeaderV1Bytes = 24
+	diagnosticWebSocketFrameHeaderBytes   = 40
+	diagnosticWebSocketFrameStart         = 1
+	diagnosticWebSocketFrameEnd           = 2
+	diagnosticCaptureCleanupInterval      = 10 * time.Minute
+	diagnosticCaptureRetryMaxDelay        = 6 * time.Hour
+	diagnosticCaptureRetryWindow          = time.Hour
 )
 
 type diagnosticCaptureEventKind uint8
@@ -85,13 +82,6 @@ var diagnosticCaptureFinalizeState = struct {
 	locks map[string]*diagnosticCaptureFinalizeLock
 }{locks: make(map[string]*diagnosticCaptureFinalizeLock)}
 
-var diagnosticCaptureFinalizeSlots = make(chan struct{}, diagnosticCaptureFinalizeConcurrency)
-
-// Limit simultaneous spool writes across requests. Relay handlers only append
-// to their asynchronous queue, so this bounds disk contention without making
-// upstream or downstream traffic wait for logging I/O.
-var diagnosticCaptureSpoolWriteSlots = make(chan struct{}, diagnosticCaptureSpoolWriteConcurrency)
-
 type diagnosticCaptureFinalizeLock struct {
 	mu   sync.Mutex
 	refs int
@@ -110,6 +100,10 @@ type diagnosticCapturePartState struct {
 	originalSize    int64
 	complete        bool
 	jsonBody        bool
+	streamJSON      []byte
+	streamText      []byte
+	streamParseErr  string
+	streamEvents    int
 	webSocketFrames bool
 }
 
@@ -396,9 +390,7 @@ func (s *diagnosticCaptureSession) run() {
 				state.tempPath = file.Name()
 				markDiagnosticTempFileActive(state.tempPath)
 			}
-			diagnosticCaptureSpoolWriteSlots <- struct{}{}
 			_, writeErr := state.file.Write(event.data)
-			<-diagnosticCaptureSpoolWriteSlots
 			if writeErr != nil {
 				s.fail("failed to write diagnostic body spool: " + writeErr.Error())
 				continue
@@ -463,13 +455,11 @@ func (s *diagnosticCaptureSession) run() {
 				binary.BigEndian.PutUint64(header[16:24], uint64(len(event.data)))
 				binary.BigEndian.PutUint64(header[24:32], uint64(segmentSize))
 				binary.BigEndian.PutUint64(header[32:40], flags)
-				diagnosticCaptureSpoolWriteSlots <- struct{}{}
 				_, headerErr := group.state.file.Write(header[:])
 				var payloadErr error
 				if headerErr == nil {
 					_, payloadErr = group.state.file.Write(segment)
 				}
-				<-diagnosticCaptureSpoolWriteSlots
 				if headerErr != nil {
 					s.fail("failed to write diagnostic websocket frame header: " + headerErr.Error())
 					break
@@ -543,6 +533,17 @@ func (s *diagnosticCaptureSession) run() {
 			continue
 		}
 		state.jsonBody = jsonBody
+		if !jsonBody && diagnosticCapturePartIsSSE(state) {
+			streamJSON, streamText, streamParseErr, streamEvents, convertErr := diagnosticCaptureSSEFile(state.tempPath)
+			if convertErr != nil {
+				s.fail("failed to convert diagnostic SSE body: " + convertErr.Error())
+				continue
+			}
+			state.streamJSON = streamJSON
+			state.streamText = streamText
+			state.streamParseErr = streamParseErr
+			state.streamEvents = streamEvents
+		}
 	}
 	captureFailed := s.failed.Load()
 	writeErr := writeDiagnosticCaptureSession(s.cfg, &flow, orderedParts)
@@ -770,6 +771,43 @@ var diagnosticCaptureTempCleanupMu sync.Mutex
 
 var diagnosticCaptureCleanupLoop sync.Once
 
+var diagnosticCaptureReconciliationWakeup = make(chan struct{}, 1)
+
+func notifyDiagnosticCaptureReconciliationSettingsChanged() {
+	select {
+	case diagnosticCaptureReconciliationWakeup <- struct{}{}:
+	default:
+	}
+}
+
+func nextDiagnosticCaptureReconciliation(now time.Time, cfg DiagnosticCaptureConfig) time.Time {
+	location := now.Location()
+	candidate := time.Date(now.Year(), now.Month(), now.Day(), cfg.ReconciliationHour, cfg.ReconciliationMinute, 0, 0, location)
+	switch cfg.ReconciliationMode {
+	case diagnosticCaptureScheduleWeekly:
+		days := (cfg.ReconciliationWeekday - int(now.Weekday()) + 7) % 7
+		candidate = candidate.AddDate(0, 0, days)
+		if !candidate.After(now) {
+			candidate = candidate.AddDate(0, 0, 7)
+		}
+	case diagnosticCaptureScheduleMonthly:
+		lastDay := time.Date(now.Year(), now.Month()+1, 0, 0, 0, 0, 0, location).Day()
+		monthDay := min(cfg.ReconciliationMonthday, lastDay)
+		candidate = time.Date(now.Year(), now.Month(), monthDay, cfg.ReconciliationHour, cfg.ReconciliationMinute, 0, 0, location)
+		if !candidate.After(now) {
+			nextMonth := time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, location)
+			lastDay = time.Date(nextMonth.Year(), nextMonth.Month()+1, 0, 0, 0, 0, 0, location).Day()
+			monthDay = min(cfg.ReconciliationMonthday, lastDay)
+			candidate = time.Date(nextMonth.Year(), nextMonth.Month(), monthDay, cfg.ReconciliationHour, cfg.ReconciliationMinute, 0, 0, location)
+		}
+	default:
+		if !candidate.After(now) {
+			candidate = candidate.AddDate(0, 0, 1)
+		}
+	}
+	return candidate
+}
+
 func prepareDiagnosticCaptureTempDir(cfg DiagnosticCaptureConfig) {
 	tempDir := strings.TrimSpace(cfg.TempDir)
 	if tempDir == "" {
@@ -815,13 +853,29 @@ func StartDiagnosticCaptureCleanup() {
 	diagnosticCaptureCleanupLoop.Do(func() {
 		go func() {
 			for {
-				now := time.Now().In(time.FixedZone("CST", 8*60*60))
-				next := time.Date(now.Year(), now.Month(), now.Day(), 3, 0, 0, 0, now.Location())
-				if !next.After(now) {
-					next = next.AddDate(0, 0, 1)
+				cfg := DiagnosticCaptureConfigFromOptions()
+				if !cfg.ReconciliationEnabled {
+					<-diagnosticCaptureReconciliationWakeup
+					continue
 				}
-				time.Sleep(time.Until(next))
-				reconcileDiagnosticCaptureStorage()
+				now := time.Now().In(time.FixedZone("CST", 8*60*60))
+				timer := time.NewTimer(time.Until(nextDiagnosticCaptureReconciliation(now, cfg)))
+				select {
+				case <-timer.C:
+					reconcileDiagnosticCaptureStorage()
+					// Use the reconciled total immediately so the administrator's
+					// configured time controls both the disk check and the ensuing
+					// capacity-cleanup decision, rather than waiting for the next
+					// ten-minute housekeeping tick.
+					cleanupDiagnosticCaptureStorageIfNeeded(DiagnosticCaptureConfigFromOptions())
+				case <-diagnosticCaptureReconciliationWakeup:
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
+				}
 			}
 		}()
 		go func() {
@@ -843,12 +897,20 @@ func runDiagnosticCaptureCleanup() {
 	cleanupDiagnosticCaptureStorageIfNeeded(cfg)
 }
 
-func diagnosticCaptureFailureDir(captureDir string) string {
+func diagnosticCaptureSiblingDir(captureDir, name string) string {
 	captureDir = strings.TrimSpace(captureDir)
 	if captureDir == "" {
 		captureDir = "captures"
 	}
-	return filepath.Join(filepath.Dir(filepath.Clean(captureDir)), "diagnostic-capture-failures")
+	return filepath.Join(filepath.Dir(filepath.Clean(captureDir)), name)
+}
+
+func diagnosticCaptureTempDir(captureDir string) string {
+	return diagnosticCaptureSiblingDir(captureDir, "diagnostic-capture-temp")
+}
+
+func diagnosticCaptureFailureDir(captureDir string) string {
+	return diagnosticCaptureSiblingDir(captureDir, "diagnostic-capture-failures")
 }
 
 func ValidateDiagnosticCaptureDirectories(captureDir, tempDir string) error {
@@ -889,6 +951,17 @@ func ValidateDiagnosticCaptureDirectories(captureDir, tempDir string) error {
 				return fmt.Errorf("diagnostic capture %s and %s directories must not overlap", directories[left].name, directories[right].name)
 			}
 		}
+	}
+	return nil
+}
+
+// ValidateDiagnosticCaptureRelativeDirectory keeps diagnostic logs within the
+// container storage root chosen by the deployment configuration.
+func ValidateDiagnosticCaptureRelativeDirectory(path string) error {
+	cleanPath := filepath.Clean(strings.TrimSpace(path))
+	if cleanPath == "." || cleanPath == ".." || filepath.IsAbs(cleanPath) ||
+		strings.HasPrefix(cleanPath, ".."+string(os.PathSeparator)) {
+		return fmt.Errorf("diagnostic capture directory must be a relative path inside the storage root")
 	}
 	return nil
 }
@@ -1266,6 +1339,17 @@ func retryDiagnosticCaptureFailures(cfg DiagnosticCaptureConfig) {
 				return filepath.SkipDir
 			}
 			state.jsonBody = jsonBody
+			if !jsonBody && diagnosticCapturePartIsSSE(state) {
+				streamJSON, streamText, streamParseErr, streamEvents, convertErr := diagnosticCaptureSSEFile(state.tempPath)
+				if convertErr != nil {
+					stopDiagnosticCaptureRetry(cfg, path, &record, "capture retry stopped: failed to convert retained SSE body: "+convertErr.Error())
+					return filepath.SkipDir
+				}
+				state.streamJSON = streamJSON
+				state.streamText = streamText
+				state.streamParseErr = streamParseErr
+				state.streamEvents = streamEvents
+			}
 		}
 		record.AttemptCount++
 		record.LastAttemptAt = now.UnixNano()
@@ -1706,7 +1790,7 @@ func writeDiagnosticCaptureSession(cfg DiagnosticCaptureConfig, flow *Diagnostic
 		writer:    bufferedWriter,
 		formatter: &diagnosticCaptureJSONFormatter{writer: bufferedWriter},
 	}
-	stream.raw(`{"format":"cpa-sections-json","version":1`)
+	stream.raw(`{"version":1`)
 	if flow.ProxyTraceID != "" {
 		stream.raw(`,"proxy_trace_id":`)
 		stream.value(flow.ProxyTraceID)
@@ -1715,18 +1799,25 @@ func writeDiagnosticCaptureSession(cfg DiagnosticCaptureConfig, flow *Diagnostic
 		stream.raw(`,"newapi_request_id":`)
 		stream.value(flow.TraceID)
 	}
+	if flow.Identity != (DiagnosticFlow{}.Identity) {
+		stream.raw(`,"identity":`)
+		stream.value(flow.Identity)
+	}
+	if flow.Context != (DiagnosticFlow{}.Context) {
+		stream.raw(`,"request_context":`)
+		stream.value(flow.Context)
+	}
 	if inboundRequest != nil {
 		content := buildDiagnosticCPAJSON(cfg, flow, inboundRequest.sequence, inboundRequest.role, inboundRequest.part, inboundRequest.meta, captureBody{})
 		if content.RequestInfo != nil {
 			stream.raw(`,"request_info":`)
 			stream.value(content.RequestInfo)
 		}
-		if content.Headers != nil {
-			stream.raw(`,"headers":`)
-			stream.value(content.Headers)
-		}
-		stream.raw(`,"request_body":`)
+		stream.raw(`,"request":{"headers":`)
+		stream.value(content.Request.Headers)
+		stream.raw(`,"body":`)
 		writeDiagnosticCaptureBody(stream, cfg, inboundRequest)
+		stream.raw("}")
 	}
 	if len(apiRequests) > 0 {
 		stream.raw(`,"api_requests":[`)
@@ -1787,9 +1878,7 @@ func acquireDiagnosticCaptureFinalize(key string) func() {
 	diagnosticCaptureFinalizeState.Unlock()
 
 	lock.mu.Lock()
-	diagnosticCaptureFinalizeSlots <- struct{}{}
 	return func() {
-		<-diagnosticCaptureFinalizeSlots
 		lock.mu.Unlock()
 		diagnosticCaptureFinalizeState.Lock()
 		lock.refs--
@@ -1816,12 +1905,11 @@ func writeDiagnosticAPIRequest(w *diagnosticCaptureJSONWriter, cfg DiagnosticCap
 	w.value(request.UpstreamURL)
 	w.raw(`,"http_method":`)
 	w.value(request.HTTPMethod)
-	if request.Headers != nil {
-		w.raw(`,"headers":`)
-		w.value(request.Headers)
-	}
+	w.raw(`,"request":{"headers":`)
+	w.value(request.Request.Headers)
 	w.raw(`,"body":`)
 	writeDiagnosticCaptureBody(w, cfg, state)
+	w.raw("}")
 	w.raw("}")
 }
 
@@ -1841,12 +1929,11 @@ func writeDiagnosticAPIResponse(w *diagnosticCaptureJSONWriter, cfg DiagnosticCa
 		w.raw(`,"status":`)
 		w.value(response.Status)
 	}
-	if response.Headers != nil {
-		w.raw(`,"headers":`)
-		w.value(response.Headers)
-	}
+	w.raw(`,"response":{"headers":`)
+	w.value(response.Response.Headers)
 	w.raw(`,"body":`)
 	writeDiagnosticCaptureBody(w, cfg, state)
+	w.raw("}")
 	if response.Error != "" {
 		w.raw(`,"error":`)
 		w.value(response.Error)
@@ -2105,30 +2192,48 @@ func writeDiagnosticInboundResponse(w *diagnosticCaptureJSONWriter, cfg Diagnost
 		w.value(response.DurationMS)
 		first = false
 	}
-	if response.Headers != nil {
+	if response.Response.Headers != nil {
 		if !first {
 			w.raw(",")
 		}
-		w.raw(`"headers":`)
-		w.value(response.Headers)
+		w.raw(`"response":{"headers":`)
+		w.value(response.Response.Headers)
+		w.raw(`,"body":`)
+		writeDiagnosticCaptureBody(w, cfg, state)
+		w.raw("}")
+		first = false
+	} else {
+		if !first {
+			w.raw(",")
+		}
+		w.raw(`"response":{"headers":{},"body":`)
+		writeDiagnosticCaptureBody(w, cfg, state)
+		w.raw("}")
 		first = false
 	}
-	if !first {
-		w.raw(",")
-	}
-	w.raw(`"body":`)
-	writeDiagnosticCaptureBody(w, cfg, state)
 	w.raw("}")
 }
 
 func writeDiagnosticCaptureBody(w *diagnosticCaptureJSONWriter, cfg DiagnosticCaptureConfig, state *diagnosticCapturePartState) {
 	truncated := !state.complete || state.originalSize != state.savedSize
 	w.raw(`{"mode":`)
-	w.value(cfg.Mode)
+	mode := cfg.Mode
 	encoding := "empty"
 	jsonBody := state.jsonBody
+	streamBody := len(state.streamJSON) > 0
+	streamFallback := state.streamParseErr != ""
+	if streamBody {
+		mode = "parsed"
+	} else if streamFallback {
+		mode = "fallback"
+	}
+	w.value(mode)
 	if cfg.Mode != "full" {
 		encoding = "metadata-only"
+	} else if streamBody {
+		encoding = "json"
+	} else if streamFallback {
+		encoding = "text"
 	} else if state.tempPath != "" && state.savedSize > 0 {
 		if jsonBody {
 			encoding = "json"
@@ -2147,6 +2252,27 @@ func writeDiagnosticCaptureBody(w *diagnosticCaptureJSONWriter, cfg DiagnosticCa
 	if jsonBody {
 		w.raw(`,"json":`)
 		streamDiagnosticCaptureFile(w, state.tempPath)
+	} else if streamBody {
+		w.raw(`,"json":`)
+		w.bytes(state.streamJSON)
+		w.raw(`,"conversion":`)
+		w.value(diagnosticBodyConversionJSON{
+			Converted:           true,
+			Source:              "sse",
+			OriginalContentType: "text/event-stream",
+			EventCount:          state.streamEvents,
+			ConvertedAt:         time.Now().UTC().Format(time.RFC3339Nano),
+		})
+	} else if streamFallback {
+		w.raw(`,"text":`)
+		w.value(string(state.streamText))
+		w.raw(`,"conversion":`)
+		w.value(diagnosticBodyConversionJSON{
+			Source:              "sse",
+			OriginalContentType: "text/event-stream",
+			EventCount:          state.streamEvents,
+			ParseError:          state.streamParseErr,
+		})
 	} else if encoding == "base64" {
 		w.raw(`,"base64":"`)
 		streamDiagnosticCaptureFileBase64(w, state.tempPath)

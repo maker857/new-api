@@ -3,6 +3,7 @@ package service
 import (
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -10,20 +11,25 @@ import (
 type diagnosticResponseWriter struct {
 	gin.ResponseWriter
 	session     *diagnosticCaptureSession
+	flow        *DiagnosticFlow
 	partID      string
 	captureBody bool
+	started     time.Time
+	firstWrite  time.Time
 	total       int64
 	finished    bool
 	writeFailed bool
 	mu          sync.Mutex
 }
 
-func newDiagnosticResponseWriter(w gin.ResponseWriter, session *diagnosticCaptureSession, partID string, captureBody bool) *diagnosticResponseWriter {
+func newDiagnosticResponseWriter(w gin.ResponseWriter, session *diagnosticCaptureSession, flow *DiagnosticFlow, partID string, captureBody bool) *diagnosticResponseWriter {
 	return &diagnosticResponseWriter{
 		ResponseWriter: w,
 		session:        session,
+		flow:           flow,
 		partID:         partID,
 		captureBody:    captureBody,
+		started:        time.Now(),
 	}
 }
 
@@ -69,6 +75,9 @@ func (w *diagnosticResponseWriter) capture(data []byte) {
 	if !w.captureBody || len(data) == 0 {
 		return
 	}
+	if w.firstWrite.IsZero() {
+		w.firstWrite = time.Now()
+	}
 	w.total += int64(len(data))
 	w.session.writeChunk(w.partID, data)
 }
@@ -80,5 +89,12 @@ func (w *diagnosticResponseWriter) finish(meta map[string]any) {
 		return
 	}
 	w.finished = true
+	isStream := w.flow != nil && w.flow.Context.StreamStatus != ""
+	if isStream && !w.firstWrite.IsZero() && !w.started.IsZero() {
+		w.flow.Context.FirstResponseMS = w.firstWrite.Sub(w.started).Milliseconds()
+	}
+	if isStream && !w.firstWrite.IsZero() && !w.started.IsZero() {
+		meta["first_response_ms"] = w.firstWrite.Sub(w.started).Milliseconds()
+	}
 	w.session.endPart(w.partID, meta, w.total, !w.writeFailed)
 }

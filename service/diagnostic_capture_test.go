@@ -5,8 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
-	"io"
-	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -18,7 +16,6 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/gin-gonic/gin"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -50,25 +47,102 @@ func TestDiagnosticCaptureChannelEnabledRequiresResolvedChannel(t *testing.T) {
 	require.False(t, diagnosticCaptureChannelEnabled(c, 0))
 }
 
+func TestNextDiagnosticCaptureReconciliationRespectsConfiguredSchedule(t *testing.T) {
+	location := time.FixedZone("CST", 8*60*60)
+	tests := []struct {
+		name string
+		now  time.Time
+		cfg  DiagnosticCaptureConfig
+		want time.Time
+	}{
+		{
+			name: "daily moves to tomorrow after scheduled time",
+			now:  time.Date(2026, time.August, 8, 3, 1, 0, 0, location),
+			cfg:  DiagnosticCaptureConfig{ReconciliationMode: diagnosticCaptureScheduleDaily, ReconciliationHour: 3},
+			want: time.Date(2026, time.August, 9, 3, 0, 0, 0, location),
+		},
+		{
+			name: "weekly uses configured weekday",
+			now:  time.Date(2026, time.August, 8, 2, 0, 0, 0, location),
+			cfg:  DiagnosticCaptureConfig{ReconciliationMode: diagnosticCaptureScheduleWeekly, ReconciliationHour: 3, ReconciliationWeekday: int(time.Monday)},
+			want: time.Date(2026, time.August, 10, 3, 0, 0, 0, location),
+		},
+		{
+			name: "monthly day 31 uses last day in short month",
+			now:  time.Date(2026, time.February, 1, 2, 0, 0, 0, location),
+			cfg:  DiagnosticCaptureConfig{ReconciliationMode: diagnosticCaptureScheduleMonthly, ReconciliationHour: 3, ReconciliationMonthday: 31},
+			want: time.Date(2026, time.February, 28, 3, 0, 0, 0, location),
+		},
+		{
+			name: "monthly day 31 advances to the next calendar month",
+			now:  time.Date(2026, time.February, 28, 4, 0, 0, 0, location),
+			cfg:  DiagnosticCaptureConfig{ReconciliationMode: diagnosticCaptureScheduleMonthly, ReconciliationHour: 3, ReconciliationMonthday: 31},
+			want: time.Date(2026, time.March, 31, 3, 0, 0, 0, location),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, nextDiagnosticCaptureReconciliation(tt.now, tt.cfg))
+		})
+	}
+}
+
 func TestDiagnosticCaptureChannelDefaultIsDisabled(t *testing.T) {
 	require.False(t, (model.ChannelInfo{}).IsDiagnosticCaptureEnabled())
 }
 
+func TestValidateDiagnosticCaptureRelativeDirectory(t *testing.T) {
+	absolutePath, err := filepath.Abs("captures")
+	require.NoError(t, err)
+
+	cases := []struct {
+		name  string
+		path  string
+		valid bool
+	}{
+		{name: "directory", path: "captures", valid: true},
+		{name: "nested directory", path: "archive/captures", valid: true},
+		{name: "absolute path", path: absolutePath, valid: false},
+		{name: "parent directory", path: "../captures", valid: false},
+		{name: "storage root", path: ".", valid: false},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateDiagnosticCaptureRelativeDirectory(tt.path)
+			if tt.valid {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestDiagnosticCaptureAuxiliaryDirectoriesFollowCaptureDirectory(t *testing.T) {
+	for _, captureDir := range []string{"captures", "archive/captures"} {
+		t.Run(captureDir, func(t *testing.T) {
+			parent := filepath.Dir(captureDir)
+			require.Equal(t, filepath.Join(parent, "diagnostic-capture-temp"), diagnosticCaptureTempDir(captureDir))
+			require.Equal(t, filepath.Join(parent, "diagnostic-capture-failures"), diagnosticCaptureFailureDir(captureDir))
+		})
+	}
+}
+
 func TestDiagnosticCaptureHeadersRedactCredentials(t *testing.T) {
 	headers := map[string][]string{
-		"Authorization":    {"Bearer diagnostic-token"},
-		"X-Api-Key":        {"channel-secret-key"},
-		"X-Api-Access-Key": {"legacy-access-key"},
-		"X-Api-App-Id":     {"legacy-app-id"},
-		"User-Agent":       {"diagnostic-test"},
+		"Authorization": {"Bearer diagnostic-token"},
+		"X-Api-Key":     {"channel-secret-key"},
+		"User-Agent":    {"diagnostic-test"},
+		"X-Multi":       {"first", "second"},
 	}
 
 	captured := redactHeaders(headers)
-	require.Equal(t, []string{"Bearer...-token"}, captured["Authorization"])
-	require.Equal(t, []string{"channe...et-key"}, captured["X-Api-Key"])
-	require.Equal(t, []string{"legacy...ss-key"}, captured["X-Api-Access-Key"])
-	require.Equal(t, []string{"legacy...app-id"}, captured["X-Api-App-Id"])
-	require.Equal(t, []string{"diagnostic-test"}, captured["User-Agent"])
+	require.Equal(t, "Bearer...-token", captured["Authorization"])
+	require.Equal(t, "channe...et-key", captured["X-Api-Key"])
+	require.Equal(t, "diagnostic-test", captured["User-Agent"])
+	require.Equal(t, "first, second", captured["X-Multi"])
 	require.Equal(t, "shor...-key", partiallyRedactDiagnosticHeader("short-key"))
 }
 
@@ -278,7 +352,7 @@ func TestScanDiagnosticCaptureStorageOnlyReturnsMarkedCaptureDirectories(t *test
 func TestScanDiagnosticCaptureTotalStorageIncludesTemporaryFiles(t *testing.T) {
 	root := t.TempDir()
 	captureDir := filepath.Join(root, "captures")
-	tempDir := filepath.Join(root, "temporary")
+	tempDir := diagnosticCaptureTempDir(captureDir)
 	capturePath := filepath.Join(captureDir, "channel", "2026-07-23", "trace")
 	require.NoError(t, os.MkdirAll(capturePath, 0o755))
 	require.NoError(t, os.MkdirAll(tempDir, 0o700))
@@ -299,7 +373,7 @@ func TestScanDiagnosticCaptureTotalStorageIncludesTemporaryFiles(t *testing.T) {
 func TestDiagnosticCaptureStorageStatusUsesCachedUsage(t *testing.T) {
 	root := t.TempDir()
 	captureDir := filepath.Join(root, "captures")
-	tempDir := filepath.Join(root, "temporary")
+	tempDir := diagnosticCaptureTempDir(captureDir)
 	capturePath := filepath.Join(captureDir, "channel", "2026-07-23", "trace")
 	require.NoError(t, os.MkdirAll(capturePath, 0o755))
 	require.NoError(t, os.MkdirAll(tempDir, 0o700))
@@ -311,7 +385,6 @@ func TestDiagnosticCaptureStorageStatusUsesCachedUsage(t *testing.T) {
 	common.OptionMap = map[string]string{
 		DiagnosticCaptureAutoCleanupEnabledKey: "true",
 		DiagnosticCaptureDirKey:                captureDir,
-		DiagnosticCaptureTempDirKey:            tempDir,
 		DiagnosticCaptureMaxStorageBytesKey:    "1000",
 		DiagnosticCaptureLastCleanupStatusKey:  "retention_limited",
 	}
@@ -410,14 +483,14 @@ func TestWriteDiagnosticCaptureSessionStoresBodyInSingleJSONFile(t *testing.T) {
 	var combined diagnosticCombinedCPAJSON
 	require.NoError(t, common.Unmarshal(data, &combined))
 	require.Equal(t, "trace", combined.NewAPIRequestID)
-	require.NotNil(t, combined.RequestBody)
-	require.Equal(t, "json", combined.RequestBody.Encoding)
-	require.Empty(t, combined.RequestBody.Text)
-	require.Equal(t, map[string]any{"message": "complete"}, combined.RequestBody.JSON)
-	require.Contains(t, string(data), "\n  \"request_body\": {")
-	require.Contains(t, string(data), "\n    \"original_size\": 22")
-	require.Contains(t, string(data), "\n    \"truncated\": false")
-	require.Contains(t, string(data), "\n      \"message\": \"complete\"")
+	require.NotNil(t, combined.Request)
+	require.Equal(t, "json", combined.Request.Body.Encoding)
+	require.Empty(t, combined.Request.Body.Text)
+	require.Equal(t, map[string]any{"message": "complete"}, combined.Request.Body.JSON)
+	require.Contains(t, string(data), "\n  \"request\": {")
+	require.Contains(t, string(data), "\n      \"original_size\": 22")
+	require.Contains(t, string(data), "\n      \"truncated\": false")
+	require.Contains(t, string(data), "\n        \"message\": \"complete\"")
 	require.NotContains(t, string(data), `"text"`)
 	require.NotContains(t, string(data), `"body_original_size"`)
 	entries, err := os.ReadDir(filepath.Dir(path))
@@ -459,32 +532,7 @@ func TestDiagnosticCaptureOutboundTransportFailureIsRecorded(t *testing.T) {
 	require.Len(t, combined.APIResponses, 1)
 	require.Equal(t, int64(7), combined.APIResponses[0].Sequence)
 	require.Equal(t, "dial tcp: connection refused", combined.APIResponses[0].Error)
-	require.Equal(t, "empty", combined.APIResponses[0].Body.Encoding)
-}
-
-func TestDiagnosticNDJSONResponseRedactsCaptureWithoutMutatingBody(t *testing.T) {
-	captureDir := t.TempDir()
-	flow := &DiagnosticFlow{TraceID: "native-redaction-trace", Channel: "channel", Started: time.Date(2026, 7, 24, 10, 0, 0, 0, time.Local)}
-	flow.session = newDiagnosticCaptureSession(DiagnosticCaptureConfig{
-		Enabled: true, Mode: "full", CaptureDir: captureDir, TempDir: filepath.Join(t.TempDir(), "temp"),
-	}, flow)
-	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"message":"channel-secret"}` + "\n"))}
-	WrapDiagnosticOutboundNDJSONResponse(resp, &DiagnosticExchange{Flow: flow, Sequence: 1, Started: time.Now()}, 1024, "channel-secret")
-	body, err := io.ReadAll(resp.Body)
-	require.NoError(t, err)
-	require.NoError(t, resp.Body.Close())
-	assert.Contains(t, string(body), "channel-secret")
-	flow.session.close(flow)
-
-	path := filepath.Join(captureDir, "channel", "2026-07-24", "native-redaction-trace", "request-log.json")
-	require.Eventually(t, func() bool {
-		_, statErr := os.Stat(filepath.Join(filepath.Dir(path), ".capture-complete"))
-		return statErr == nil
-	}, time.Second, 10*time.Millisecond)
-	captured, err := os.ReadFile(path)
-	require.NoError(t, err)
-	assert.Contains(t, string(captured), "[REDACTED]")
-	assert.NotContains(t, string(captured), "channel-secret")
+	require.Equal(t, "empty", combined.APIResponses[0].Response.Body.Encoding)
 }
 
 func TestDiagnosticCaptureWebSocketFailureIsRecorded(t *testing.T) {
@@ -519,7 +567,7 @@ func TestDiagnosticCaptureWebSocketFailureIsRecorded(t *testing.T) {
 	require.NoError(t, common.Unmarshal(data, &combined))
 	require.Len(t, combined.APIResponses, 1)
 	require.Equal(t, "broken pipe", combined.APIResponses[0].Error)
-	require.Equal(t, "empty", combined.APIResponses[0].Body.Encoding)
+	require.Equal(t, "empty", combined.APIResponses[0].Response.Body.Encoding)
 }
 
 func TestDiagnosticCaptureWebSocketFramesUseGroupedSpoolFiles(t *testing.T) {
@@ -796,6 +844,16 @@ func TestDiagnosticCaptureFailureTempPartPathDoesNotSubstituteNamedFragment(t *t
 func TestDiagnosticCaptureRateDurationAvoidsDurationOverflow(t *testing.T) {
 	duration := diagnosticCaptureRateDuration(int64(10)<<40, 1024*1024)
 	require.Equal(t, time.Duration(10*1024*1024)*time.Second, duration)
+}
+
+func TestDiagnosticCaptureMaintenanceErrorLimiterBoundsRepeatedErrors(t *testing.T) {
+	var limiter diagnosticCaptureMaintenanceErrorLimiter
+	now := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+
+	require.True(t, limiter.shouldLog(diagnosticCaptureMaintenanceScanError, now))
+	require.False(t, limiter.shouldLog(diagnosticCaptureMaintenanceScanError, now.Add(4*time.Minute+59*time.Second)))
+	require.True(t, limiter.shouldLog(diagnosticCaptureMaintenanceDirectoryListError, now.Add(time.Minute)))
+	require.True(t, limiter.shouldLog(diagnosticCaptureMaintenanceScanError, now.Add(diagnosticCaptureMaintenanceErrorLogInterval)))
 }
 
 func TestCleanupDiagnosticCaptureTempFilesKeepsActiveFiles(t *testing.T) {

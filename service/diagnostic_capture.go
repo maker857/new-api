@@ -34,9 +34,7 @@ const (
 	DiagnosticCaptureEnabledKey                  = "DiagnosticCaptureEnabled"
 	DiagnosticCaptureModeKey                     = "DiagnosticCaptureMode"
 	DiagnosticCaptureDirKey                      = "DiagnosticCaptureDir"
-	DiagnosticCaptureTempDirKey                  = "DiagnosticCaptureTempDir"
 	DiagnosticCaptureTempRetentionMinutesKey     = "DiagnosticCaptureTempRetentionMinutes"
-	DiagnosticCaptureMaxBodyMBKey                = "DiagnosticCaptureMaxBodyMB"
 	DiagnosticCaptureAutoCleanupEnabledKey       = "DiagnosticCaptureAutoCleanupEnabled"
 	DiagnosticCaptureMaxStorageBytesKey          = "DiagnosticCaptureMaxStorageBytes"
 	DiagnosticCaptureCleanupPercentKey           = "DiagnosticCaptureCleanupPercent"
@@ -45,6 +43,12 @@ const (
 	DiagnosticCaptureIncompleteTimeoutMinutesKey = "DiagnosticCaptureIncompleteTimeoutMinutes"
 	DiagnosticCaptureMinRetentionHoursKey        = "DiagnosticCaptureMinRetentionHours"
 	DiagnosticCaptureIncompleteTimeoutHoursKey   = "DiagnosticCaptureIncompleteTimeoutHours"
+	DiagnosticCaptureReconciliationEnabledKey    = "DiagnosticCaptureReconciliationEnabled"
+	DiagnosticCaptureReconciliationModeKey       = "DiagnosticCaptureReconciliationMode"
+	DiagnosticCaptureReconciliationHourKey       = "DiagnosticCaptureReconciliationHour"
+	DiagnosticCaptureReconciliationMinuteKey     = "DiagnosticCaptureReconciliationMinute"
+	DiagnosticCaptureReconciliationWeekdayKey    = "DiagnosticCaptureReconciliationWeekday"
+	DiagnosticCaptureReconciliationMonthdayKey   = "DiagnosticCaptureReconciliationMonthday"
 	DiagnosticCapturePathsKey                    = "DiagnosticCapturePaths"
 
 	DiagnosticCaptureLastCleanupAtKey           = "DiagnosticCaptureLastCleanupAt"
@@ -65,7 +69,6 @@ type DiagnosticCaptureConfig struct {
 	Enabled                   bool
 	Mode                      string
 	CaptureDir                string
-	MaxBodyBytes              int64
 	AutoCleanupEnabled        bool
 	MaxStorageBytes           int64
 	CleanupPercent            int64
@@ -76,6 +79,12 @@ type DiagnosticCaptureConfig struct {
 	FailureDir                string
 	TempRetentionMinutes      int64
 	NextCleanupEligibleAt     int64
+	ReconciliationEnabled     bool
+	ReconciliationMode        string
+	ReconciliationHour        int
+	ReconciliationMinute      int
+	ReconciliationWeekday     int
+	ReconciliationMonthday    int
 	PathRules                 []string
 }
 
@@ -84,6 +93,9 @@ type DiagnosticFlow struct {
 	ProxyTraceID string
 	Channel      string
 	Started      time.Time
+	RequestInfo  diagnosticRequestInfoJSON
+	Identity     diagnosticIdentityJSON
+	Context      diagnosticRequestContextJSON
 	session      *diagnosticCaptureSession
 	writer       *diagnosticResponseWriter
 }
@@ -96,41 +108,66 @@ type captureBody struct {
 }
 
 type diagnosticCPAJSON struct {
-	Format      string                     `json:"format"`
-	Version     int                        `json:"version"`
-	CapturedAt  string                     `json:"captured_at"`
-	Direction   string                     `json:"direction"`
-	Section     string                     `json:"section"`
-	Meta        map[string]any             `json:"meta,omitempty"`
-	RequestInfo *diagnosticRequestInfoJSON `json:"request_info,omitempty"`
-	Headers     map[string][]string        `json:"headers,omitempty"`
-	RequestBody *diagnosticBodyJSON        `json:"request_body,omitempty"`
-	APIRequest  *diagnosticAPIRequestJSON  `json:"api_request,omitempty"`
-	APIResponse *diagnosticAPIResponseJSON `json:"api_response,omitempty"`
-	Response    *diagnosticResponseJSON    `json:"response,omitempty"`
+	Format      string                        `json:"-"`
+	Version     int                           `json:"version"`
+	CapturedAt  string                        `json:"captured_at"`
+	Direction   string                        `json:"direction"`
+	Section     string                        `json:"section"`
+	Meta        map[string]any                `json:"meta,omitempty"`
+	RequestInfo *diagnosticRequestInfoJSON    `json:"request_info,omitempty"`
+	Request     *diagnosticRequestPayloadJSON `json:"request,omitempty"`
+	APIRequest  *diagnosticAPIRequestJSON     `json:"api_request,omitempty"`
+	APIResponse *diagnosticAPIResponseJSON    `json:"api_response,omitempty"`
+	Response    *diagnosticResponseJSON       `json:"response,omitempty"`
 }
 
 type diagnosticCombinedCPAJSON struct {
-	Format          string                      `json:"format"`
-	Version         int                         `json:"version"`
-	ProxyTraceID    string                      `json:"proxy_trace_id,omitempty"`
-	NewAPIRequestID string                      `json:"newapi_request_id,omitempty"`
-	RequestInfo     *diagnosticRequestInfoJSON  `json:"request_info,omitempty"`
-	Headers         map[string][]string         `json:"headers,omitempty"`
-	RequestBody     *diagnosticBodyJSON         `json:"request_body,omitempty"`
-	APIRequests     []diagnosticAPIRequestJSON  `json:"api_requests,omitempty"`
-	APIResponses    []diagnosticAPIResponseJSON `json:"api_responses,omitempty"`
-	Response        *diagnosticResponseJSON     `json:"response,omitempty"`
+	Format          string                        `json:"-"`
+	Version         int                           `json:"version"`
+	ProxyTraceID    string                        `json:"proxy_trace_id,omitempty"`
+	NewAPIRequestID string                        `json:"newapi_request_id,omitempty"`
+	RequestInfo     *diagnosticRequestInfoJSON    `json:"request_info,omitempty"`
+	Identity        *diagnosticIdentityJSON       `json:"identity,omitempty"`
+	RequestContext  *diagnosticRequestContextJSON `json:"request_context,omitempty"`
+	Request         *diagnosticRequestPayloadJSON `json:"request,omitempty"`
+	APIRequests     []diagnosticAPIRequestJSON    `json:"api_requests,omitempty"`
+	APIResponses    []diagnosticAPIResponseJSON   `json:"api_responses,omitempty"`
+	Response        *diagnosticResponseJSON       `json:"response,omitempty"`
 }
 
 type diagnosticRequestInfoJSON struct {
-	AppVersion          string `json:"version"`
-	URL                 string `json:"url"`
-	Method              string `json:"method"`
-	DownstreamTransport string `json:"downstream_transport,omitempty"`
-	UpstreamTransport   string `json:"upstream_transport,omitempty"`
-	Timestamp           string `json:"timestamp"`
-	RemoteAddr          string `json:"remote_addr,omitempty"`
+	AppVersion      string `json:"version,omitempty"`
+	ProtocolVersion string `json:"protocol_version,omitempty"`
+	BaseURL         string `json:"base_url,omitempty"`
+	URL             string `json:"url,omitempty"`
+	Method          string `json:"method,omitempty"`
+	Timestamp       string `json:"timestamp,omitempty"`
+	RemoteAddr      string `json:"remote_addr,omitempty"`
+}
+
+type diagnosticIdentityJSON struct {
+	UserID         int    `json:"user_id,omitempty"`
+	Username       string `json:"username,omitempty"`
+	TokenName      string `json:"token_name,omitempty"`
+	TokenKeyMasked string `json:"token_key_masked,omitempty"`
+	ChannelID      int    `json:"channel_id,omitempty"`
+	ChannelName    string `json:"channel_name,omitempty"`
+	Group          string `json:"group,omitempty"`
+}
+
+type diagnosticRequestContextJSON struct {
+	RequestID         string `json:"request_id,omitempty"`
+	UpstreamRequestID string `json:"upstream_request_id,omitempty"`
+	ModelName         string `json:"model_name,omitempty"`
+	UpstreamModelName string `json:"upstream_model_name,omitempty"`
+	Status            string `json:"status,omitempty"`
+	StreamStatus      string `json:"stream_status,omitempty"`
+	DurationMS        int64  `json:"duration_ms,omitempty"`
+	FirstResponseMS   int64  `json:"first_response_ms,omitempty"`
+	PromptTokens      int    `json:"prompt_tokens,omitempty"`
+	CompletionTokens  int    `json:"completion_tokens,omitempty"`
+	RetryCount        int    `json:"retry_count,omitempty"`
+	BillingSource     string `json:"billing_source,omitempty"`
 }
 
 type diagnosticAPIRequestJSON struct {
@@ -138,8 +175,7 @@ type diagnosticAPIRequestJSON struct {
 	Timestamp       string                         `json:"timestamp"`
 	UpstreamURL     string                         `json:"upstream_url"`
 	HTTPMethod      string                         `json:"http_method"`
-	Headers         map[string][]string            `json:"headers,omitempty"`
-	Body            diagnosticBodyJSON             `json:"body"`
+	Request         diagnosticRequestPayloadJSON   `json:"request"`
 	WebSocketFrames []diagnosticWebSocketFrameJSON `json:"websocket_frames,omitempty"`
 }
 
@@ -147,8 +183,7 @@ type diagnosticAPIResponseJSON struct {
 	Sequence        int64                          `json:"sequence"`
 	Timestamp       string                         `json:"timestamp"`
 	Status          int                            `json:"status,omitempty"`
-	Headers         map[string][]string            `json:"headers,omitempty"`
-	Body            diagnosticBodyJSON             `json:"body"`
+	Response        diagnosticResponsePayloadJSON  `json:"response"`
 	Error           string                         `json:"error,omitempty"`
 	WebSocketFrames []diagnosticWebSocketFrameJSON `json:"websocket_frames,omitempty"`
 }
@@ -160,21 +195,40 @@ type diagnosticWebSocketFrameJSON struct {
 }
 
 type diagnosticResponseJSON struct {
-	Status     int                 `json:"status,omitempty"`
-	DurationMS int64               `json:"duration_ms,omitempty"`
-	Headers    map[string][]string `json:"headers,omitempty"`
-	Body       diagnosticBodyJSON  `json:"body"`
+	Status     int                           `json:"status,omitempty"`
+	DurationMS int64                         `json:"duration_ms,omitempty"`
+	Response   diagnosticResponsePayloadJSON `json:"response"`
+}
+
+type diagnosticRequestPayloadJSON struct {
+	Headers map[string]string  `json:"headers,omitempty"`
+	Body    diagnosticBodyJSON `json:"body"`
+}
+
+type diagnosticResponsePayloadJSON struct {
+	Headers map[string]string  `json:"headers,omitempty"`
+	Body    diagnosticBodyJSON `json:"body"`
 }
 
 type diagnosticBodyJSON struct {
-	Mode         string `json:"mode"`
-	Encoding     string `json:"encoding"`
-	OriginalSize int64  `json:"original_size"`
-	SavedSize    int64  `json:"saved_size"`
-	Truncated    bool   `json:"truncated"`
-	Text         string `json:"text,omitempty"`
-	JSON         any    `json:"json,omitempty"`
-	Base64       string `json:"base64,omitempty"`
+	Mode         string                        `json:"mode"`
+	Encoding     string                        `json:"encoding"`
+	OriginalSize int64                         `json:"original_size"`
+	SavedSize    int64                         `json:"saved_size"`
+	Truncated    bool                          `json:"truncated"`
+	Text         string                        `json:"text,omitempty"`
+	JSON         any                           `json:"json,omitempty"`
+	Base64       string                        `json:"base64,omitempty"`
+	Conversion   *diagnosticBodyConversionJSON `json:"conversion,omitempty"`
+}
+
+type diagnosticBodyConversionJSON struct {
+	Converted           bool   `json:"converted,omitempty"`
+	Source              string `json:"source"`
+	OriginalContentType string `json:"original_content_type,omitempty"`
+	EventCount          int    `json:"event_count,omitempty"`
+	ConvertedAt         string `json:"converted_at,omitempty"`
+	ParseError          string `json:"parse_error,omitempty"`
 }
 
 type captureReadCloser struct {
@@ -222,21 +276,62 @@ var diagnosticCaptureStorageState struct {
 var diagnosticCaptureCleanupMu sync.Mutex
 
 const (
-	maxDiagnosticCaptureStorageBytes   = int64(10) << 40
-	maxDiagnosticCaptureRetentionHours = 24 * 365 * 10
-	diagnosticCaptureCleanupBatchSize  = 500
-	diagnosticCaptureDirectoryReadSize = 500
-	diagnosticCaptureCleanupSelectSize = 500
+	maxDiagnosticCaptureStorageBytes             = int64(10) << 40
+	maxDiagnosticCaptureRetentionHours           = 24 * 365 * 10
+	diagnosticCaptureCleanupBatchSize            = 500
+	diagnosticCaptureDirectoryReadSize           = 500
+	diagnosticCaptureCleanupSelectSize           = 500
+	diagnosticCaptureScheduleDaily               = "daily"
+	diagnosticCaptureScheduleWeekly              = "weekly"
+	diagnosticCaptureScheduleMonthly             = "monthly"
+	diagnosticCaptureMaintenanceErrorLogInterval = 5 * time.Minute
 )
+
+type diagnosticCaptureMaintenanceErrorCategory uint8
+
+const (
+	diagnosticCaptureMaintenanceScanError diagnosticCaptureMaintenanceErrorCategory = iota
+	diagnosticCaptureMaintenanceReconcileError
+	diagnosticCaptureMaintenanceCleanupStatusError
+	diagnosticCaptureMaintenanceDirectoryListError
+	diagnosticCaptureMaintenanceDeleteError
+	diagnosticCaptureMaintenanceTempCleanupStatusError
+	diagnosticCaptureMaintenanceErrorCategoryCount
+)
+
+type diagnosticCaptureMaintenanceErrorLimiter struct {
+	mu   sync.Mutex
+	last [diagnosticCaptureMaintenanceErrorCategoryCount]time.Time
+}
+
+func (limiter *diagnosticCaptureMaintenanceErrorLimiter) shouldLog(category diagnosticCaptureMaintenanceErrorCategory, now time.Time) bool {
+	limiter.mu.Lock()
+	defer limiter.mu.Unlock()
+	if !limiter.last[category].IsZero() && now.Sub(limiter.last[category]) < diagnosticCaptureMaintenanceErrorLogInterval {
+		return false
+	}
+	limiter.last[category] = now
+	return true
+}
+
+var diagnosticCaptureMaintenanceErrors diagnosticCaptureMaintenanceErrorLimiter
+
+// logDiagnosticCaptureMaintenanceError keeps a persistent maintenance failure
+// visible without allowing a repeated filesystem or database fault to fill the
+// system log. Categories are a fixed enum, so the limiter cannot grow with
+// dynamic error text or file paths.
+func logDiagnosticCaptureMaintenanceError(category diagnosticCaptureMaintenanceErrorCategory, message string) {
+	if diagnosticCaptureMaintenanceErrors.shouldLog(category, time.Now()) {
+		common.SysError(message)
+	}
+}
 
 func DefaultDiagnosticCaptureOptions() map[string]string {
 	return map[string]string{
 		DiagnosticCaptureEnabledKey:                  "false",
 		DiagnosticCaptureModeKey:                     "full",
 		DiagnosticCaptureDirKey:                      "captures",
-		DiagnosticCaptureTempDirKey:                  "diagnostic-capture-temp",
 		DiagnosticCaptureTempRetentionMinutesKey:     "60",
-		DiagnosticCaptureMaxBodyMBKey:                "10",
 		DiagnosticCaptureAutoCleanupEnabledKey:       "false",
 		DiagnosticCaptureMaxStorageBytesKey:          "0",
 		DiagnosticCaptureCleanupPercentKey:           "0",
@@ -245,6 +340,12 @@ func DefaultDiagnosticCaptureOptions() map[string]string {
 		DiagnosticCaptureIncompleteTimeoutMinutesKey: "1440",
 		DiagnosticCaptureMinRetentionHoursKey:        "0",
 		DiagnosticCaptureIncompleteTimeoutHoursKey:   "24",
+		DiagnosticCaptureReconciliationEnabledKey:    "true",
+		DiagnosticCaptureReconciliationModeKey:       diagnosticCaptureScheduleDaily,
+		DiagnosticCaptureReconciliationHourKey:       "3",
+		DiagnosticCaptureReconciliationMinuteKey:     "0",
+		DiagnosticCaptureReconciliationWeekdayKey:    "1",
+		DiagnosticCaptureReconciliationMonthdayKey:   "1",
 		DiagnosticCapturePathsKey:                    defaultDiagnosticCapturePaths,
 		DiagnosticCaptureNextCleanupEligibleAtKey:    "0",
 	}
@@ -260,10 +361,6 @@ func DiagnosticCaptureConfigFromOptions() DiagnosticCaptureConfig {
 	}
 	common.OptionMapRWMutex.RUnlock()
 
-	maxBodyMB, _ := strconv.ParseInt(strings.TrimSpace(options[DiagnosticCaptureMaxBodyMBKey]), 10, 64)
-	if maxBodyMB <= 0 {
-		maxBodyMB = 10
-	}
 	maxStorageBytes, _ := strconv.ParseInt(strings.TrimSpace(options[DiagnosticCaptureMaxStorageBytesKey]), 10, 64)
 	if maxStorageBytes < 0 || maxStorageBytes > maxDiagnosticCaptureStorageBytes {
 		maxStorageBytes = 0
@@ -302,21 +399,47 @@ func DiagnosticCaptureConfigFromOptions() DiagnosticCaptureConfig {
 	if mode != "metadata" && mode != "full" {
 		mode = "full"
 	}
+	captureDir := strings.TrimSpace(options[DiagnosticCaptureDirKey])
+	reconciliationMode := strings.ToLower(strings.TrimSpace(options[DiagnosticCaptureReconciliationModeKey]))
+	if reconciliationMode != diagnosticCaptureScheduleDaily && reconciliationMode != diagnosticCaptureScheduleWeekly && reconciliationMode != diagnosticCaptureScheduleMonthly {
+		reconciliationMode = diagnosticCaptureScheduleDaily
+	}
+	reconciliationHour, _ := strconv.Atoi(strings.TrimSpace(options[DiagnosticCaptureReconciliationHourKey]))
+	if reconciliationHour < 0 || reconciliationHour > 23 {
+		reconciliationHour = 3
+	}
+	reconciliationMinute, _ := strconv.Atoi(strings.TrimSpace(options[DiagnosticCaptureReconciliationMinuteKey]))
+	if reconciliationMinute < 0 || reconciliationMinute > 59 {
+		reconciliationMinute = 0
+	}
+	reconciliationWeekday, _ := strconv.Atoi(strings.TrimSpace(options[DiagnosticCaptureReconciliationWeekdayKey]))
+	if reconciliationWeekday < 0 || reconciliationWeekday > 6 {
+		reconciliationWeekday = 1
+	}
+	reconciliationMonthday, _ := strconv.Atoi(strings.TrimSpace(options[DiagnosticCaptureReconciliationMonthdayKey]))
+	if reconciliationMonthday < 1 || reconciliationMonthday > 31 {
+		reconciliationMonthday = 1
+	}
 	return DiagnosticCaptureConfig{
 		Enabled:                   options[DiagnosticCaptureEnabledKey] == "true",
 		Mode:                      mode,
-		CaptureDir:                strings.TrimSpace(options[DiagnosticCaptureDirKey]),
-		TempDir:                   strings.TrimSpace(options[DiagnosticCaptureTempDirKey]),
-		FailureDir:                diagnosticCaptureFailureDir(strings.TrimSpace(options[DiagnosticCaptureDirKey])),
+		CaptureDir:                captureDir,
+		TempDir:                   diagnosticCaptureTempDir(captureDir),
+		FailureDir:                diagnosticCaptureFailureDir(captureDir),
 		TempRetentionMinutes:      tempRetentionMinutes,
 		NextCleanupEligibleAt:     diagnosticCaptureOptionInt64(DiagnosticCaptureNextCleanupEligibleAtKey),
-		MaxBodyBytes:              maxBodyMB * 1024 * 1024,
 		AutoCleanupEnabled:        options[DiagnosticCaptureAutoCleanupEnabledKey] == "true",
 		MaxStorageBytes:           maxStorageBytes,
 		CleanupPercent:            cleanupPercent,
 		CleanupRateBytesPerSecond: cleanupRateMB * 1024 * 1024,
 		MinRetentionMinutes:       minRetentionMinutes,
 		IncompleteTimeoutMinutes:  incompleteTimeoutMinutes,
+		ReconciliationEnabled:     options[DiagnosticCaptureReconciliationEnabledKey] == "true",
+		ReconciliationMode:        reconciliationMode,
+		ReconciliationHour:        reconciliationHour,
+		ReconciliationMinute:      reconciliationMinute,
+		ReconciliationWeekday:     reconciliationWeekday,
+		ReconciliationMonthday:    reconciliationMonthday,
 		PathRules:                 parseDiagnosticPathRules(options[DiagnosticCapturePathsKey]),
 	}
 }
@@ -334,11 +457,19 @@ func DiagnosticCaptureMiddleware() gin.HandlerFunc {
 		if !ok || diagnosticFlow == nil || diagnosticFlow.session == nil || diagnosticFlow.writer == nil {
 			return
 		}
+		populateDiagnosticFlowFromContext(diagnosticFlow, c, nil)
+		diagnosticFlow.Context.DurationMS = time.Since(diagnosticFlow.Started).Milliseconds()
+		statusCode := c.Writer.Status()
+		if statusCode >= http.StatusBadRequest {
+			diagnosticFlow.Context.Status = "error"
+		} else if statusCode > 0 {
+			diagnosticFlow.Context.Status = "success"
+		}
 		diagnosticFlow.writer.finish(map[string]any{
 			"captured_at":  time.Now().UTC().Format(time.RFC3339Nano),
 			"role":         "inbound",
-			"status_code":  c.Writer.Status(),
-			"duration_ms":  time.Since(diagnosticFlow.Started).Milliseconds(),
+			"status_code":  statusCode,
+			"duration_ms":  diagnosticFlow.Context.DurationMS,
 			"headers":      redactHeaders(c.Writer.Header()),
 			"body_capture": diagnosticFlow.session.cfg.Mode,
 		})
@@ -384,6 +515,7 @@ func startDiagnosticCaptureForChannel(c *gin.Context, channelID int, channelName
 		Channel:      safeCaptureName(channelName, "unknown"),
 		Started:      time.Now(),
 	}
+	populateDiagnosticFlowFromContext(flow, c, nil)
 	flow.session = newDiagnosticCaptureSession(cfg, flow)
 	if flow.session == nil {
 		return
@@ -436,7 +568,7 @@ func startDiagnosticCaptureForChannel(c *gin.Context, channelID int, channelName
 		flow.session.endPart("inbound-request", nil, 0, true)
 	}
 	flow.session.startPart("inbound-response", sequence, "inbound", "response", nil)
-	flow.writer = newDiagnosticResponseWriter(c.Writer, flow.session, "inbound-response", cfg.Mode == "full")
+	flow.writer = newDiagnosticResponseWriter(c.Writer, flow.session, flow, "inbound-response", cfg.Mode == "full")
 	c.Writer = flow.writer
 }
 
@@ -464,10 +596,11 @@ func PrepareDiagnosticOutboundRequest(c *gin.Context, info *relaycommon.RelayInf
 		}
 		StartDiagnosticCaptureForChannel(c, channelID, channelName)
 		flow = getOrCreateDiagnosticFlow(c)
-		if flow.session == nil {
-			return body, nil
-		}
+	if flow.session == nil {
+		return body, nil
 	}
+	}
+	populateDiagnosticFlowFromContext(flow, c, info)
 	channelID := 0
 	if info != nil && info.ChannelMeta != nil {
 		channelID = info.ChannelMeta.ChannelId
@@ -536,6 +669,12 @@ func WrapDiagnosticOutboundResponse(c *gin.Context, resp *http.Response, exchang
 		"duration_ms": time.Since(exchange.Started).Milliseconds(),
 		"headers":     redactHeaders(resp.Header),
 	})
+	flow.Context.DurationMS = time.Since(flow.Started).Milliseconds()
+	if resp.StatusCode >= http.StatusBadRequest {
+		flow.Context.Status = "error"
+	} else if resp.StatusCode > 0 {
+		flow.Context.Status = "success"
+	}
 	if flow.session.cfg.Mode != "full" || resp.Body == nil {
 		flow.session.endPart(partID, nil, 0, true)
 		return
@@ -543,9 +682,9 @@ func WrapDiagnosticOutboundResponse(c *gin.Context, resp *http.Response, exchang
 	resp.Body = newDiagnosticCaptureStream(resp.Body, flow.session, partID)
 }
 
-// WrapDiagnosticOutboundNDJSONResponse captures newline-delimited response
-// records after redacting configured secrets while leaving the response bytes
-// consumed by the relay unchanged.
+// WrapDiagnosticOutboundNDJSONResponse captures newline-delimited upstream
+// records after redacting credentials, without changing the bytes relayed to
+// the client.
 func WrapDiagnosticOutboundNDJSONResponse(resp *http.Response, exchange *DiagnosticExchange, maxLineSize int, secrets ...string) {
 	if resp == nil || exchange == nil || exchange.Flow == nil || exchange.Flow.session == nil {
 		return
@@ -559,6 +698,12 @@ func WrapDiagnosticOutboundNDJSONResponse(resp *http.Response, exchange *Diagnos
 		"duration_ms": time.Since(exchange.Started).Milliseconds(),
 		"headers":     redactHeaders(resp.Header),
 	})
+	flow.Context.DurationMS = time.Since(flow.Started).Milliseconds()
+	if resp.StatusCode >= http.StatusBadRequest {
+		flow.Context.Status = "error"
+	} else if resp.StatusCode > 0 {
+		flow.Context.Status = "success"
+	}
 	if flow.session.cfg.Mode != "full" || resp.Body == nil {
 		flow.session.endPart(partID, nil, 0, true)
 		return
@@ -580,6 +725,8 @@ func RecordDiagnosticOutboundFailure(exchange *DiagnosticExchange, requestErr er
 		"duration_ms": time.Since(exchange.Started).Milliseconds(),
 		"error":       requestErr.Error(),
 	})
+	flow.Context.DurationMS = time.Since(flow.Started).Milliseconds()
+	flow.Context.Status = "error"
 	flow.session.endPart(partID, nil, 0, true)
 }
 
@@ -599,6 +746,12 @@ func RecordDiagnosticOutboundResponseMetadata(exchange *DiagnosticExchange, stat
 		"duration_ms": time.Since(exchange.Started).Milliseconds(),
 		"headers":     redactHeaders(headers),
 	})
+	flow.Context.DurationMS = time.Since(flow.Started).Milliseconds()
+	if status >= http.StatusBadRequest {
+		flow.Context.Status = "error"
+	} else {
+		flow.Context.Status = "success"
+	}
 	flow.session.endPart(partID, nil, 0, true)
 }
 
@@ -814,12 +967,28 @@ func writeCombinedCapture(path string, flow *DiagnosticFlow, content diagnosticC
 		if combined.NewAPIRequestID == "" {
 			combined.NewAPIRequestID = flow.TraceID
 		}
+		if combined.RequestInfo == nil && flow.RequestInfo != (diagnosticRequestInfoJSON{}) {
+			combined.RequestInfo = &flow.RequestInfo
+		}
+		if combined.Identity == nil {
+			identity := flow.Identity
+			if identity != (diagnosticIdentityJSON{}) {
+				combined.Identity = &identity
+			}
+		}
+		if combined.RequestContext == nil {
+			ctx := flow.Context
+			if ctx != (diagnosticRequestContextJSON{}) {
+				combined.RequestContext = &ctx
+			}
+		}
 	}
 	switch {
 	case content.RequestInfo != nil:
 		combined.RequestInfo = content.RequestInfo
-		combined.Headers = content.Headers
-		combined.RequestBody = content.RequestBody
+		if content.Request != nil {
+			combined.Request = content.Request
+		}
 	case content.APIRequest != nil:
 		upsertAPIRequest(&combined, *content.APIRequest)
 	case content.APIResponse != nil:
@@ -850,6 +1019,9 @@ type diagnosticCaptureCandidate struct {
 }
 
 type DiagnosticCaptureStorageStatus struct {
+	StorageRoot           string `json:"storage_root"`
+	CaptureDir            string `json:"capture_dir"`
+	TemporaryDir          string `json:"temporary_dir"`
 	CurrentBytes          int64  `json:"current_bytes"`
 	TemporaryBytes        int64  `json:"temporary_bytes"`
 	LastCleanupAt         int64  `json:"last_cleanup_at"`
@@ -928,6 +1100,7 @@ func NotifyDiagnosticCaptureCleanupSettingsChanged() {
 	diagnosticCaptureStorageState.nextEligibleAt = time.Time{}
 	diagnosticCaptureStorageState.lastAttempt = time.Time{}
 	diagnosticCaptureStorageState.Unlock()
+	notifyDiagnosticCaptureReconciliationSettingsChanged()
 	go func() {
 		cfg := DiagnosticCaptureConfigFromOptions()
 		refreshDiagnosticCaptureStorageState(cfg)
@@ -951,7 +1124,7 @@ func refreshDiagnosticCaptureStorageState(cfg DiagnosticCaptureConfig) {
 
 	totalBytes, tempBytes, err := scanDiagnosticCaptureTotalBytes(cfg)
 	if err != nil {
-		common.SysError("failed to scan diagnostic capture storage: " + err.Error())
+		logDiagnosticCaptureMaintenanceError(diagnosticCaptureMaintenanceScanError, "failed to scan diagnostic capture storage: "+err.Error())
 		return
 	}
 
@@ -991,7 +1164,7 @@ func reconcileDiagnosticCaptureStorage() {
 
 	totalBytes, tempBytes, err := scanDiagnosticCaptureTotalBytes(cfg)
 	if err != nil {
-		common.SysError("failed to reconcile diagnostic capture storage: " + err.Error())
+		logDiagnosticCaptureMaintenanceError(diagnosticCaptureMaintenanceReconcileError, "failed to reconcile diagnostic capture storage: "+err.Error())
 		return
 	}
 
@@ -1151,7 +1324,7 @@ func cleanupDiagnosticCaptureStorage(cfg DiagnosticCaptureConfig, activePath str
 		DiagnosticCaptureLastCleanupStatusKey:       status,
 		DiagnosticCaptureNextCleanupEligibleAtKey:   strconv.FormatInt(nextEligibleAt, 10),
 	}); err != nil {
-		common.SysError("failed to save diagnostic capture cleanup status: " + err.Error())
+		logDiagnosticCaptureMaintenanceError(diagnosticCaptureMaintenanceCleanupStatusError, "failed to save diagnostic capture cleanup status: "+err.Error())
 	}
 }
 
@@ -1205,7 +1378,7 @@ func cleanupDiagnosticCaptureStorageByRoots(totalBytes int64, cfg DiagnosticCapt
 		}
 		rootDays, err := diagnosticCaptureDayDirs(root)
 		if err != nil {
-			common.SysError("failed to list diagnostic capture directories: " + err.Error())
+			logDiagnosticCaptureMaintenanceError(diagnosticCaptureMaintenanceDirectoryListError, "failed to list diagnostic capture directories: "+err.Error())
 			continue
 		}
 		for index := range rootDays {
@@ -1247,7 +1420,7 @@ func cleanupDiagnosticCaptureStorageByRoots(totalBytes int64, cfg DiagnosticCapt
 					continue
 				}
 				if err := os.RemoveAll(candidate.dir); err != nil {
-					common.SysError("failed to delete diagnostic capture: " + err.Error())
+					logDiagnosticCaptureMaintenanceError(diagnosticCaptureMaintenanceDeleteError, "failed to delete diagnostic capture: "+err.Error())
 					continue
 				}
 				totalBytes -= actualSize
@@ -1437,7 +1610,7 @@ func cleanupDiagnosticCaptureCandidates(totalBytes int64, candidates []diagnosti
 			continue
 		}
 		if err := os.RemoveAll(candidate.dir); err != nil {
-			common.SysError("failed to delete diagnostic capture: " + err.Error())
+			logDiagnosticCaptureMaintenanceError(diagnosticCaptureMaintenanceDeleteError, "failed to delete diagnostic capture: "+err.Error())
 			continue
 		}
 		totalBytes -= candidate.size
@@ -1587,6 +1760,18 @@ func diagnosticCaptureCreatedAt(dir string) (time.Time, bool) {
 
 func GetDiagnosticCaptureStorageStatus() (DiagnosticCaptureStorageStatus, error) {
 	cfg := DiagnosticCaptureConfigFromOptions()
+	storageRoot, err := resolveDiagnosticCaptureDirectory(".")
+	if err != nil {
+		return DiagnosticCaptureStorageStatus{}, err
+	}
+	captureDir, err := resolveDiagnosticCaptureDirectory(cfg.CaptureDir)
+	if err != nil {
+		return DiagnosticCaptureStorageStatus{}, err
+	}
+	temporaryDir, err := resolveDiagnosticCaptureDirectory(cfg.TempDir)
+	if err != nil {
+		return DiagnosticCaptureStorageStatus{}, err
+	}
 	var currentBytes, temporaryBytes int64
 	diagnosticCaptureStorageState.Lock()
 	if diagnosticCaptureStorageState.initialized &&
@@ -1607,6 +1792,9 @@ func GetDiagnosticCaptureStorageStatus() (DiagnosticCaptureStorageStatus, error)
 		lastCleanupStatus = ""
 	}
 	return DiagnosticCaptureStorageStatus{
+		StorageRoot:           storageRoot,
+		CaptureDir:            captureDir,
+		TemporaryDir:          temporaryDir,
 		CurrentBytes:          currentBytes,
 		TemporaryBytes:        temporaryBytes,
 		LastCleanupAt:         diagnosticCaptureOptionInt64(DiagnosticCaptureLastCleanupAtKey),
@@ -1627,7 +1815,7 @@ func recordDiagnosticCaptureTempCleanup(deletedCount, freedBytes int64) {
 		DiagnosticCaptureLastTempDeletedCountKey: strconv.FormatInt(deletedCount, 10),
 		DiagnosticCaptureLastTempFreedBytesKey:   strconv.FormatInt(freedBytes, 10),
 	}); err != nil {
-		common.SysError("failed to save diagnostic capture temporary cleanup status: " + err.Error())
+		logDiagnosticCaptureMaintenanceError(diagnosticCaptureMaintenanceTempCleanupStatusError, "failed to save diagnostic capture temporary cleanup status: "+err.Error())
 	}
 }
 
@@ -1685,25 +1873,23 @@ func buildDiagnosticCPAJSON(cfg DiagnosticCaptureConfig, flow *DiagnosticFlow, s
 				Timestamp:   capturedAt,
 				UpstreamURL: stringFromMeta(meta, "url"),
 				HTTPMethod:  stringFromMeta(meta, "method"),
-				Headers:     headers,
-				Body:        bodyJSON,
+				Request:     diagnosticRequestPayloadJSON{Headers: headers, Body: bodyJSON},
 			}
 			return content
 		}
 		content.RequestInfo = &diagnosticRequestInfoJSON{
-			AppVersion:          stringFromMeta(meta, "protocol"),
-			URL:                 stringFromMeta(meta, "path"),
-			Method:              stringFromMeta(meta, "method"),
-			DownstreamTransport: "http",
-			UpstreamTransport:   "http",
-			Timestamp:           capturedAt,
-			RemoteAddr:          stringFromMeta(meta, "remote_addr"),
+			AppVersion:     flow.RequestInfo.AppVersion,
+			ProtocolVersion: stringFromMeta(meta, "protocol"),
+			BaseURL:        flow.RequestInfo.BaseURL,
+			URL:            flow.RequestInfo.URL,
+			Method:         flow.RequestInfo.Method,
+			Timestamp:      capturedAt,
+			RemoteAddr:     flow.RequestInfo.RemoteAddr,
 		}
 		if content.RequestInfo.AppVersion == "" {
 			content.RequestInfo.AppVersion = common.Version
 		}
-		content.Headers = headers
-		content.RequestBody = &bodyJSON
+		content.Request = &diagnosticRequestPayloadJSON{Headers: headers, Body: bodyJSON}
 		return content
 	}
 
@@ -1712,8 +1898,7 @@ func buildDiagnosticCPAJSON(cfg DiagnosticCaptureConfig, flow *DiagnosticFlow, s
 			Sequence:  sequence,
 			Timestamp: capturedAt,
 			Status:    intFromMeta(meta, "status_code"),
-			Headers:   headers,
-			Body:      bodyJSON,
+			Response:  diagnosticResponsePayloadJSON{Headers: headers, Body: bodyJSON},
 			Error:     stringFromMeta(meta, "error"),
 		}
 		return content
@@ -1722,8 +1907,10 @@ func buildDiagnosticCPAJSON(cfg DiagnosticCaptureConfig, flow *DiagnosticFlow, s
 	content.Response = &diagnosticResponseJSON{
 		Status:     intFromMeta(meta, "status_code"),
 		DurationMS: int64FromMeta(meta, "duration_ms"),
-		Headers:    headers,
-		Body:       bodyJSON,
+		Response:   diagnosticResponsePayloadJSON{Headers: headers, Body: bodyJSON},
+	}
+	if flow != nil {
+		content.Meta = mergeDiagnosticFlowMeta(content.Meta, flow, meta)
 	}
 	return content
 }
@@ -1742,6 +1929,191 @@ func compactCaptureMeta(meta map[string]any) map[string]any {
 		return nil
 	}
 	return result
+}
+
+func mergeDiagnosticFlowMeta(meta map[string]any, flow *DiagnosticFlow, partMeta map[string]any) map[string]any {
+	if flow == nil {
+		return meta
+	}
+	merged := make(map[string]any)
+	if meta != nil {
+		for k, v := range meta {
+			merged[k] = v
+		}
+	}
+	if len(flow.RequestInfo.BaseURL) > 0 {
+		merged["base_url"] = flow.RequestInfo.BaseURL
+	}
+	if len(flow.Identity.Username) > 0 {
+		merged["username"] = flow.Identity.Username
+	}
+	if len(flow.Identity.TokenName) > 0 {
+		merged["token_name"] = flow.Identity.TokenName
+	}
+	if len(flow.Identity.TokenKeyMasked) > 0 {
+		merged["token_key_masked"] = flow.Identity.TokenKeyMasked
+	}
+	if flow.Identity.ChannelID > 0 {
+		merged["channel_id"] = flow.Identity.ChannelID
+	}
+	if len(flow.Identity.ChannelName) > 0 {
+		merged["channel_name"] = flow.Identity.ChannelName
+	}
+	if len(flow.Identity.Group) > 0 {
+		merged["group"] = flow.Identity.Group
+	}
+	if len(flow.Context.RequestID) > 0 {
+		merged["request_id"] = flow.Context.RequestID
+	}
+	if len(flow.Context.UpstreamRequestID) > 0 {
+		merged["upstream_request_id"] = flow.Context.UpstreamRequestID
+	}
+	if len(flow.Context.ModelName) > 0 {
+		merged["model_name"] = flow.Context.ModelName
+	}
+	if len(flow.Context.UpstreamModelName) > 0 {
+		merged["upstream_model_name"] = flow.Context.UpstreamModelName
+	}
+	if len(flow.Context.Status) > 0 {
+		merged["status"] = flow.Context.Status
+	}
+	if len(flow.Context.StreamStatus) > 0 {
+		merged["stream_status"] = flow.Context.StreamStatus
+	}
+	if flow.Context.DurationMS > 0 {
+		merged["duration_ms"] = flow.Context.DurationMS
+	}
+	if flow.Context.FirstResponseMS > 0 {
+		merged["first_response_ms"] = flow.Context.FirstResponseMS
+	}
+	if flow.Context.PromptTokens > 0 {
+		merged["prompt_tokens"] = flow.Context.PromptTokens
+	}
+	if flow.Context.CompletionTokens > 0 {
+		merged["completion_tokens"] = flow.Context.CompletionTokens
+	}
+	if flow.Context.RetryCount > 0 {
+		merged["retry_count"] = flow.Context.RetryCount
+	}
+	if len(flow.Context.BillingSource) > 0 {
+		merged["billing_source"] = flow.Context.BillingSource
+	}
+	if partMeta != nil {
+		for k, v := range partMeta {
+			if _, exists := merged[k]; !exists {
+				merged[k] = v
+			}
+		}
+	}
+	if len(merged) == 0 {
+		return nil
+	}
+	return merged
+}
+
+func populateDiagnosticFlowFromContext(flow *DiagnosticFlow, c *gin.Context, info *relaycommon.RelayInfo) {
+	if flow == nil || c == nil {
+		return
+	}
+	if flow.RequestInfo.AppVersion == "" {
+		flow.RequestInfo.AppVersion = common.Version
+	}
+	if flow.RequestInfo.ProtocolVersion == "" && c.Request != nil {
+		flow.RequestInfo.ProtocolVersion = c.Request.Proto
+	}
+	if flow.RequestInfo.Timestamp == "" {
+		flow.RequestInfo.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+	if flow.RequestInfo.RemoteAddr == "" && c.Request != nil {
+		flow.RequestInfo.RemoteAddr = c.ClientIP()
+	}
+	if flow.RequestInfo.URL == "" && c.Request != nil {
+		flow.RequestInfo.URL = c.Request.URL.RequestURI()
+	}
+	if flow.RequestInfo.Method == "" && c.Request != nil {
+		flow.RequestInfo.Method = c.Request.Method
+	}
+	if flow.RequestInfo.BaseURL == "" {
+		if c.Request != nil {
+			scheme := c.Request.URL.Scheme
+			if scheme == "" {
+				scheme = "http"
+			}
+			host := c.Request.Host
+			if host != "" {
+				flow.RequestInfo.BaseURL = scheme + "://" + host
+			}
+		}
+	}
+	if flow.Identity.Username == "" {
+		flow.Identity.Username = c.GetString("username")
+	}
+	if flow.Identity.UserID == 0 {
+		flow.Identity.UserID = common.GetContextKeyInt(c, constant.ContextKeyUserId)
+	}
+	if flow.Identity.TokenName == "" {
+		if value := c.GetString("token_name"); value != "" {
+			flow.Identity.TokenName = value
+		}
+	}
+	if flow.Identity.TokenKeyMasked == "" {
+		if key := common.GetContextKeyString(c, constant.ContextKeyTokenKey); key != "" {
+			flow.Identity.TokenKeyMasked = maskDiagnosticTokenKey(key)
+		}
+	}
+	if flow.Identity.ChannelID == 0 {
+		flow.Identity.ChannelID = common.GetContextKeyInt(c, constant.ContextKeyChannelId)
+	}
+	if flow.Identity.ChannelName == "" {
+		flow.Identity.ChannelName = common.GetContextKeyString(c, constant.ContextKeyChannelName)
+	}
+	if flow.Identity.Group == "" {
+		if group := common.GetContextKeyString(c, constant.ContextKeyUsingGroup); group != "" {
+			flow.Identity.Group = group
+		} else {
+			flow.Identity.Group = common.GetContextKeyString(c, constant.ContextKeyUserGroup)
+		}
+	}
+	if flow.Context.RequestID == "" {
+		flow.Context.RequestID = c.GetString(common.RequestIdKey)
+	}
+	if flow.Context.UpstreamRequestID == "" {
+		flow.Context.UpstreamRequestID = c.GetString(common.UpstreamRequestIdKey)
+	}
+	if flow.Context.ModelName == "" {
+		flow.Context.ModelName = common.GetContextKeyString(c, constant.ContextKeyOriginalModel)
+	}
+	if info != nil {
+		if flow.Context.UpstreamModelName == "" {
+			flow.Context.UpstreamModelName = info.OriginModelName
+		}
+		if flow.Context.RetryCount == 0 {
+			flow.Context.RetryCount = info.RetryIndex
+		}
+		if flow.Context.BillingSource == "" {
+			flow.Context.BillingSource = info.BillingSource
+		}
+		if flow.Identity.ChannelID == 0 && info.ChannelMeta != nil {
+			flow.Identity.ChannelID = info.ChannelMeta.ChannelId
+		}
+		if flow.Identity.ChannelName == "" && info.ChannelMeta != nil {
+			flow.Identity.ChannelName = info.ChannelMeta.ChannelName
+		}
+		if flow.Identity.TokenName == "" {
+			flow.Identity.TokenName = common.GetContextKeyString(c, "token_name")
+		}
+	}
+}
+
+func maskDiagnosticTokenKey(key string) string {
+	if key == "" {
+		return ""
+	}
+	runes := []rune(key)
+	if len(runes) <= 12 {
+		return model.MaskTokenKey(key)
+	}
+	return string(runes[:6]) + "******" + string(runes[len(runes)-6:])
 }
 
 func encodeDiagnosticBody(mode string, body captureBody) diagnosticBodyJSON {
@@ -1783,12 +2155,19 @@ func encodeDiagnosticBody(mode string, body captureBody) diagnosticBodyJSON {
 	return result
 }
 
-func headersFromMeta(meta map[string]any, key string) map[string][]string {
+func headersFromMeta(meta map[string]any, key string) map[string]string {
 	value, ok := meta[key]
 	if !ok || value == nil {
 		return nil
 	}
 	if headers, ok := value.(map[string][]string); ok {
+		result := make(map[string]string, len(headers))
+		for name, values := range headers {
+			result[name] = strings.Join(values, ", ")
+		}
+		return result
+	}
+	if headers, ok := value.(map[string]string); ok {
 		return headers
 	}
 	return nil
@@ -1850,38 +2229,6 @@ func leftPadSequence(sequence int64) string {
 		sequence = 0
 	}
 	return fmt.Sprintf("%06d", sequence)
-}
-
-func getInboundRequestBody(c *gin.Context, maxBytes int64) captureBody {
-	storage, err := common.GetBodyStorage(c)
-	if err != nil || storage == nil {
-		return captureBody{}
-	}
-	body, err := storage.Bytes()
-	if err != nil {
-		return captureBody{}
-	}
-	return truncateCaptureBody(body, maxBytes)
-}
-
-func readDiagnosticRequestBody(body io.Reader, maxBytes int64) (io.Reader, captureBody) {
-	data, err := io.ReadAll(body)
-	if err != nil {
-		return body, captureBody{}
-	}
-	return bytes.NewReader(data), truncateCaptureBody(data, maxBytes)
-}
-
-func truncateCaptureBody(data []byte, maxBytes int64) captureBody {
-	if maxBytes <= 0 || int64(len(data)) <= maxBytes {
-		return captureBody{Data: data, OriginalSize: int64(len(data)), SavedSize: int64(len(data))}
-	}
-	return captureBody{
-		Data:         data[:maxBytes],
-		OriginalSize: int64(len(data)),
-		SavedSize:    maxBytes,
-		Truncated:    true,
-	}
 }
 
 func parseDiagnosticPathRules(raw string) []string {
@@ -1948,19 +2295,20 @@ func safeCaptureName(value string, fallback string) string {
 	return result
 }
 
-func redactHeaders(headers http.Header) map[string][]string {
-	result := make(map[string][]string, len(headers))
+func redactHeaders(headers http.Header) map[string]string {
+	result := make(map[string]string, len(headers))
 	for key, values := range headers {
 		switch strings.ToLower(key) {
 		case "authorization", "cookie", "set-cookie", "proxy-authorization", "x-api-key", "x-api-access-key", "x-api-app-id", "x-goog-api-key":
-			result[key] = make([]string, len(values))
+			redacted := make([]string, len(values))
 			for index, value := range values {
-				result[key][index] = partiallyRedactDiagnosticHeader(value)
+				redacted[index] = partiallyRedactDiagnosticHeader(value)
 			}
+			result[key] = strings.Join(redacted, ", ")
 		default:
-			// Copy the slice so later request-header mutations cannot alter the
-			// asynchronous record.
-			result[key] = append([]string(nil), values...)
+			// Join multiple values so the persisted format is directly usable in
+			// Apifox and remains independent of later header mutations.
+			result[key] = strings.Join(values, ", ")
 		}
 	}
 	return result

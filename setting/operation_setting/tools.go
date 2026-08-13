@@ -218,6 +218,32 @@ func GetToolPrice(toolName string) float64 {
 	return GetToolPriceForModel(toolName, "")
 }
 
+// GetGPTImage1PriceOnceCall returns the official per-image price for GPT
+// Image 1 according to the requested quality and dimensions.
+func GetGPTImage1PriceOnceCall(quality string, size string) float64 {
+	prices := map[string]map[string]float64{
+		"low": {
+			"1024x1024": 0.011,
+			"1024x1536": 0.016,
+			"1536x1024": 0.016,
+		},
+		"medium": {
+			"1024x1024": 0.042,
+			"1024x1536": 0.063,
+			"1536x1024": 0.063,
+		},
+		"high": {
+			"1024x1024": 0.167,
+			"1024x1536": 0.25,
+			"1536x1024": 0.25,
+		},
+	}
+	if qualityPrices, ok := prices[quality]; ok {
+		return qualityPrices[size]
+	}
+	return 0
+}
+
 // SetToolPriceForTest injects a tool price and rebuilds the lookup index. Tests only.
 func SetToolPriceForTest(name string, price float64) {
 	if toolPriceSetting.Prices == nil {

@@ -3,6 +3,7 @@ package controller
 import (
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -332,26 +333,17 @@ func UpdateOption(c *gin.Context) {
 			c.JSON(http.StatusOK, gin.H{"success": false, "message": "诊断日志模式只能是 metadata 或 full"})
 			return
 		}
-	case service.DiagnosticCaptureMaxBodyMBKey:
-		maxBodyMB, parseErr := strconv.Atoi(strings.TrimSpace(option.Value.(string)))
-		if parseErr != nil || maxBodyMB < 1 {
-			c.JSON(http.StatusOK, gin.H{"success": false, "message": "诊断日志 body 上限必须是大于 0 的数字"})
-			return
-		}
-	case service.DiagnosticCaptureDirKey, service.DiagnosticCaptureTempDirKey:
-		cfg := service.DiagnosticCaptureConfigFromOptions()
-		captureDir := cfg.CaptureDir
-		tempDir := cfg.TempDir
-		if option.Key == service.DiagnosticCaptureDirKey {
-			captureDir = strings.TrimSpace(option.Value.(string))
-		} else {
-			tempDir = strings.TrimSpace(option.Value.(string))
-		}
-		if captureDir == "" || tempDir == "" {
+	case service.DiagnosticCaptureDirKey:
+		captureDir := strings.TrimSpace(option.Value.(string))
+		if captureDir == "" {
 			c.JSON(http.StatusOK, gin.H{"success": false, "message": "diagnostic capture directories cannot be empty"})
 			return
 		}
-		if err := service.ValidateDiagnosticCaptureDirectories(captureDir, tempDir); err != nil {
+		if err := service.ValidateDiagnosticCaptureRelativeDirectory(captureDir); err != nil {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
+			return
+		}
+		if err := service.ValidateDiagnosticCaptureDirectories(captureDir, filepath.Join(filepath.Dir(captureDir), "diagnostic-capture-temp")); err != nil {
 			c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
 			return
 		}
@@ -401,6 +393,36 @@ func UpdateOption(c *gin.Context) {
 		hours, parseErr := strconv.Atoi(strings.TrimSpace(option.Value.(string)))
 		if parseErr != nil || hours < 0 || hours > 24*365*10 {
 			c.JSON(http.StatusOK, gin.H{"success": false, "message": "diagnostic capture incomplete timeout must be between 0 and 87600 hours"})
+			return
+		}
+	case service.DiagnosticCaptureReconciliationModeKey:
+		mode := strings.ToLower(strings.TrimSpace(option.Value.(string)))
+		if mode != "daily" && mode != "weekly" && mode != "monthly" {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": "diagnostic capture reconciliation mode must be daily, weekly, or monthly"})
+			return
+		}
+	case service.DiagnosticCaptureReconciliationHourKey:
+		hour, parseErr := strconv.Atoi(strings.TrimSpace(option.Value.(string)))
+		if parseErr != nil || hour < 0 || hour > 23 {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": "diagnostic capture reconciliation hour must be between 0 and 23"})
+			return
+		}
+	case service.DiagnosticCaptureReconciliationMinuteKey:
+		minute, parseErr := strconv.Atoi(strings.TrimSpace(option.Value.(string)))
+		if parseErr != nil || minute < 0 || minute > 59 {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": "diagnostic capture reconciliation minute must be between 0 and 59"})
+			return
+		}
+	case service.DiagnosticCaptureReconciliationWeekdayKey:
+		weekday, parseErr := strconv.Atoi(strings.TrimSpace(option.Value.(string)))
+		if parseErr != nil || weekday < 0 || weekday > 6 {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": "diagnostic capture reconciliation weekday must be between 0 and 6"})
+			return
+		}
+	case service.DiagnosticCaptureReconciliationMonthdayKey:
+		monthday, parseErr := strconv.Atoi(strings.TrimSpace(option.Value.(string)))
+		if parseErr != nil || monthday < 1 || monthday > 31 {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": "diagnostic capture reconciliation month day must be between 1 and 31"})
 			return
 		}
 	case service.ErrorRewriteRulesJSONKey:
@@ -488,7 +510,13 @@ func UpdateOption(c *gin.Context) {
 		service.DiagnosticCaptureMinRetentionMinutesKey,
 		service.DiagnosticCaptureIncompleteTimeoutMinutesKey,
 		service.DiagnosticCaptureMinRetentionHoursKey,
-		service.DiagnosticCaptureIncompleteTimeoutHoursKey:
+		service.DiagnosticCaptureIncompleteTimeoutHoursKey,
+		service.DiagnosticCaptureReconciliationEnabledKey,
+		service.DiagnosticCaptureReconciliationModeKey,
+		service.DiagnosticCaptureReconciliationHourKey,
+		service.DiagnosticCaptureReconciliationMinuteKey,
+		service.DiagnosticCaptureReconciliationWeekdayKey,
+		service.DiagnosticCaptureReconciliationMonthdayKey:
 		cleanupSettingsChanged = true
 		err = model.UpdateOptionsBulk(map[string]string{
 			option.Key: option.Value.(string),

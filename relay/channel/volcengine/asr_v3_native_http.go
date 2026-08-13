@@ -8,10 +8,11 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/QuantumNous/new-api/dto"
+	rootdto "github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
-	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -63,11 +64,11 @@ func buildV3ASRAuthHeaders(apiKey string, cfg dto.VolcASRConfig, requestID strin
 	return headers, nil
 }
 
-func HandleNativeASRHTTP(c *gin.Context, request *dto.VolcengineASRNativeRequest, info *relaycommon.RelayInfo, cfg dto.VolcASRConfig) *types.NewAPIError {
+func HandleNativeASRHTTP(c *gin.Context, request *rootdto.VolcengineASRNativeRequest, info *relaycommon.RelayInfo, cfg dto.VolcASRConfig) *types.NewAPIError {
 	return handleNativeASRHTTP(c, getV3ASREndpoint(c.Request.URL.Path), request, info, cfg)
 }
 
-func handleNativeASRHTTP(c *gin.Context, requestURL string, request *dto.VolcengineASRNativeRequest, info *relaycommon.RelayInfo, cfg dto.VolcASRConfig) *types.NewAPIError {
+func handleNativeASRHTTP(c *gin.Context, requestURL string, request *rootdto.VolcengineASRNativeRequest, info *relaycommon.RelayInfo, cfg dto.VolcASRConfig) *types.NewAPIError {
 	if request == nil || len(request.RawBody) == 0 {
 		return types.NewErrorWithStatusCode(errors.New("volcengine native asr request body is empty"), types.ErrorCodeBadRequestBody, http.StatusBadRequest)
 	}

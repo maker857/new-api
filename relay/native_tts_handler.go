@@ -11,8 +11,9 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
+	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
-	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 )
 
@@ -33,7 +34,7 @@ func NativeVolcengineTTSHelper(c *gin.Context, info *relaycommon.RelayInfo) *typ
 		return types.NewError(err, types.ErrorCodeChannelModelMappedError, types.ErrOptionWithSkipRetry())
 	}
 	cfg := info.ChannelOtherSettings.VolcTTS
-	if cfg == nil || cfg.EffectiveProtocol() != dto.VolcTTSProtocolV3HTTPChunked {
+	if cfg == nil || cfg.EffectiveProtocol() != kitdto.VolcTTSProtocolV3HTTPChunked {
 		return types.NewErrorWithStatusCode(errors.New("native volcengine tts requires v3 http chunked channel configuration"), types.ErrorCodeBadRequestBody, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 	}
 	if info.UpstreamModelName != "" && cfg.ResourceID != "" && info.UpstreamModelName != cfg.ResourceID {

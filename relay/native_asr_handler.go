@@ -11,7 +11,8 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
-	"github.com/QuantumNous/new-api/types"
+	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
 )
 
@@ -32,7 +33,7 @@ func NativeVolcengineASRHelper(c *gin.Context, info *relaycommon.RelayInfo) *typ
 		return types.NewError(err, types.ErrorCodeChannelModelMappedError, types.ErrOptionWithSkipRetry())
 	}
 	cfg := info.ChannelOtherSettings.VolcASR
-	if cfg == nil || cfg.EffectiveProtocol() != dto.VolcASRProtocolV3AUC {
+	if cfg == nil || cfg.EffectiveProtocol() != kitdto.VolcASRProtocolV3AUC {
 		return types.NewErrorWithStatusCode(errors.New("native volcengine asr requires v3 auc channel configuration"), types.ErrorCodeBadRequestBody, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 	}
 	resourceModel := info.UpstreamModelName

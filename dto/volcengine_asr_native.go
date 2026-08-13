@@ -1,8 +1,9 @@
 package dto
 
 import (
-	"github.com/QuantumNous/new-api/types"
-	"github.com/gin-gonic/gin"
+	"net/http"
+
+	"github.com/QuantumNous/new-api/relaykit/types"
 )
 
 type VolcengineASRNativeRequest struct {
@@ -14,7 +15,7 @@ func (r *VolcengineASRNativeRequest) GetTokenCountMeta() *types.TokenCountMeta {
 	return &types.TokenCountMeta{TokenType: types.TokenTypeTextNumber}
 }
 
-func (r *VolcengineASRNativeRequest) IsStream(_ *gin.Context) bool {
+func (r *VolcengineASRNativeRequest) IsStream(_ *http.Request) bool {
 	return false
 }
 

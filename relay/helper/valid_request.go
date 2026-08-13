@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	rootdto "github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -61,7 +62,7 @@ func GetAndValidateRequest(c *gin.Context, format types.RelayFormat) (request dt
 	return request, err
 }
 
-func GetAndValidateVolcengineASRNativeRequest(c *gin.Context) (*dto.VolcengineASRNativeRequest, error) {
+func GetAndValidateVolcengineASRNativeRequest(c *gin.Context) (*rootdto.VolcengineASRNativeRequest, error) {
 	storage, err := common.GetBodyStorage(c)
 	if err != nil {
 		return nil, err
@@ -78,7 +79,7 @@ func GetAndValidateVolcengineASRNativeRequest(c *gin.Context) (*dto.VolcengineAS
 	if err = common.Unmarshal(body, &payload); err != nil {
 		return nil, err
 	}
-	request := &dto.VolcengineASRNativeRequest{
+	request := &rootdto.VolcengineASRNativeRequest{
 		Model:   strings.TrimSpace(c.GetHeader("X-Api-Resource-Id")),
 		RawBody: append([]byte(nil), body...),
 	}
@@ -88,7 +89,7 @@ func GetAndValidateVolcengineASRNativeRequest(c *gin.Context) (*dto.VolcengineAS
 	return request, nil
 }
 
-func GetAndValidateVolcengineTTSNativeRequest(c *gin.Context) (*dto.VolcengineTTSNativeRequest, error) {
+func GetAndValidateVolcengineTTSNativeRequest(c *gin.Context) (*rootdto.VolcengineTTSNativeRequest, error) {
 	storage, err := common.GetBodyStorage(c)
 	if err != nil {
 		return nil, err
@@ -98,7 +99,7 @@ func GetAndValidateVolcengineTTSNativeRequest(c *gin.Context) (*dto.VolcengineTT
 		return nil, err
 	}
 
-	request := &dto.VolcengineTTSNativeRequest{}
+	request := &rootdto.VolcengineTTSNativeRequest{}
 	if err = common.Unmarshal(body, request); err != nil {
 		return nil, err
 	}

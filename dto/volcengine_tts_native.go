@@ -2,9 +2,9 @@ package dto
 
 import (
 	"encoding/json"
+	"net/http"
 
-	"github.com/QuantumNous/new-api/types"
-	"github.com/gin-gonic/gin"
+	"github.com/QuantumNous/new-api/relaykit/types"
 )
 
 type VolcengineTTSNativeRequest struct {
@@ -27,7 +27,7 @@ func (r *VolcengineTTSNativeRequest) GetTokenCountMeta() *types.TokenCountMeta {
 	}
 }
 
-func (r *VolcengineTTSNativeRequest) IsStream(_ *gin.Context) bool {
+func (r *VolcengineTTSNativeRequest) IsStream(_ *http.Request) bool {
 	return true
 }
 

@@ -17,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/channel"
 	"github.com/QuantumNous/new-api/relay/channel/task/taskcommon"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
 
 	"github.com/gin-gonic/gin"
@@ -45,23 +46,23 @@ type requestPayload struct {
 	Model                 string         `json:"model"`
 	Content               []ContentItem  `json:"content,omitempty"`
 	CallbackURL           string         `json:"callback_url,omitempty"`
-	ReturnLastFrame       *dto.BoolValue `json:"return_last_frame,omitempty"`
+	ReturnLastFrame       *kitdto.BoolValue `json:"return_last_frame,omitempty"`
 	ServiceTier           string         `json:"service_tier,omitempty"`
-	ExecutionExpiresAfter *dto.IntValue  `json:"execution_expires_after,omitempty"`
-	GenerateAudio         *dto.BoolValue `json:"generate_audio,omitempty"`
-	Draft                 *dto.BoolValue `json:"draft,omitempty"`
+	ExecutionExpiresAfter *kitdto.IntValue  `json:"execution_expires_after,omitempty"`
+	GenerateAudio         *kitdto.BoolValue `json:"generate_audio,omitempty"`
+	Draft                 *kitdto.BoolValue `json:"draft,omitempty"`
 	Tools                 []struct {
 		Type string `json:"type,omitempty"`
 	} `json:"tools,omitempty"`
 	SafetyIdentifier string         `json:"safety_identifier,omitempty"`
-	Priority         *dto.IntValue  `json:"priority,omitempty"`
+	Priority         *kitdto.IntValue  `json:"priority,omitempty"`
 	Resolution       string         `json:"resolution,omitempty"`
 	Ratio            string         `json:"ratio,omitempty"`
-	Duration         *dto.IntValue  `json:"duration,omitempty"`
-	Frames           *dto.IntValue  `json:"frames,omitempty"`
-	Seed             *dto.IntValue  `json:"seed,omitempty"`
-	CameraFixed      *dto.BoolValue `json:"camera_fixed,omitempty"`
-	Watermark        *dto.BoolValue `json:"watermark,omitempty"`
+	Duration         *kitdto.IntValue  `json:"duration,omitempty"`
+	Frames           *kitdto.IntValue  `json:"frames,omitempty"`
+	Seed             *kitdto.IntValue  `json:"seed,omitempty"`
+	CameraFixed      *kitdto.BoolValue `json:"camera_fixed,omitempty"`
+	Watermark        *kitdto.BoolValue `json:"watermark,omitempty"`
 	NativeContent    []any          `json:"-"`
 	Extra            map[string]any `json:"-"`
 }
@@ -428,7 +429,7 @@ func (a *TaskAdaptor) DoResponse(c *gin.Context, resp *http.Response, info *rela
 		return dResp.ID, responseBody, nil
 	}
 
-	ov := dto.NewOpenAIVideo()
+	ov := kitdto.NewOpenAIVideo()
 	ov.ID = info.PublicTaskID
 	ov.TaskID = info.PublicTaskID
 	ov.CreatedAt = time.Now().Unix()
@@ -538,7 +539,7 @@ func (a *TaskAdaptor) convertToRequestPayload(req *relaycommon.TaskSubmitReq) (*
 		duration, _ = strconv.Atoi(req.Seconds)
 	}
 	if duration != 0 {
-		r.Duration = lo.ToPtr(dto.IntValue(duration))
+		r.Duration = lo.ToPtr(kitdto.IntValue(duration))
 	}
 
 	r.Content = lo.Reject(r.Content, func(c ContentItem, _ int) bool { return c.Type == "text" })
@@ -594,7 +595,7 @@ func (a *TaskAdaptor) ConvertToOpenAIVideo(originTask *model.Task) ([]byte, erro
 		return nil, errors.Wrap(err, "unmarshal doubao task data failed")
 	}
 
-	openAIVideo := dto.NewOpenAIVideo()
+	openAIVideo := kitdto.NewOpenAIVideo()
 	openAIVideo.ID = originTask.TaskID
 	openAIVideo.TaskID = originTask.TaskID
 	openAIVideo.Status = originTask.Status.ToVideoStatus()
@@ -605,7 +606,7 @@ func (a *TaskAdaptor) ConvertToOpenAIVideo(originTask *model.Task) ([]byte, erro
 	openAIVideo.Model = originTask.Properties.OriginModelName
 
 	if dResp.Status == "failed" {
-		openAIVideo.Error = &dto.OpenAIVideoError{
+		openAIVideo.Error = &kitdto.OpenAIVideoError{
 			Message: dResp.Error.Message,
 			Code:    dResp.Error.Code,
 		}

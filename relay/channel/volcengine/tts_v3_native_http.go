@@ -10,10 +10,11 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/dto"
+	rootdto "github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
-	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -26,7 +27,7 @@ type nativeTTSHTTPResponse struct {
 
 // HandleNativeTTSHTTP proxies the Volcengine native v3 NDJSON stream without
 // translating its records into the OpenAI audio response shape.
-func HandleNativeTTSHTTP(c *gin.Context, requestURL string, request *dto.VolcengineTTSNativeRequest, info *relaycommon.RelayInfo, cfg dto.VolcTTSConfig) (*dto.Usage, *types.NewAPIError) {
+func HandleNativeTTSHTTP(c *gin.Context, requestURL string, request *rootdto.VolcengineTTSNativeRequest, info *relaycommon.RelayInfo, cfg dto.VolcTTSConfig) (*dto.Usage, *types.NewAPIError) {
 	if request == nil || len(request.RawBody) == 0 {
 		return nil, types.NewErrorWithStatusCode(errors.New("volcengine native tts request body is empty"), types.ErrorCodeBadRequestBody, http.StatusBadRequest)
 	}

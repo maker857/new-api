@@ -20,10 +20,11 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
+	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
-	"github.com/QuantumNous/new-api/types"
 
 	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/samber/lo"
@@ -271,7 +272,7 @@ func addUsedChannel(c *gin.Context, channelId int) {
 	c.Set("use_channel", useChannel)
 }
 
-func fastTokenCountMetaForPricing(request dto.Request) *types.TokenCountMeta {
+func fastTokenCountMetaForPricing(request kitdto.Request) *types.TokenCountMeta {
 	if request == nil {
 		return &types.TokenCountMeta{}
 	}
@@ -279,7 +280,7 @@ func fastTokenCountMetaForPricing(request dto.Request) *types.TokenCountMeta {
 		TokenType: types.TokenTypeTokenizer,
 	}
 	switch r := request.(type) {
-	case *dto.GeneralOpenAIRequest:
+	case *kitdto.GeneralOpenAIRequest:
 		maxCompletionTokens := lo.FromPtrOr(r.MaxCompletionTokens, uint(0))
 		maxTokens := lo.FromPtrOr(r.MaxTokens, uint(0))
 		if maxCompletionTokens > maxTokens {
@@ -287,11 +288,11 @@ func fastTokenCountMetaForPricing(request dto.Request) *types.TokenCountMeta {
 		} else {
 			meta.MaxTokens = int(maxTokens)
 		}
-	case *dto.OpenAIResponsesRequest:
+	case *kitdto.OpenAIResponsesRequest:
 		meta.MaxTokens = int(lo.FromPtrOr(r.MaxOutputTokens, uint(0)))
-	case *dto.ClaudeRequest:
+	case *kitdto.ClaudeRequest:
 		meta.MaxTokens = int(lo.FromPtr(r.MaxTokens))
-	case *dto.ImageRequest:
+	case *kitdto.ImageRequest:
 		// Pricing for image requests depends on ImagePriceRatio; safe to compute even when CountToken is disabled.
 		return r.GetTokenCountMeta()
 	default:

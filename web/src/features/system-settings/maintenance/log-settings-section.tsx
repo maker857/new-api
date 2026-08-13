@@ -1705,7 +1705,11 @@ export function LogSettingsSection({
                                 }
                               >
                                 <SelectTrigger>
-                                  <SelectValue />
+                                  <SelectValue>
+                                    {minRetentionUnit === "hours"
+                                      ? t("Hours")
+                                      : t("Minutes")}
+                                  </SelectValue>
                                 </SelectTrigger>
                                 <SelectContent>
                                   <SelectItem value="hours">
@@ -1771,7 +1775,11 @@ export function LogSettingsSection({
                                 }
                               >
                                 <SelectTrigger>
-                                  <SelectValue />
+                                  <SelectValue>
+                                    {incompleteTimeoutUnit === "hours"
+                                      ? t("Hours")
+                                      : t("Minutes")}
+                                  </SelectValue>
                                 </SelectTrigger>
                                 <SelectContent>
                                   <SelectItem value="hours">
@@ -1839,7 +1847,11 @@ export function LogSettingsSection({
                                 }
                               >
                                 <SelectTrigger>
-                                  <SelectValue />
+                                  <SelectValue>
+                                    {tempRetentionUnit === "hours"
+                                      ? t("Hours")
+                                      : t("Minutes")}
+                                  </SelectValue>
                                 </SelectTrigger>
                                 <SelectContent>
                                   <SelectItem value="hours">

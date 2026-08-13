@@ -457,7 +457,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   system_prompt: '',
   system_prompt_override: false,
   error_rewrite_enabled: false,
-  diagnostic_capture_enabled: false,
+  diagnostic_capture_enabled: true,
   // Type-specific settings
   is_enterprise_account: false,
   vertex_key_type: 'json',

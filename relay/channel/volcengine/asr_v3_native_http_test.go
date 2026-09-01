@@ -9,6 +9,7 @@ import (
 
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
+	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -16,8 +17,8 @@ import (
 )
 
 func TestBuildV3ASRAuthHeaders(t *testing.T) {
-	headers, err := buildV3ASRAuthHeaders("app-key|access-key", dto.VolcASRConfig{
-		Protocol: dto.VolcASRProtocolV3AUC, ResourceID: "volc.seedasr.auc", AuthMode: dto.VolcASRAuthModeLegacy,
+	headers, err := buildV3ASRAuthHeaders("app-key|access-key", kitdto.VolcASRConfig{
+		Protocol: kitdto.VolcASRProtocolV3AUC, ResourceID: "volc.seedasr.auc", AuthMode: kitdto.VolcASRAuthModeLegacy,
 	}, "req-1")
 	require.NoError(t, err)
 	require.Equal(t, "app-key", headers.Get("X-Api-App-Key"))
@@ -55,10 +56,10 @@ func TestHandleNativeASRHTTPPreservesRequestAndResponse(t *testing.T) {
 	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{
 		ApiType:        constant.APITypeVolcEngine,
 		ApiKey:         "api-key",
-		ChannelSetting: dto.ChannelSettings{},
+		ChannelSetting: kitdto.ChannelSettings{},
 	}}
 	request := &dto.VolcengineASRNativeRequest{Model: "volc.seedasr.auc", RawBody: []byte(rawRequest)}
-	cfg := dto.VolcASRConfig{Protocol: dto.VolcASRProtocolV3AUC, ResourceID: "volc.seedasr.auc", AuthMode: dto.VolcASRAuthModeNewConsole}
+	cfg := kitdto.VolcASRConfig{Protocol: kitdto.VolcASRProtocolV3AUC, ResourceID: "volc.seedasr.auc", AuthMode: kitdto.VolcASRAuthModeNewConsole}
 
 	apiErr := handleNativeASRHTTP(c, upstream.URL, request, info, cfg)
 	require.Nil(t, apiErr)

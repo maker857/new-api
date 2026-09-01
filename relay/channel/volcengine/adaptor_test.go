@@ -6,9 +6,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -30,7 +30,7 @@ func TestAdaptorV1FallbackKeepsLegacyURLAuthAndRequestBehavior(t *testing.T) {
 		RelayMode: relayconstant.RelayModeAudioSpeech,
 		ChannelMeta: &relaycommon.ChannelMeta{
 			ApiKey:               "legacy-app|legacy-token",
-			ChannelOtherSettings: dto.ChannelOtherSettings{},
+			ChannelOtherSettings: kitdto.ChannelOtherSettings{},
 		},
 	}
 	adaptor := &Adaptor{}
@@ -39,7 +39,7 @@ func TestAdaptorV1FallbackKeepsLegacyURLAuthAndRequestBehavior(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "wss://openspeech.bytedance.com/api/v1/tts/ws_binary", requestURL)
 
-	body, err := adaptor.ConvertAudioRequest(c, info, dto.AudioRequest{
+	body, err := adaptor.ConvertAudioRequest(c, info, kitdto.AudioRequest{
 		Model:          "legacy-model",
 		Input:          "legacy text",
 		Voice:          "alloy",
@@ -62,11 +62,11 @@ func TestAdaptorNativeTTSUsesOfficialHTTPChunkedEndpoint(t *testing.T) {
 	info := &relaycommon.RelayInfo{
 		RelayMode: relayconstant.RelayModeVolcengineTTSNative,
 		ChannelMeta: &relaycommon.ChannelMeta{
-			ChannelOtherSettings: dto.ChannelOtherSettings{
-				VolcTTS: &dto.VolcTTSConfig{
-					Protocol:   dto.VolcTTSProtocolV3HTTPChunked,
+			ChannelOtherSettings: kitdto.ChannelOtherSettings{
+				VolcTTS: &kitdto.VolcTTSConfig{
+					Protocol:   kitdto.VolcTTSProtocolV3HTTPChunked,
 					ResourceID: "seed-tts-2.0",
-					AuthMode:   dto.VolcTTSAuthModeNewConsole,
+					AuthMode:   kitdto.VolcTTSAuthModeNewConsole,
 				},
 			},
 		},

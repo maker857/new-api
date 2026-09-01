@@ -1,5 +1,4 @@
-import assert from 'node:assert/strict'
-import test from 'node:test'
+import { assert, test } from 'vitest'
 
 import { CHANNEL_FORM_DEFAULT_VALUES, channelFormSchema } from '../channel-form'
 import {

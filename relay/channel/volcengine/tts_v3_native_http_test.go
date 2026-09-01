@@ -11,8 +11,9 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/dto"
+	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
-	"github.com/QuantumNous/new-api/types"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -49,7 +50,7 @@ func TestNativeTTSHTTPForwardsNDJSONAndPreservesUsage(t *testing.T) {
 	c.Request.Header.Set("X-Api-Connect-Id", connectID)
 	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ApiKey: channelKey}}
 	request := &dto.VolcengineTTSNativeRequest{RawBody: []byte(`{"req_params":{"text":"你好","speaker":"seed-voice","audio_params":{"enable_subtitle":true}}}`)}
-	cfg := dto.VolcTTSConfig{Protocol: dto.VolcTTSProtocolV3HTTPChunked, ResourceID: "seed-tts-2.0", AuthMode: dto.VolcTTSAuthModeNewConsole}
+	cfg := kitdto.VolcTTSConfig{Protocol: kitdto.VolcTTSProtocolV3HTTPChunked, ResourceID: "seed-tts-2.0", AuthMode: kitdto.VolcTTSAuthModeNewConsole}
 
 	usage, apiErr := HandleNativeTTSHTTP(c, upstream.URL, request, info, cfg)
 	require.Nil(t, apiErr)
@@ -70,7 +71,7 @@ func TestNativeTTSHTTPRejectsMalformedNDJSON(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/api/v3/tts/unidirectional", nil)
 	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ApiKey: "channel-key"}}
 	request := &dto.VolcengineTTSNativeRequest{RawBody: []byte(`{"req_params":{"text":"你好","speaker":"seed-voice"}}`)}
-	cfg := dto.VolcTTSConfig{Protocol: dto.VolcTTSProtocolV3HTTPChunked, ResourceID: "seed-tts-2.0", AuthMode: dto.VolcTTSAuthModeNewConsole}
+	cfg := kitdto.VolcTTSConfig{Protocol: kitdto.VolcTTSProtocolV3HTTPChunked, ResourceID: "seed-tts-2.0", AuthMode: kitdto.VolcTTSAuthModeNewConsole}
 
 	_, apiErr := HandleNativeTTSHTTP(c, upstream.URL, request, info, cfg)
 	require.NotNil(t, apiErr)
@@ -88,7 +89,7 @@ func TestNativeTTSHTTPDoesNotRetryMalformedStreamAfterWriting(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/api/v3/tts/unidirectional", nil)
 	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ApiKey: "channel-key"}}
 	request := &dto.VolcengineTTSNativeRequest{RawBody: []byte(`{"req_params":{"text":"你好","speaker":"seed-voice"}}`)}
-	cfg := dto.VolcTTSConfig{Protocol: dto.VolcTTSProtocolV3HTTPChunked, ResourceID: "seed-tts-2.0", AuthMode: dto.VolcTTSAuthModeNewConsole}
+	cfg := kitdto.VolcTTSConfig{Protocol: kitdto.VolcTTSProtocolV3HTTPChunked, ResourceID: "seed-tts-2.0", AuthMode: kitdto.VolcTTSAuthModeNewConsole}
 
 	_, apiErr := HandleNativeTTSHTTP(c, upstream.URL, request, info, cfg)
 	require.NotNil(t, apiErr)
@@ -110,7 +111,7 @@ func TestNativeTTSHTTPForwardsProviderErrorWithoutRetry(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/api/v3/tts/unidirectional", nil)
 	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ApiKey: "channel-key"}}
 	request := &dto.VolcengineTTSNativeRequest{RawBody: []byte(`{"req_params":{"text":"你好","speaker":"seed-voice"}}`)}
-	cfg := dto.VolcTTSConfig{Protocol: dto.VolcTTSProtocolV3HTTPChunked, ResourceID: "seed-tts-2.0", AuthMode: dto.VolcTTSAuthModeNewConsole}
+	cfg := kitdto.VolcTTSConfig{Protocol: kitdto.VolcTTSProtocolV3HTTPChunked, ResourceID: "seed-tts-2.0", AuthMode: kitdto.VolcTTSAuthModeNewConsole}
 
 	_, apiErr := HandleNativeTTSHTTP(c, upstream.URL, request, info, cfg)
 	require.NotNil(t, apiErr)
@@ -135,7 +136,7 @@ func TestNativeTTSHTTPPreservesNonSuccessResponse(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/api/v3/tts/unidirectional", nil)
 	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ApiKey: secret}}
 	request := &dto.VolcengineTTSNativeRequest{RawBody: []byte(`{"req_params":{"text":"你好","speaker":"seed-voice"}}`)}
-	cfg := dto.VolcTTSConfig{Protocol: dto.VolcTTSProtocolV3HTTPChunked, ResourceID: "seed-tts-2.0", AuthMode: dto.VolcTTSAuthModeNewConsole}
+	cfg := kitdto.VolcTTSConfig{Protocol: kitdto.VolcTTSProtocolV3HTTPChunked, ResourceID: "seed-tts-2.0", AuthMode: kitdto.VolcTTSAuthModeNewConsole}
 
 	_, apiErr := HandleNativeTTSHTTP(c, upstream.URL, request, info, cfg)
 	require.NotNil(t, apiErr)
@@ -167,7 +168,7 @@ func TestNativeTTSHTTPCancellationStopsUpstreamRequest(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/api/v3/tts/unidirectional", nil).WithContext(requestContext)
 	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ApiKey: "channel-key"}}
 	request := &dto.VolcengineTTSNativeRequest{RawBody: []byte(`{"req_params":{"text":"你好","speaker":"seed-voice"}}`)}
-	cfg := dto.VolcTTSConfig{Protocol: dto.VolcTTSProtocolV3HTTPChunked, ResourceID: "seed-tts-2.0", AuthMode: dto.VolcTTSAuthModeNewConsole}
+	cfg := kitdto.VolcTTSConfig{Protocol: kitdto.VolcTTSProtocolV3HTTPChunked, ResourceID: "seed-tts-2.0", AuthMode: kitdto.VolcTTSAuthModeNewConsole}
 	result := make(chan *types.NewAPIError, 1)
 	go func() {
 		_, apiErr := HandleNativeTTSHTTP(c, upstream.URL, request, info, cfg)
@@ -228,7 +229,7 @@ func TestNativeTTSHTTPWriteFailureAfterCommitDisablesRetry(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/api/v3/tts/unidirectional", nil)
 	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ApiKey: "channel-key"}}
 	request := &dto.VolcengineTTSNativeRequest{RawBody: []byte(`{"req_params":{"text":"你好","speaker":"seed-voice"}}`)}
-	cfg := dto.VolcTTSConfig{Protocol: dto.VolcTTSProtocolV3HTTPChunked, ResourceID: "seed-tts-2.0", AuthMode: dto.VolcTTSAuthModeNewConsole}
+	cfg := kitdto.VolcTTSConfig{Protocol: kitdto.VolcTTSProtocolV3HTTPChunked, ResourceID: "seed-tts-2.0", AuthMode: kitdto.VolcTTSAuthModeNewConsole}
 
 	_, apiErr := HandleNativeTTSHTTP(c, upstream.URL, request, info, cfg)
 	require.NotNil(t, apiErr)
@@ -248,7 +249,7 @@ func TestNativeTTSHTTPPartialFirstWriteDisablesRetry(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/api/v3/tts/unidirectional", nil)
 	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ApiKey: "channel-key"}}
 	request := &dto.VolcengineTTSNativeRequest{RawBody: []byte(`{"req_params":{"text":"你好","speaker":"seed-voice"}}`)}
-	cfg := dto.VolcTTSConfig{Protocol: dto.VolcTTSProtocolV3HTTPChunked, ResourceID: "seed-tts-2.0", AuthMode: dto.VolcTTSAuthModeNewConsole}
+	cfg := kitdto.VolcTTSConfig{Protocol: kitdto.VolcTTSProtocolV3HTTPChunked, ResourceID: "seed-tts-2.0", AuthMode: kitdto.VolcTTSAuthModeNewConsole}
 
 	_, apiErr := HandleNativeTTSHTTP(c, upstream.URL, request, info, cfg)
 	require.NotNil(t, apiErr)

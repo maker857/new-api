@@ -12,6 +12,9 @@ ENV GOEXPERIMENT=greenteagc
 WORKDIR /build
 
 ADD go.mod go.sum ./
+# relaykit is a local module referenced via replace, so its module file must
+# be available before downloading the main module dependencies.
+ADD relaykit/go.mod ./relaykit/go.mod
 RUN go mod download
 
 COPY . .

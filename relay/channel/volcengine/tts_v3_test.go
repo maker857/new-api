@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/dto"
+	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
-	"github.com/QuantumNous/new-api/types"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/assert"
@@ -64,11 +64,11 @@ func TestV3HTTPChunkedStreamsJSONLinesAndReturnsUsage(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/audio/speech", nil)
 	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ApiKey: "console-api-key"}}
 	request := VolcengineTTSRequest{User: VolcengineTTSUser{UID: "relay"}, Audio: VolcengineTTSAudio{VoiceType: "seed-voice", Rate: 24000}, Request: VolcengineTTSReqInfo{Text: "http chunked text", Model: "seed-tts-2.0"}}
-	cfg := dto.VolcTTSConfig{Protocol: dto.VolcTTSProtocolV3HTTPChunked, ResourceID: "seed-tts-2.0", AuthMode: dto.VolcTTSAuthModeNewConsole}
+	cfg := kitdto.VolcTTSConfig{Protocol: kitdto.VolcTTSProtocolV3HTTPChunked, ResourceID: "seed-tts-2.0", AuthMode: kitdto.VolcTTSAuthModeNewConsole}
 
 	usageAny, apiErr := handleTTSV3HTTPChunked(c, upstream.URL, request, info, "mp3", cfg)
 	require.Nil(t, apiErr)
-	usage, ok := usageAny.(*dto.Usage)
+	usage, ok := usageAny.(*kitdto.Usage)
 	require.True(t, ok)
 	assert.Equal(t, 23, usage.PromptTokens)
 	assert.Equal(t, "chunk-1chunk-2", recorder.Body.String())
@@ -85,7 +85,7 @@ func TestV3HTTPChunkedProviderErrorBecomesAPIError(t *testing.T) {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/audio/speech", nil)
 	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ApiKey: "console-api-key"}}
-	cfg := dto.VolcTTSConfig{Protocol: dto.VolcTTSProtocolV3HTTPChunked, ResourceID: "seed-tts-2.0", AuthMode: dto.VolcTTSAuthModeNewConsole}
+	cfg := kitdto.VolcTTSConfig{Protocol: kitdto.VolcTTSProtocolV3HTTPChunked, ResourceID: "seed-tts-2.0", AuthMode: kitdto.VolcTTSAuthModeNewConsole}
 	_, apiErr := handleTTSV3HTTPChunked(c, upstream.URL, VolcengineTTSRequest{}, info, "mp3", cfg)
 	require.NotNil(t, apiErr)
 	assert.Contains(t, apiErr.Error(), "provider rejected request")
@@ -102,7 +102,7 @@ func TestV3HTTPChunkedNon200BodyIsBoundedAndCredentialsAreRedacted(t *testing.T)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/audio/speech", nil)
 	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ApiKey: secret}}
-	cfg := dto.VolcTTSConfig{Protocol: dto.VolcTTSProtocolV3HTTPChunked, ResourceID: "seed-tts-2.0", AuthMode: dto.VolcTTSAuthModeNewConsole}
+	cfg := kitdto.VolcTTSConfig{Protocol: kitdto.VolcTTSProtocolV3HTTPChunked, ResourceID: "seed-tts-2.0", AuthMode: kitdto.VolcTTSAuthModeNewConsole}
 	_, apiErr := handleTTSV3HTTPChunked(c, upstream.URL, VolcengineTTSRequest{}, info, "mp3", cfg)
 	require.NotNil(t, apiErr)
 	assert.NotContains(t, apiErr.Error(), secret)
@@ -191,11 +191,11 @@ func TestV3WSUnidirectionalStreamsAudioAndUsage(t *testing.T) {
 		Audio:   VolcengineTTSAudio{VoiceType: "seed-voice", Rate: 24000},
 		Request: VolcengineTTSReqInfo{Text: "stream this text", Model: "seed-tts-2.0"},
 	}
-	cfg := dto.VolcTTSConfig{Protocol: dto.VolcTTSProtocolV3WsUni, ResourceID: "seed-tts-2.0", AuthMode: dto.VolcTTSAuthModeNewConsole}
+	cfg := kitdto.VolcTTSConfig{Protocol: kitdto.VolcTTSProtocolV3WsUni, ResourceID: "seed-tts-2.0", AuthMode: kitdto.VolcTTSAuthModeNewConsole}
 
 	usageAny, apiErr := handleTTSV3WSUnidirectional(c, "ws"+strings.TrimPrefix(server.URL, "http"), request, info, "mp3", cfg)
 	require.Nil(t, apiErr)
-	usage, ok := usageAny.(*dto.Usage)
+	usage, ok := usageAny.(*kitdto.Usage)
 	require.True(t, ok)
 	assert.Equal(t, 17, usage.PromptTokens)
 	assert.Equal(t, "audio-1audio-2", recorder.Body.String())
@@ -229,7 +229,7 @@ func TestV3WSCancellationReturnsWithoutUpstreamError(t *testing.T) {
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/audio/speech", nil).WithContext(requestContext)
 	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ApiKey: "console-api-key"}}
-	cfg := dto.VolcTTSConfig{Protocol: dto.VolcTTSProtocolV3WsUni, ResourceID: "seed-tts-2.0", AuthMode: dto.VolcTTSAuthModeNewConsole}
+	cfg := kitdto.VolcTTSConfig{Protocol: kitdto.VolcTTSProtocolV3WsUni, ResourceID: "seed-tts-2.0", AuthMode: kitdto.VolcTTSAuthModeNewConsole}
 	result := make(chan *types.NewAPIError, 1)
 	go func() {
 		_, apiErr := handleTTSV3WSUnidirectional(c, "ws"+strings.TrimPrefix(server.URL, "http"), VolcengineTTSRequest{}, info, "mp3", cfg)
@@ -277,10 +277,10 @@ func writeV3TestAudioEvent(conn *websocket.Conn, sessionID string, payload []byt
 
 func TestV3AuthHeaders(t *testing.T) {
 	t.Run("new console api key", func(t *testing.T) {
-		headers, err := buildV3AuthHeaders("console-api-key", dto.VolcTTSConfig{
-			Protocol:   dto.VolcTTSProtocolV3WsUni,
+		headers, err := buildV3AuthHeaders("console-api-key", kitdto.VolcTTSConfig{
+			Protocol:   kitdto.VolcTTSProtocolV3WsUni,
 			ResourceID: "seed-tts-2.0",
-			AuthMode:   dto.VolcTTSAuthModeNewConsole,
+			AuthMode:   kitdto.VolcTTSAuthModeNewConsole,
 		}, "connect-1")
 		require.NoError(t, err)
 		assert.Equal(t, "console-api-key", headers.Get("X-Api-Key"))
@@ -291,10 +291,10 @@ func TestV3AuthHeaders(t *testing.T) {
 	})
 
 	t.Run("legacy key", func(t *testing.T) {
-		headers, err := buildV3AuthHeaders("app-id|access-token", dto.VolcTTSConfig{
-			Protocol:   dto.VolcTTSProtocolV3HTTPChunked,
+		headers, err := buildV3AuthHeaders("app-id|access-token", kitdto.VolcTTSConfig{
+			Protocol:   kitdto.VolcTTSProtocolV3HTTPChunked,
 			ResourceID: "seed-icl-2.0",
-			AuthMode:   dto.VolcTTSAuthModeLegacy,
+			AuthMode:   kitdto.VolcTTSAuthModeLegacy,
 		}, "connect-2")
 		require.NoError(t, err)
 		assert.Equal(t, "app-id", headers.Get("X-Api-App-Id"))
@@ -303,10 +303,10 @@ func TestV3AuthHeaders(t *testing.T) {
 	})
 
 	t.Run("legacy rejects malformed key", func(t *testing.T) {
-		_, err := buildV3AuthHeaders("access-token", dto.VolcTTSConfig{
-			Protocol:   dto.VolcTTSProtocolV3WsUni,
+		_, err := buildV3AuthHeaders("access-token", kitdto.VolcTTSConfig{
+			Protocol:   kitdto.VolcTTSProtocolV3WsUni,
 			ResourceID: "seed-tts-2.0",
-			AuthMode:   dto.VolcTTSAuthModeLegacy,
+			AuthMode:   kitdto.VolcTTSAuthModeLegacy,
 		}, "connect-3")
 		require.Error(t, err)
 		assert.NotContains(t, err.Error(), "access-token")
@@ -314,10 +314,10 @@ func TestV3AuthHeaders(t *testing.T) {
 
 	t.Run("usage can be disabled", func(t *testing.T) {
 		requireUsage := false
-		headers, err := buildV3AuthHeaders("console-api-key", dto.VolcTTSConfig{
-			Protocol:     dto.VolcTTSProtocolV3WsUni,
+		headers, err := buildV3AuthHeaders("console-api-key", kitdto.VolcTTSConfig{
+			Protocol:     kitdto.VolcTTSProtocolV3WsUni,
 			ResourceID:   "seed-tts-2.0",
-			AuthMode:     dto.VolcTTSAuthModeNewConsole,
+			AuthMode:     kitdto.VolcTTSAuthModeNewConsole,
 			RequireUsage: &requireUsage,
 		}, "connect-4")
 		require.NoError(t, err)
@@ -377,14 +377,14 @@ func TestV3UsageUsesUpstreamWordsAndSaturates(t *testing.T) {
 }
 
 func TestV3EndpointResolution(t *testing.T) {
-	endpoint, err := getV3TTSEndpoint(dto.VolcTTSProtocolV3WsUni)
+	endpoint, err := getV3TTSEndpoint(kitdto.VolcTTSProtocolV3WsUni)
 	require.NoError(t, err)
 	assert.Equal(t, "wss://openspeech.bytedance.com/api/v3/tts/unidirectional/stream", endpoint)
 
-	endpoint, err = getV3TTSEndpoint(dto.VolcTTSProtocolV3HTTPChunked)
+	endpoint, err = getV3TTSEndpoint(kitdto.VolcTTSProtocolV3HTTPChunked)
 	require.NoError(t, err)
 	assert.Equal(t, "https://openspeech.bytedance.com/api/v3/tts/unidirectional", endpoint)
 
-	_, err = getV3TTSEndpoint(dto.VolcTTSProtocolV1WsBinary)
+	_, err = getV3TTSEndpoint(kitdto.VolcTTSProtocolV1WsBinary)
 	require.Error(t, err)
 }

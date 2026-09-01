@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/dto"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -20,8 +21,8 @@ func TestNativeVolcengineTTSRejectsNonVolcengineChannel(t *testing.T) {
 	c.Set(string(constant.ContextKeyChannelType), constant.ChannelTypeOpenAI)
 	c.Set(string(constant.ContextKeyChannelKey), "channel-key")
 	c.Set(string(constant.ContextKeyOriginalModel), "seed-tts-2.0")
-	c.Set(string(constant.ContextKeyChannelOtherSetting), dto.ChannelOtherSettings{
-		VolcTTS: &dto.VolcTTSConfig{Protocol: dto.VolcTTSProtocolV3HTTPChunked, ResourceID: "seed-tts-2.0", AuthMode: dto.VolcTTSAuthModeNewConsole},
+	c.Set(string(constant.ContextKeyChannelOtherSetting), kitdto.ChannelOtherSettings{
+		VolcTTS: &kitdto.VolcTTSConfig{Protocol: kitdto.VolcTTSProtocolV3HTTPChunked, ResourceID: "seed-tts-2.0", AuthMode: kitdto.VolcTTSAuthModeNewConsole},
 	})
 	info := &relaycommon.RelayInfo{
 		RelayMode:       relayconstant.RelayModeVolcengineTTSNative,
@@ -40,8 +41,8 @@ func TestNativeVolcengineTTSRejectsChannelResourceMismatch(t *testing.T) {
 	c.Set(string(constant.ContextKeyChannelType), constant.ChannelTypeVolcEngine)
 	c.Set(string(constant.ContextKeyChannelKey), "channel-key")
 	c.Set(string(constant.ContextKeyOriginalModel), "seed-tts-2.0")
-	c.Set(string(constant.ContextKeyChannelOtherSetting), dto.ChannelOtherSettings{
-		VolcTTS: &dto.VolcTTSConfig{Protocol: dto.VolcTTSProtocolV3HTTPChunked, ResourceID: "seed-tts-1.0", AuthMode: dto.VolcTTSAuthModeNewConsole},
+	c.Set(string(constant.ContextKeyChannelOtherSetting), kitdto.ChannelOtherSettings{
+		VolcTTS: &kitdto.VolcTTSConfig{Protocol: kitdto.VolcTTSProtocolV3HTTPChunked, ResourceID: "seed-tts-1.0", AuthMode: kitdto.VolcTTSAuthModeNewConsole},
 	})
 	info := &relaycommon.RelayInfo{
 		RelayMode:       relayconstant.RelayModeVolcengineTTSNative,

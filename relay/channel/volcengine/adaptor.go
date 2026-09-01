@@ -256,7 +256,7 @@ func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
 func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 	baseUrl := info.ChannelBaseUrl
 	if baseUrl == "" {
-		baseUrl = channelconstant.ChannelBaseURLs[channelconstant.ChannelTypeVolcEngine]
+		baseUrl = channelconstant.GetChannelBaseURL(channelconstant.ChannelTypeVolcEngine)
 	}
 	specialPlan, hasSpecialPlan := channelconstant.ChannelSpecialBases[baseUrl]
 
@@ -294,7 +294,7 @@ func (a *Adaptor) GetRequestURL(info *relaycommon.RelayInfo) (string, error) {
 			if config := info.ChannelOtherSettings.VolcTTS; config != nil && config.IsV3() {
 				return getV3TTSEndpoint(config.EffectiveProtocol())
 			}
-			if baseUrl == channelconstant.ChannelBaseURLs[channelconstant.ChannelTypeVolcEngine] {
+			if baseUrl == channelconstant.GetChannelBaseURL(channelconstant.ChannelTypeVolcEngine) {
 				return "wss://openspeech.bytedance.com/api/v1/tts/ws_binary", nil
 			}
 			return fmt.Sprintf("%s/v1/audio/speech", baseUrl), nil
@@ -366,10 +366,10 @@ func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, request
 		}
 		baseUrl := info.ChannelBaseUrl
 		if baseUrl == "" {
-			baseUrl = channelconstant.ChannelBaseURLs[channelconstant.ChannelTypeVolcEngine]
+			baseUrl = channelconstant.GetChannelBaseURL(channelconstant.ChannelTypeVolcEngine)
 		}
 
-		if baseUrl == channelconstant.ChannelBaseURLs[channelconstant.ChannelTypeVolcEngine] {
+		if baseUrl == channelconstant.GetChannelBaseURL(channelconstant.ChannelTypeVolcEngine) {
 			if info.IsStream {
 				return nil, nil
 			}

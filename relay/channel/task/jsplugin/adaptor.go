@@ -22,12 +22,12 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
-	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 )
@@ -523,10 +523,20 @@ func (a *TaskAdaptor) FetchBatchTasks(baseURL, key string, taskIDs []string, pro
 	if err != nil {
 		return nil, err
 	}
-	return a.doFetchDescriptor(baseURL, proxy, value)
+	return a.doFetchDescriptor(nil, baseURL, proxy, value)
 }
 
 func (a *TaskAdaptor) FetchTask(baseURL, key string, body map[string]any, proxy string) (*http.Response, error) {
+	return a.fetchTaskWithContext(nil, baseURL, key, body, proxy)
+}
+
+// FetchTaskWithDiagnosticCapture keeps user-initiated task status fetches in
+// the same diagnostic session as the downstream request.
+func (a *TaskAdaptor) FetchTaskWithDiagnosticCapture(c *gin.Context, baseURL, key string, body map[string]any, proxy string) (*http.Response, error) {
+	return a.fetchTaskWithContext(c, baseURL, key, body, proxy)
+}
+
+func (a *TaskAdaptor) fetchTaskWithContext(c *gin.Context, baseURL, key string, body map[string]any, proxy string) (*http.Response, error) {
 	ctx := map[string]any{"taskId": body["task_id"], "action": body["action"], "requestBody": body, "baseUrl": baseURL}
 	auth, err := resolveAuth(a.plugin.Meta.Auth, key, proxy)
 	if err != nil {
@@ -545,10 +555,10 @@ func (a *TaskAdaptor) FetchTask(baseURL, key string, body map[string]any, proxy 
 	if err != nil {
 		return nil, err
 	}
-	return a.doFetchDescriptor(baseURL, proxy, value)
+	return a.doFetchDescriptor(c, baseURL, proxy, value)
 }
 
-func (a *TaskAdaptor) doFetchDescriptor(baseURL, proxy string, value any) (*http.Response, error) {
+func (a *TaskAdaptor) doFetchDescriptor(c *gin.Context, baseURL, proxy string, value any) (*http.Response, error) {
 	var descriptor requestDescriptor
 	if err := convert(value, &descriptor); err != nil {
 		return nil, err
@@ -583,9 +593,11 @@ func (a *TaskAdaptor) doFetchDescriptor(baseURL, proxy string, value any) (*http
 	if err != nil {
 		return nil, err
 	}
+	diagnosticFlow := service.PrepareDiagnosticHTTPOutboundRequest(c, a.info, req)
 	started := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
+		service.RecordDiagnosticOutboundFailure(diagnosticFlow, err)
 		logger.LogDebug(
 			context.Background(),
 			"task_plugin subsystem=adaptor event=query_request_failed plugin=%q method=%q reason=transport_error elapsed_ms=%d",
@@ -595,6 +607,7 @@ func (a *TaskAdaptor) doFetchDescriptor(baseURL, proxy string, value any) (*http
 		)
 		return nil, err
 	}
+	service.WrapDiagnosticOutboundResponse(c, resp, diagnosticFlow)
 	logger.LogDebug(
 		context.Background(),
 		"task_plugin subsystem=adaptor event=query_response_received plugin=%q method=%q status=%d elapsed_ms=%d",

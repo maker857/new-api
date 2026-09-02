@@ -22,6 +22,23 @@ func Marshal(v any) ([]byte, error) {
 	return json.Marshal(v)
 }
 
+// MarshalNoEscape marshals JSON without escaping HTML-sensitive characters
+// such as '<', '>', and '&'. This is useful for human-readable diagnostic
+// artifacts where preserving the original string representation matters.
+func MarshalNoEscape(v any) ([]byte, error) {
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(v); err != nil {
+		return nil, err
+	}
+	data := buffer.Bytes()
+	if len(data) > 0 && data[len(data)-1] == '\n' {
+		data = data[:len(data)-1]
+	}
+	return data, nil
+}
+
 func IndentJson(data []byte) ([]byte, error) {
 	var buffer bytes.Buffer
 	if err := json.Indent(&buffer, data, "", "  "); err != nil {

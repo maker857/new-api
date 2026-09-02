@@ -483,7 +483,14 @@ func videoFetchByIDRespBodyBuilder(c *gin.Context) (respBody []byte, taskResp *d
 		if apiErr != nil {
 			return nil, service.TaskErrorWrapper(apiErr, "channel_no_available_key", apiErr.StatusCode)
 		}
-		resp, err := adaptor.FetchTask(channelModel.GetBaseURL(), key, map[string]any{"task_id": originTask.GetUpstreamTaskID()}, channelModel.GetSetting().Proxy)
+		service.StartDiagnosticCaptureForChannel(c, channelModel.Id, channelModel.Name)
+		fetchBody := map[string]any{"task_id": originTask.GetUpstreamTaskID()}
+		var resp *http.Response
+		if diagnosticAdaptor, ok := adaptor.(channel.DiagnosticTaskFetcher); ok {
+			resp, err = diagnosticAdaptor.FetchTaskWithDiagnosticCapture(c, channelModel.GetBaseURL(), key, fetchBody, channelModel.GetSetting().Proxy)
+		} else {
+			resp, err = adaptor.FetchTask(channelModel.GetBaseURL(), key, fetchBody, channelModel.GetSetting().Proxy)
+		}
 		if err != nil {
 			return nil, service.TaskErrorWrapper(err, "fetch_task_failed", http.StatusInternalServerError)
 		}

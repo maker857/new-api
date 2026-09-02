@@ -89,7 +89,7 @@ func (w *diagnosticResponseWriter) finish(meta map[string]any) {
 		return
 	}
 	w.finished = true
-	isStream := w.flow != nil && w.flow.Context.StreamStatus != ""
+	isStream := w.flow != nil && w.flow.isStream
 	if isStream && !w.firstWrite.IsZero() && !w.started.IsZero() {
 		w.flow.Context.FirstResponseMS = w.firstWrite.Sub(w.started).Milliseconds()
 	}

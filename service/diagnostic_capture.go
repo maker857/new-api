@@ -96,6 +96,7 @@ type DiagnosticFlow struct {
 	RequestInfo  diagnosticRequestInfoJSON
 	Identity     diagnosticIdentityJSON
 	Context      diagnosticRequestContextJSON
+	isStream     bool
 	session      *diagnosticCaptureSession
 	writer       *diagnosticResponseWriter
 }
@@ -156,22 +157,50 @@ type diagnosticIdentityJSON struct {
 }
 
 type diagnosticRequestContextJSON struct {
-	RequestID         string `json:"request_id,omitempty"`
-	UpstreamRequestID string `json:"upstream_request_id,omitempty"`
+	RequestID         string                      `json:"request_id,omitempty"`
+	UpstreamRequestID string                      `json:"upstream_request_id,omitempty"`
+	ModelName         string                      `json:"model_name,omitempty"`
+	UpstreamModelName string                      `json:"upstream_model_name,omitempty"`
+	Status            string                      `json:"status,omitempty"`
+	StreamStatus      string                      `json:"stream_status,omitempty"`
+	DurationMS        int64                       `json:"duration_ms,omitempty"`
+	FirstResponseMS   int64                       `json:"first_response_ms,omitempty"`
+	PromptTokens      int                         `json:"prompt_tokens,omitempty"`
+	CompletionTokens  int                         `json:"completion_tokens,omitempty"`
+	RetryCount        int                         `json:"retry_count,omitempty"`
+	BillingSource     string                      `json:"billing_source,omitempty"`
+	RetrySummary      *diagnosticRetrySummaryJSON `json:"retry_summary,omitempty"`
+}
+
+type diagnosticRetrySummaryJSON struct {
+	AttemptCount           int                          `json:"attempt_count"`
+	FinalAttempt           int                          `json:"final_attempt"`
+	FinalStatus            string                       `json:"final_status"`
+	FinalChannelID         int                          `json:"final_channel_id,omitempty"`
+	FinalChannelName       string                       `json:"final_channel_name,omitempty"`
+	FinalUpstreamRequestID string                       `json:"final_upstream_request_id,omitempty"`
+	Attempts               []diagnosticRetryAttemptJSON `json:"attempts"`
+}
+
+type diagnosticRetryAttemptJSON struct {
+	Attempt           int    `json:"attempt"`
+	ChannelID         int    `json:"channel_id,omitempty"`
+	ChannelName       string `json:"channel_name,omitempty"`
 	ModelName         string `json:"model_name,omitempty"`
 	UpstreamModelName string `json:"upstream_model_name,omitempty"`
-	Status            string `json:"status,omitempty"`
-	StreamStatus      string `json:"stream_status,omitempty"`
+	UpstreamRequestID string `json:"upstream_request_id,omitempty"`
+	Status            string `json:"status"`
+	StatusCode        int    `json:"status_code,omitempty"`
 	DurationMS        int64  `json:"duration_ms,omitempty"`
 	FirstResponseMS   int64  `json:"first_response_ms,omitempty"`
-	PromptTokens      int    `json:"prompt_tokens,omitempty"`
-	CompletionTokens  int    `json:"completion_tokens,omitempty"`
-	RetryCount        int    `json:"retry_count,omitempty"`
-	BillingSource     string `json:"billing_source,omitempty"`
+	RequestSequence   int64  `json:"request_sequence"`
+	ResponseSequence  int64  `json:"response_sequence,omitempty"`
+	Reason            string `json:"reason,omitempty"`
 }
 
 type diagnosticAPIRequestJSON struct {
 	Sequence        int64                          `json:"sequence"`
+	RetryGroup      string                         `json:"retry_group,omitempty"`
 	Timestamp       string                         `json:"timestamp"`
 	UpstreamURL     string                         `json:"upstream_url"`
 	HTTPMethod      string                         `json:"http_method"`
@@ -181,8 +210,11 @@ type diagnosticAPIRequestJSON struct {
 
 type diagnosticAPIResponseJSON struct {
 	Sequence        int64                          `json:"sequence"`
+	RetryGroup      string                         `json:"retry_group,omitempty"`
 	Timestamp       string                         `json:"timestamp"`
 	Status          int                            `json:"status,omitempty"`
+	DurationMS      int64                          `json:"duration_ms,omitempty"`
+	FirstResponseMS int64                          `json:"first_response_ms,omitempty"`
 	Response        diagnosticResponsePayloadJSON  `json:"response"`
 	Error           string                         `json:"error,omitempty"`
 	WebSocketFrames []diagnosticWebSocketFrameJSON `json:"websocket_frames,omitempty"`
@@ -596,11 +628,14 @@ func PrepareDiagnosticOutboundRequest(c *gin.Context, info *relaycommon.RelayInf
 		}
 		StartDiagnosticCaptureForChannel(c, channelID, channelName)
 		flow = getOrCreateDiagnosticFlow(c)
-	if flow.session == nil {
-		return body, nil
-	}
+		if flow.session == nil {
+			return body, nil
+		}
 	}
 	populateDiagnosticFlowFromContext(flow, c, info)
+	if info != nil && info.IsStream {
+		flow.isStream = true
+	}
 	channelID := 0
 	if info != nil && info.ChannelMeta != nil {
 		channelID = info.ChannelMeta.ChannelId
@@ -618,14 +653,19 @@ func PrepareDiagnosticOutboundRequest(c *gin.Context, info *relaycommon.RelayInf
 	sequence := nextDiagnosticSequence()
 	partID := fmt.Sprintf("outbound-%06d-request", sequence)
 	flow.session.startPart(partID, sequence, "outbound", "request", map[string]any{
-		"captured_at": time.Now().UTC().Format(time.RFC3339Nano),
-		"role":        "outbound",
-		"method":      method,
-		"url":         url,
-		"headers":     redactHeaders(headers),
+		"captured_at":         time.Now().UTC().Format(time.RFC3339Nano),
+		"role":                "outbound",
+		"method":              method,
+		"url":                 url,
+		"headers":             redactHeaders(headers),
+		"channel_id":          channelID,
+		"channel_name":        channel,
+		"model_name":          flow.Context.ModelName,
+		"upstream_model_name": flow.Context.UpstreamModelName,
+		"upstream_request_id": flow.Context.UpstreamRequestID,
 	})
 	if flow.session.cfg.Mode == "full" && body != nil {
-		body = newDiagnosticCaptureStream(body, flow.session, partID)
+		body = newDiagnosticCaptureStream(body, flow.session, partID, false)
 	} else {
 		flow.session.endPart(partID, nil, 0, true)
 	}
@@ -661,13 +701,18 @@ func WrapDiagnosticOutboundResponse(c *gin.Context, resp *http.Response, exchang
 	if flow.session == nil {
 		return
 	}
+	upstreamRequestID := diagnosticUpstreamRequestID(resp.Header)
+	if upstreamRequestID != "" {
+		flow.Context.UpstreamRequestID = upstreamRequestID
+	}
 	partID := fmt.Sprintf("outbound-%06d-response", exchange.Sequence)
 	flow.session.startPart(partID, exchange.Sequence, "outbound", "response", map[string]any{
-		"captured_at": time.Now().UTC().Format(time.RFC3339Nano),
-		"role":        "outbound",
-		"status_code": resp.StatusCode,
-		"duration_ms": time.Since(exchange.Started).Milliseconds(),
-		"headers":     redactHeaders(resp.Header),
+		"captured_at":         time.Now().UTC().Format(time.RFC3339Nano),
+		"role":                "outbound",
+		"status_code":         resp.StatusCode,
+		"duration_ms":         time.Since(exchange.Started).Milliseconds(),
+		"headers":             redactHeaders(resp.Header),
+		"upstream_request_id": upstreamRequestID,
 	})
 	flow.Context.DurationMS = time.Since(flow.Started).Milliseconds()
 	if resp.StatusCode >= http.StatusBadRequest {
@@ -679,7 +724,16 @@ func WrapDiagnosticOutboundResponse(c *gin.Context, resp *http.Response, exchang
 		flow.session.endPart(partID, nil, 0, true)
 		return
 	}
-	resp.Body = newDiagnosticCaptureStream(resp.Body, flow.session, partID)
+	resp.Body = newDiagnosticCaptureStream(resp.Body, flow.session, partID, flow.isStream)
+}
+
+func diagnosticUpstreamRequestID(headers http.Header) string {
+	for _, key := range []string{"X-Oneapi-Request-Id", "X-Request-Id", "X-Amzn-RequestId", "X-Amzn-Request-ID"} {
+		if value := strings.TrimSpace(headers.Get(key)); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // WrapDiagnosticOutboundNDJSONResponse captures newline-delimited upstream
@@ -690,6 +744,9 @@ func WrapDiagnosticOutboundNDJSONResponse(resp *http.Response, exchange *Diagnos
 		return
 	}
 	flow := exchange.Flow
+	if upstreamRequestID := diagnosticUpstreamRequestID(resp.Header); upstreamRequestID != "" {
+		flow.Context.UpstreamRequestID = upstreamRequestID
+	}
 	partID := fmt.Sprintf("outbound-%06d-response", exchange.Sequence)
 	flow.session.startPart(partID, exchange.Sequence, "outbound", "response", map[string]any{
 		"captured_at": time.Now().UTC().Format(time.RFC3339Nano),
@@ -708,7 +765,7 @@ func WrapDiagnosticOutboundNDJSONResponse(resp *http.Response, exchange *Diagnos
 		flow.session.endPart(partID, nil, 0, true)
 		return
 	}
-	resp.Body = newDiagnosticNDJSONCaptureStream(resp.Body, flow.session, partID, maxLineSize, secrets...)
+	resp.Body = newDiagnosticNDJSONCaptureStream(resp.Body, flow.session, partID, maxLineSize, flow.isStream, secrets...)
 }
 
 // RecordDiagnosticOutboundFailure records transport failures for an exchange
@@ -738,6 +795,9 @@ func RecordDiagnosticOutboundResponseMetadata(exchange *DiagnosticExchange, stat
 		return
 	}
 	flow := exchange.Flow
+	if upstreamRequestID := diagnosticUpstreamRequestID(headers); upstreamRequestID != "" {
+		flow.Context.UpstreamRequestID = upstreamRequestID
+	}
 	partID := fmt.Sprintf("outbound-%06d-response", exchange.Sequence)
 	flow.session.startPart(partID, exchange.Sequence, "outbound", "response", map[string]any{
 		"captured_at": time.Now().UTC().Format(time.RFC3339Nano),
@@ -767,6 +827,9 @@ func RecordDiagnosticWebSocketFrame(c *gin.Context, upstreamURL, direction strin
 	flow, _ := flowValue.(*DiagnosticFlow)
 	if flow == nil || flow.session == nil {
 		return
+	}
+	if direction == "response" && flow.isStream && flow.Context.FirstResponseMS == 0 {
+		flow.Context.FirstResponseMS = time.Since(flow.Started).Milliseconds()
 	}
 	part := "response"
 	if direction == "request" {
@@ -1870,6 +1933,7 @@ func buildDiagnosticCPAJSON(cfg DiagnosticCaptureConfig, flow *DiagnosticFlow, s
 		if role == "outbound" {
 			content.APIRequest = &diagnosticAPIRequestJSON{
 				Sequence:    sequence,
+				RetryGroup:  diagnosticRetryGroup(flow),
 				Timestamp:   capturedAt,
 				UpstreamURL: stringFromMeta(meta, "url"),
 				HTTPMethod:  stringFromMeta(meta, "method"),
@@ -1878,13 +1942,13 @@ func buildDiagnosticCPAJSON(cfg DiagnosticCaptureConfig, flow *DiagnosticFlow, s
 			return content
 		}
 		content.RequestInfo = &diagnosticRequestInfoJSON{
-			AppVersion:     flow.RequestInfo.AppVersion,
+			AppVersion:      flow.RequestInfo.AppVersion,
 			ProtocolVersion: stringFromMeta(meta, "protocol"),
-			BaseURL:        flow.RequestInfo.BaseURL,
-			URL:            flow.RequestInfo.URL,
-			Method:         flow.RequestInfo.Method,
-			Timestamp:      capturedAt,
-			RemoteAddr:     flow.RequestInfo.RemoteAddr,
+			BaseURL:         flow.RequestInfo.BaseURL,
+			URL:             flow.RequestInfo.URL,
+			Method:          flow.RequestInfo.Method,
+			Timestamp:       capturedAt,
+			RemoteAddr:      flow.RequestInfo.RemoteAddr,
 		}
 		if content.RequestInfo.AppVersion == "" {
 			content.RequestInfo.AppVersion = common.Version
@@ -1895,11 +1959,14 @@ func buildDiagnosticCPAJSON(cfg DiagnosticCaptureConfig, flow *DiagnosticFlow, s
 
 	if role == "outbound" {
 		content.APIResponse = &diagnosticAPIResponseJSON{
-			Sequence:  sequence,
-			Timestamp: capturedAt,
-			Status:    intFromMeta(meta, "status_code"),
-			Response:  diagnosticResponsePayloadJSON{Headers: headers, Body: bodyJSON},
-			Error:     stringFromMeta(meta, "error"),
+			Sequence:        sequence,
+			RetryGroup:      diagnosticRetryGroup(flow),
+			Timestamp:       capturedAt,
+			Status:          intFromMeta(meta, "status_code"),
+			DurationMS:      int64FromMeta(meta, "duration_ms"),
+			FirstResponseMS: int64FromMeta(meta, "first_response_ms"),
+			Response:        diagnosticResponsePayloadJSON{Headers: headers, Body: bodyJSON},
+			Error:           stringFromMeta(meta, "error"),
 		}
 		return content
 	}
@@ -1913,6 +1980,13 @@ func buildDiagnosticCPAJSON(cfg DiagnosticCaptureConfig, flow *DiagnosticFlow, s
 		content.Meta = mergeDiagnosticFlowMeta(content.Meta, flow, meta)
 	}
 	return content
+}
+
+func diagnosticRetryGroup(flow *DiagnosticFlow) string {
+	if flow == nil || flow.Context.RetryCount <= 0 {
+		return ""
+	}
+	return flow.Context.RequestID
 }
 
 func compactCaptureMeta(meta map[string]any) map[string]any {

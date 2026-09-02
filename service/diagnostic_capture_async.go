@@ -144,27 +144,33 @@ type diagnosticCaptureFailurePart struct {
 }
 
 type diagnosticCaptureStream struct {
-	reader   io.Reader
-	closer   io.Closer
-	session  *diagnosticCaptureSession
-	partID   string
-	total    int64
-	finished bool
-	mu       sync.Mutex
+	reader               io.Reader
+	closer               io.Closer
+	session              *diagnosticCaptureSession
+	partID               string
+	total                int64
+	started              time.Time
+	firstResponseMS      int64
+	captureFirstResponse bool
+	finished             bool
+	mu                   sync.Mutex
 }
 
 type diagnosticNDJSONCaptureStream struct {
-	reader       io.Reader
-	closer       io.Closer
-	session      *diagnosticCaptureSession
-	partID       string
-	maxLineSize  int
-	secrets      []string
-	lineBuffer   []byte
-	total        int64
-	finished     bool
-	captureLimit bool
-	mu           sync.Mutex
+	reader               io.Reader
+	closer               io.Closer
+	session              *diagnosticCaptureSession
+	partID               string
+	maxLineSize          int
+	secrets              []string
+	lineBuffer           []byte
+	total                int64
+	started              time.Time
+	firstResponseMS      int64
+	captureFirstResponse bool
+	finished             bool
+	captureLimit         bool
+	mu                   sync.Mutex
 }
 
 func newDiagnosticCaptureSession(cfg DiagnosticCaptureConfig, flow *DiagnosticFlow) *diagnosticCaptureSession {
@@ -404,7 +410,12 @@ func (s *diagnosticCaptureSession) run() {
 				continue
 			}
 			if event.meta != nil {
-				state.meta = event.meta
+				if state.meta == nil {
+					state.meta = make(map[string]any, len(event.meta))
+				}
+				for key, value := range event.meta {
+					state.meta[key] = value
+				}
 			}
 			state.originalSize = event.originalSize
 			state.complete = event.complete
@@ -632,16 +643,16 @@ func (s *diagnosticCaptureSession) rotateDiagnosticWebSocketPartFile(state *diag
 	return nil
 }
 
-func newDiagnosticCaptureStream(reader io.Reader, session *diagnosticCaptureSession, partID string) *diagnosticCaptureStream {
-	stream := &diagnosticCaptureStream{reader: reader, session: session, partID: partID}
+func newDiagnosticCaptureStream(reader io.Reader, session *diagnosticCaptureSession, partID string, captureFirstResponse bool) *diagnosticCaptureStream {
+	stream := &diagnosticCaptureStream{reader: reader, session: session, partID: partID, started: time.Now(), captureFirstResponse: captureFirstResponse}
 	if closer, ok := reader.(io.Closer); ok {
 		stream.closer = closer
 	}
 	return stream
 }
 
-func newDiagnosticNDJSONCaptureStream(reader io.Reader, session *diagnosticCaptureSession, partID string, maxLineSize int, secrets ...string) *diagnosticNDJSONCaptureStream {
-	stream := &diagnosticNDJSONCaptureStream{reader: reader, session: session, partID: partID, maxLineSize: maxLineSize, secrets: secrets}
+func newDiagnosticNDJSONCaptureStream(reader io.Reader, session *diagnosticCaptureSession, partID string, maxLineSize int, captureFirstResponse bool, secrets ...string) *diagnosticNDJSONCaptureStream {
+	stream := &diagnosticNDJSONCaptureStream{reader: reader, session: session, partID: partID, maxLineSize: maxLineSize, captureFirstResponse: captureFirstResponse, started: time.Now(), secrets: secrets}
 	if closer, ok := reader.(io.Closer); ok {
 		stream.closer = closer
 	}
@@ -651,6 +662,9 @@ func newDiagnosticNDJSONCaptureStream(reader io.Reader, session *diagnosticCaptu
 func (s *diagnosticNDJSONCaptureStream) Read(p []byte) (int, error) {
 	n, err := s.reader.Read(p)
 	if n > 0 {
+		if s.captureFirstResponse && s.firstResponseMS == 0 {
+			s.firstResponseMS = time.Since(s.started).Milliseconds()
+		}
 		s.total += int64(n)
 		s.capture(p[:n])
 	}
@@ -718,12 +732,19 @@ func (s *diagnosticNDJSONCaptureStream) finish(complete bool) {
 		return
 	}
 	s.finished = true
-	s.session.endPart(s.partID, nil, s.total, complete)
+	var meta map[string]any
+	if s.firstResponseMS > 0 {
+		meta = map[string]any{"first_response_ms": s.firstResponseMS}
+	}
+	s.session.endPart(s.partID, meta, s.total, complete)
 }
 
 func (s *diagnosticCaptureStream) Read(p []byte) (int, error) {
 	n, err := s.reader.Read(p)
 	if n > 0 {
+		if s.captureFirstResponse && s.firstResponseMS == 0 {
+			s.firstResponseMS = time.Since(s.started).Milliseconds()
+		}
 		s.total += int64(n)
 		s.session.writeChunk(s.partID, p[:n])
 	}
@@ -748,7 +769,11 @@ func (s *diagnosticCaptureStream) finish(complete bool) {
 		return
 	}
 	s.finished = true
-	s.session.endPart(s.partID, nil, s.total, complete)
+	var meta map[string]any
+	if s.firstResponseMS > 0 {
+		meta = map[string]any{"first_response_ms": s.firstResponseMS}
+	}
+	s.session.endPart(s.partID, meta, s.total, complete)
 }
 
 func (s *diagnosticCaptureStream) finishWithMeta(meta map[string]any, complete bool) {
@@ -1600,7 +1625,7 @@ func (w *diagnosticCaptureJSONWriter) value(value any) {
 	if w.err != nil {
 		return
 	}
-	data, err := common.Marshal(value)
+	data, err := common.MarshalNoEscape(value)
 	if err != nil {
 		w.err = err
 		return
@@ -1777,6 +1802,7 @@ func writeDiagnosticCaptureSession(cfg DiagnosticCaptureConfig, flow *Diagnostic
 	}
 	sort.Slice(apiRequests, func(i, j int) bool { return apiRequests[i].sequence < apiRequests[j].sequence })
 	sort.Slice(apiResponses, func(i, j int) bool { return apiResponses[i].sequence < apiResponses[j].sequence })
+	flow.Context.RetrySummary = buildDiagnosticRetrySummary(flow.Context.RetryCount, apiRequests, apiResponses)
 
 	temporaryFile, err := os.CreateTemp(base, ".request-log-*.tmp")
 	if err != nil {
@@ -1867,6 +1893,60 @@ func writeDiagnosticCaptureSession(cfg DiagnosticCaptureConfig, flow *Diagnostic
 	return nil
 }
 
+func buildDiagnosticRetrySummary(retryCount int, requests, responses []*diagnosticCapturePartState) *diagnosticRetrySummaryJSON {
+	if retryCount <= 0 || len(requests) <= 1 {
+		return nil
+	}
+	responseBySequence := make(map[int64]*diagnosticCapturePartState, len(responses))
+	for _, response := range responses {
+		if response != nil {
+			responseBySequence[response.sequence] = response
+		}
+	}
+	summary := &diagnosticRetrySummaryJSON{AttemptCount: len(requests), Attempts: make([]diagnosticRetryAttemptJSON, 0, len(requests))}
+	for index, request := range requests {
+		if request == nil {
+			continue
+		}
+		attempt := diagnosticRetryAttemptJSON{
+			Attempt:           index + 1,
+			ChannelID:         intFromMeta(request.meta, "channel_id"),
+			ChannelName:       stringFromMeta(request.meta, "channel_name"),
+			ModelName:         stringFromMeta(request.meta, "model_name"),
+			UpstreamModelName: stringFromMeta(request.meta, "upstream_model_name"),
+			UpstreamRequestID: stringFromMeta(request.meta, "upstream_request_id"),
+			Status:            "unknown",
+			RequestSequence:   request.sequence,
+		}
+		if response := responseBySequence[request.sequence]; response != nil {
+			attempt.ResponseSequence = response.sequence
+			attempt.StatusCode = intFromMeta(response.meta, "status_code")
+			attempt.DurationMS = int64FromMeta(response.meta, "duration_ms")
+			attempt.FirstResponseMS = int64FromMeta(response.meta, "first_response_ms")
+			attempt.Reason = stringFromMeta(response.meta, "error")
+			if attempt.UpstreamRequestID == "" {
+				attempt.UpstreamRequestID = stringFromMeta(response.meta, "upstream_request_id")
+			}
+			if attempt.StatusCode >= 400 || attempt.Reason != "" {
+				attempt.Status = "failed"
+			} else if attempt.StatusCode > 0 {
+				attempt.Status = "success"
+			}
+		}
+		summary.Attempts = append(summary.Attempts, attempt)
+	}
+	if len(summary.Attempts) == 0 {
+		return nil
+	}
+	final := summary.Attempts[len(summary.Attempts)-1]
+	summary.FinalAttempt = final.Attempt
+	summary.FinalStatus = final.Status
+	summary.FinalChannelID = final.ChannelID
+	summary.FinalChannelName = final.ChannelName
+	summary.FinalUpstreamRequestID = final.UpstreamRequestID
+	return summary
+}
+
 func acquireDiagnosticCaptureFinalize(key string) func() {
 	diagnosticCaptureFinalizeState.Lock()
 	lock := diagnosticCaptureFinalizeState.locks[key]
@@ -1899,6 +1979,10 @@ func writeDiagnosticAPIRequest(w *diagnosticCaptureJSONWriter, cfg DiagnosticCap
 	w.raw("{")
 	w.raw(`"sequence":`)
 	w.value(request.Sequence)
+	if request.RetryGroup != "" {
+		w.raw(`,"retry_group":`)
+		w.value(request.RetryGroup)
+	}
 	w.raw(`,"timestamp":`)
 	w.value(request.Timestamp)
 	w.raw(`,"upstream_url":`)
@@ -1923,11 +2007,23 @@ func writeDiagnosticAPIResponse(w *diagnosticCaptureJSONWriter, cfg DiagnosticCa
 	w.raw("{")
 	w.raw(`"sequence":`)
 	w.value(response.Sequence)
+	if response.RetryGroup != "" {
+		w.raw(`,"retry_group":`)
+		w.value(response.RetryGroup)
+	}
 	w.raw(`,"timestamp":`)
 	w.value(response.Timestamp)
 	if response.Status != 0 {
 		w.raw(`,"status":`)
 		w.value(response.Status)
+	}
+	if response.DurationMS != 0 {
+		w.raw(`,"duration_ms":`)
+		w.value(response.DurationMS)
+	}
+	if response.FirstResponseMS != 0 {
+		w.raw(`,"first_response_ms":`)
+		w.value(response.FirstResponseMS)
 	}
 	w.raw(`,"response":{"headers":`)
 	w.value(response.Response.Headers)

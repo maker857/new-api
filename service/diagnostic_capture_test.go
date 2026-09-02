@@ -535,6 +535,54 @@ func TestDiagnosticCaptureOutboundTransportFailureIsRecorded(t *testing.T) {
 	require.Equal(t, "empty", combined.APIResponses[0].Response.Body.Encoding)
 }
 
+func TestDiagnosticCaptureOutboundResponseIncludesDuration(t *testing.T) {
+	flow := &DiagnosticFlow{Started: time.Now()}
+	content := buildDiagnosticCPAJSON(
+		DiagnosticCaptureConfig{Mode: "metadata"},
+		flow,
+		11,
+		"outbound",
+		"response",
+		map[string]any{"status_code": 200, "duration_ms": int64(3194)},
+		captureBody{},
+	)
+	require.NotNil(t, content.APIResponse)
+	require.Equal(t, int64(3194), content.APIResponse.DurationMS)
+}
+
+func TestDiagnosticRetrySummaryGroupsAttemptsBySequence(t *testing.T) {
+	requests := []*diagnosticCapturePartState{
+		{sequence: 10, meta: map[string]any{"channel_id": 137, "channel_name": "first", "model_name": "model-a", "upstream_request_id": "up-1"}},
+		{sequence: 20, meta: map[string]any{"channel_id": 135, "channel_name": "second", "model_name": "model-a", "upstream_request_id": "up-2"}},
+	}
+	responses := []*diagnosticCapturePartState{
+		{sequence: 10, meta: map[string]any{"status_code": 429, "duration_ms": int64(12), "error": "rate limited"}},
+		{sequence: 20, meta: map[string]any{"status_code": 200, "duration_ms": int64(3194), "first_response_ms": int64(1500)}},
+	}
+	summary := buildDiagnosticRetrySummary(1, requests, responses)
+	require.NotNil(t, summary)
+	require.Len(t, summary.Attempts, 2)
+	require.Equal(t, "failed", summary.Attempts[0].Status)
+	require.Equal(t, "success", summary.Attempts[1].Status)
+	require.Equal(t, 135, summary.FinalChannelID)
+	require.Equal(t, "up-2", summary.FinalUpstreamRequestID)
+}
+
+func TestDiagnosticRetryGroupUsesDownstreamRequestID(t *testing.T) {
+	flow := &DiagnosticFlow{Context: diagnosticRequestContextJSON{RequestID: "downstream-1", RetryCount: 1}}
+	content := buildDiagnosticCPAJSON(
+		DiagnosticCaptureConfig{Mode: "metadata"},
+		flow,
+		10,
+		"outbound",
+		"request",
+		map[string]any{"url": "https://upstream.example", "method": "POST"},
+		captureBody{},
+	)
+	require.NotNil(t, content.APIRequest)
+	require.Equal(t, "downstream-1", content.APIRequest.RetryGroup)
+}
+
 func TestDiagnosticCaptureWebSocketFailureIsRecorded(t *testing.T) {
 	captureDir := t.TempDir()
 	flow := &DiagnosticFlow{

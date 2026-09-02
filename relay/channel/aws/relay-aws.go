@@ -67,6 +67,20 @@ func newAwsClient(c *gin.Context, info *relaycommon.RelayInfo) (*bedrockruntime.
 	}
 
 	awsSecret := strings.Split(info.ApiKey, "|")
+	// Bedrock requests are generated and signed inside the AWS SDK, so the
+	// relay's normal HTTP diagnostic call sites never see the final request.
+	// Wrap the SDK HTTP出口 instead; this observes the exact signed exchange
+	// without changing the SDK's transport, retry, proxy, or timeout behavior.
+	if httpClient != nil {
+		wrappedClient := *httpClient
+		wrappedClient.Transport = &diagnosticRoundTripper{
+			base:    httpClient.Transport,
+			context: c,
+			info:    info,
+		}
+		httpClient = &wrappedClient
+	}
+
 	var client *bedrockruntime.Client
 	switch len(awsSecret) {
 	case 2:
@@ -91,6 +105,45 @@ func newAwsClient(c *gin.Context, info *relaycommon.RelayInfo) (*bedrockruntime.
 	}
 
 	return client, nil
+}
+
+// diagnosticRoundTripper is a sidecar around the SDK-provided HTTP transport.
+// The SDK may invoke RoundTrip multiple times while retrying; each invocation
+// is captured as its own diagnostic exchange and therefore receives a distinct
+// sequence. Response bodies are wrapped in-place so the SDK remains the sole
+// consumer.
+type diagnosticRoundTripper struct {
+	base    http.RoundTripper
+	context *gin.Context
+	info    *relaycommon.RelayInfo
+}
+
+func (c *diagnosticRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if c == nil {
+		return nil, fmt.Errorf("nil AWS HTTP transport")
+	}
+	if req == nil {
+		return nil, fmt.Errorf("nil AWS HTTP request")
+	}
+
+	exchange := service.PrepareDiagnosticHTTPOutboundRequest(c.context, c.info, req)
+	base := c.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	resp, err := base.RoundTrip(req)
+	if resp != nil {
+		service.WrapDiagnosticOutboundResponse(c.context, resp, exchange)
+	} else if err != nil {
+		service.RecordDiagnosticOutboundFailure(exchange, err)
+	}
+	return resp, err
+}
+
+func (c *diagnosticRoundTripper) CloseIdleConnections() {
+	if closer, ok := c.base.(interface{ CloseIdleConnections() }); ok {
+		closer.CloseIdleConnections()
+	}
 }
 
 func doAwsClientRequest(c *gin.Context, info *relaycommon.RelayInfo, a *Adaptor, requestBody io.Reader) (any, error) {

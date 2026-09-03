@@ -2166,10 +2166,10 @@ func populateDiagnosticFlowFromContext(flow *DiagnosticFlow, c *gin.Context, inf
 		if flow.Context.BillingSource == "" {
 			flow.Context.BillingSource = info.BillingSource
 		}
-		if flow.Identity.ChannelID == 0 && info.ChannelMeta != nil {
+		if info.ChannelMeta != nil {
+			// The capture is stored under the last attempted channel. Keep the
+			// top-level identity aligned with that channel as retries advance.
 			flow.Identity.ChannelID = info.ChannelMeta.ChannelId
-		}
-		if flow.Identity.ChannelName == "" && info.ChannelMeta != nil {
 			flow.Identity.ChannelName = info.ChannelMeta.ChannelName
 		}
 		if flow.Identity.TokenName == "" {

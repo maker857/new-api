@@ -552,12 +552,12 @@ func TestDiagnosticCaptureOutboundResponseIncludesDuration(t *testing.T) {
 
 func TestDiagnosticRetrySummaryGroupsAttemptsBySequence(t *testing.T) {
 	requests := []*diagnosticCapturePartState{
-		{sequence: 10, meta: map[string]any{"channel_id": 137, "channel_name": "first", "model_name": "model-a", "upstream_request_id": "up-1"}},
-		{sequence: 20, meta: map[string]any{"channel_id": 135, "channel_name": "second", "model_name": "model-a", "upstream_request_id": "up-2"}},
+		{sequence: 10, meta: map[string]any{"channel_id": 137, "channel_name": "first", "model_name": "model-a", "upstream_request_id": "stale-id"}},
+		{sequence: 20, meta: map[string]any{"channel_id": 135, "channel_name": "second", "model_name": "model-a", "upstream_request_id": "stale-id"}},
 	}
 	responses := []*diagnosticCapturePartState{
-		{sequence: 10, meta: map[string]any{"status_code": 429, "duration_ms": int64(12), "error": "rate limited"}},
-		{sequence: 20, meta: map[string]any{"status_code": 200, "duration_ms": int64(3194), "first_response_ms": int64(1500)}},
+		{sequence: 10, meta: map[string]any{"status_code": 429, "duration_ms": int64(12), "error": "rate limited", "upstream_request_id": "up-1"}},
+		{sequence: 20, meta: map[string]any{"status_code": 200, "duration_ms": int64(3194), "first_response_ms": int64(1500), "upstream_request_id": "up-2"}},
 	}
 	summary := buildDiagnosticRetrySummary(1, requests, responses)
 	require.NotNil(t, summary)

@@ -662,7 +662,6 @@ func PrepareDiagnosticOutboundRequest(c *gin.Context, info *relaycommon.RelayInf
 		"channel_name":        channel,
 		"model_name":          flow.Context.ModelName,
 		"upstream_model_name": flow.Context.UpstreamModelName,
-		"upstream_request_id": flow.Context.UpstreamRequestID,
 	})
 	if flow.session.cfg.Mode == "full" && body != nil {
 		body = newDiagnosticCaptureStream(body, flow.session, partID, false)

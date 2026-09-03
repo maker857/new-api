@@ -1914,19 +1914,21 @@ func buildDiagnosticRetrySummary(retryCount int, requests, responses []*diagnost
 			ChannelName:       stringFromMeta(request.meta, "channel_name"),
 			ModelName:         stringFromMeta(request.meta, "model_name"),
 			UpstreamModelName: stringFromMeta(request.meta, "upstream_model_name"),
-			UpstreamRequestID: stringFromMeta(request.meta, "upstream_request_id"),
 			Status:            "unknown",
 			RequestSequence:   request.sequence,
 		}
 		if response := responseBySequence[request.sequence]; response != nil {
+			// The response belongs to this exact attempt and is the authoritative
+			// source for its upstream request ID. Never reuse a prior attempt's ID.
+			attempt.UpstreamRequestID = stringFromMeta(response.meta, "upstream_request_id")
+			if attempt.UpstreamRequestID == "" {
+				attempt.UpstreamRequestID = stringFromMeta(request.meta, "upstream_request_id")
+			}
 			attempt.ResponseSequence = response.sequence
 			attempt.StatusCode = intFromMeta(response.meta, "status_code")
 			attempt.DurationMS = int64FromMeta(response.meta, "duration_ms")
 			attempt.FirstResponseMS = int64FromMeta(response.meta, "first_response_ms")
 			attempt.Reason = stringFromMeta(response.meta, "error")
-			if attempt.UpstreamRequestID == "" {
-				attempt.UpstreamRequestID = stringFromMeta(response.meta, "upstream_request_id")
-			}
 			if attempt.StatusCode >= 400 || attempt.Reason != "" {
 				attempt.Status = "failed"
 			} else if attempt.StatusCode > 0 {

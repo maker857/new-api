@@ -38,6 +38,9 @@ For commercial licensing, please contact support@quantumnous.com
 import {
   Copy,
   Check,
+  Download,
+  Eye,
+  Loader2,
   Route,
   Settings2,
   AlertTriangle,
@@ -51,6 +54,7 @@ import {
   LogIn,
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { useState } from 'react'
 
 import { Dialog } from '@/components/dialog'
 import { StatusBadge, type StatusBadgeProps } from '@/components/status-badge'
@@ -63,6 +67,12 @@ import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
 import { formatBillingCurrencyFromUSD } from '@/lib/currency'
 import { formatLogQuota, formatTokens, formatUseTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { useAuthStore } from '@/stores/auth-store'
+import {
+  ADMIN_PERMISSION_ACTIONS,
+  ADMIN_PERMISSION_RESOURCES,
+  hasPermission,
+} from '@/lib/admin-permissions'
 
 import type { UsageLog } from '../../data/schema'
 import {
@@ -85,6 +95,11 @@ import {
 } from '../../lib/utils'
 import { USAGE_BILLING_PATH, type LogOtherData } from '../../types'
 import { PluginAuthorLink } from '../plugin-author-link'
+import {
+  downloadDiagnosticCapture,
+  previewDiagnosticCapture,
+} from '../../api'
+import { DiagnosticCapturePreviewDialog } from './diagnostic-capture-preview-dialog'
 
 // Maps a channel-update changed-field token (as recorded by the backend audit)
 // to its i18n label key for display in the audit details.
@@ -502,6 +517,21 @@ interface DetailsDialogProps {
 
 export function DetailsDialog(props: DetailsDialogProps) {
   const { t } = useTranslation()
+  const currentUser = useAuthStore((state) => state.auth.user)
+  const canViewDiagnosticCapture =
+    props.isAdmin &&
+    hasPermission(
+      currentUser,
+      ADMIN_PERMISSION_RESOURCES.USAGE_LOG,
+      ADMIN_PERMISSION_ACTIONS.CAPTURE_VIEW
+    )
+  const [capturePreviewOpen, setCapturePreviewOpen] = useState(false)
+  const [capturePreviewLoading, setCapturePreviewLoading] = useState(false)
+  const [capturePreviewContent, setCapturePreviewContent] = useState('')
+  const [capturePreviewSizeBytes, setCapturePreviewSizeBytes] = useState(0)
+  const [capturePreviewError, setCapturePreviewError] = useState<string | null>(
+    null
+  )
   const { copiedText, copyToClipboard } = useCopyToClipboard({ notify: false })
   const details = props.log.content ?? ''
   const other = parseLogOther(props.log.other)
@@ -635,11 +665,48 @@ export function DetailsDialog(props: DetailsDialogProps) {
   const reasoningEffortVariant = getReasoningEffortVariant(
     other?.reasoning_effort
   )
+  const captureParams = {
+    requestId: props.log.request_id,
+    channel: props.log.channel_name || '',
+  }
+  const handleCapturePreview = async () => {
+    if (!captureParams.requestId || !captureParams.channel) {
+      setCapturePreviewError(t('This log has no request ID or channel.'))
+      setCapturePreviewOpen(true)
+      return
+    }
+    setCapturePreviewOpen(true)
+    setCapturePreviewLoading(true)
+    setCapturePreviewError(null)
+    try {
+      const preview = await previewDiagnosticCapture(captureParams)
+      setCapturePreviewContent(preview.content)
+      setCapturePreviewSizeBytes(preview.sizeBytes)
+    } catch (error) {
+      setCapturePreviewError(getDiagnosticCaptureErrorMessage(error, t))
+    } finally {
+      setCapturePreviewLoading(false)
+    }
+  }
+
+  const handleCaptureDownload = async () => {
+    try {
+      await downloadDiagnosticCapture(captureParams)
+    } catch (error) {
+      setCapturePreviewError(getDiagnosticCaptureErrorMessage(error, t))
+      setCapturePreviewOpen(true)
+    }
+  }
 
   return (
     <Dialog
       open={props.open}
-      onOpenChange={props.onOpenChange}
+      onOpenChange={(open) => {
+        if (!open) {
+          setCapturePreviewOpen(false)
+        }
+        props.onOpenChange(open)
+      }}
       title={
         <>
           {t('Log Details')}
@@ -662,6 +729,30 @@ export function DetailsDialog(props: DetailsDialogProps) {
       descriptionClassName='sr-only'
       contentHeight='min(72dvh, 720px)'
       bodyClassName='pr-2 sm:pr-4'
+      footer={
+        canViewDiagnosticCapture ? (
+          <div className='flex w-full justify-end gap-2'>
+            <Button
+              type='button'
+              variant='outline'
+              className='gap-1.5'
+              onClick={handleCapturePreview}
+              disabled={capturePreviewLoading}
+            >
+              {capturePreviewLoading ? (
+                <Loader2 className='size-4 animate-spin' aria-hidden='true' />
+              ) : (
+                <Eye className='size-4' aria-hidden='true' />
+              )}
+              {t('Preview')}
+            </Button>
+            <Button className='gap-1.5' onClick={handleCaptureDownload}>
+              <Download className='size-4' aria-hidden='true' />
+              {t('Download')}
+            </Button>
+          </div>
+        ) : undefined
+      }
     >
       <div className='w-full max-w-full min-w-0 space-y-2.5 overflow-x-hidden py-1 sm:space-y-3'>
         {/* Overview section - key identifiers */}
@@ -1342,8 +1433,30 @@ export function DetailsDialog(props: DetailsDialogProps) {
           </div>
         )}
       </div>
+      <DiagnosticCapturePreviewDialog
+        open={capturePreviewOpen}
+        onOpenChange={setCapturePreviewOpen}
+        content={capturePreviewContent}
+        sizeBytes={capturePreviewSizeBytes}
+        loading={capturePreviewLoading}
+        error={capturePreviewError}
+        onDownload={handleCaptureDownload}
+      />
     </Dialog>
   )
+}
+
+function getDiagnosticCaptureErrorMessage(
+  error: unknown,
+  t: (key: string) => string
+): string {
+  if (error && typeof error === 'object') {
+    const status = (error as { response?: { status?: unknown } }).response
+      ?.status
+    if (status === 404) return t('Diagnostic capture file not found')
+    if (status === 400) return t('This log has no request ID or channel.')
+  }
+  return t('Request failed')
 }
 
 function isDisplayableType(type: number): boolean {

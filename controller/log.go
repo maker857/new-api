@@ -1,14 +1,58 @@
 package controller
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 
 	"github.com/gin-gonic/gin"
 )
+
+func diagnosticCaptureParams(c *gin.Context) (string, string, bool) {
+	requestID := c.Query("request_id")
+	channel := c.Query("channel")
+	if requestID == "" || channel == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "invalid diagnostic capture reference"})
+		return "", "", false
+	}
+	return requestID, channel, true
+}
+
+func PreviewDiagnosticCapture(c *gin.Context) {
+	requestID, channel, ok := diagnosticCaptureParams(c)
+	if !ok {
+		return
+	}
+	content, size, err := service.ReadDiagnosticCapturePreview(requestID, channel)
+	if err != nil {
+		if errors.Is(err, service.ErrDiagnosticCaptureNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"success": false, "message": "diagnostic capture file not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+	c.Header("X-Diagnostic-Capture-Size", strconv.FormatInt(size, 10))
+	c.Data(http.StatusOK, "application/json; charset=utf-8", content)
+}
+
+func DownloadDiagnosticCapture(c *gin.Context) {
+	requestID, channel, ok := diagnosticCaptureParams(c)
+	if !ok {
+		return
+	}
+	if err := service.StreamDiagnosticCapture(c.Writer, c.Request, requestID, channel, true); err != nil {
+		if errors.Is(err, service.ErrDiagnosticCaptureNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"success": false, "message": "diagnostic capture file not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": err.Error()})
+	}
+}
 
 func GetAllLogs(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)

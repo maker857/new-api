@@ -156,6 +156,22 @@ func GetLogByTokenId(tokenId int) (logs []*Log, err error) {
 	return logs, err
 }
 
+func GetLogByRequestID(requestID string) (*Log, error) {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return nil, gorm.ErrRecordNotFound
+	}
+	var log Log
+	err := LOG_DB.Where("request_id = ?", requestID).Order("created_at desc").Limit(1).Find(&log).Error
+	if err != nil {
+		return nil, err
+	}
+	if log.RequestId == "" {
+		return nil, gorm.ErrRecordNotFound
+	}
+	return &log, nil
+}
+
 func RecordLog(userId int, logType int, content string) {
 	if logType == LogTypeConsume && !common.LogConsumeEnabled {
 		return

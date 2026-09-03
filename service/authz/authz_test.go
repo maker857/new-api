@@ -50,6 +50,7 @@ func TestInitSeedsBuiltInRolesAndPoliciesOnce(t *testing.T) {
 	assert.True(t, Can(2, common.RoleAdminUser, ChannelOperate))
 	assert.True(t, Can(2, common.RoleAdminUser, ChannelWrite))
 	assert.False(t, Can(2, common.RoleAdminUser, ChannelSensitiveWrite))
+	assert.True(t, Can(2, common.RoleAdminUser, UsageLogCaptureView))
 	assert.False(t, Can(3, common.RoleCommonUser, ChannelRead))
 }
 
@@ -108,6 +109,9 @@ func TestSetUserPermissionsStoresOnlyOverrides(t *testing.T) {
 		ResourceTaskPlugin: {
 			ActionBind: false,
 		},
+		ResourceUsageLog: {
+			ActionCaptureView: true,
+		},
 	}, ExplicitUserPermissions(42))
 	assert.Equal(t, PermissionsMap{
 		ResourceChannel: {
@@ -138,6 +142,9 @@ func TestSetUserPermissionsStoresOnlyOverrides(t *testing.T) {
 		},
 		ResourceTaskPlugin: {
 			ActionBind: false,
+		},
+		ResourceUsageLog: {
+			ActionCaptureView: true,
 		},
 	}, ExplicitUserPermissions(42))
 	assert.Empty(t, ExplicitUserOverrides(42))

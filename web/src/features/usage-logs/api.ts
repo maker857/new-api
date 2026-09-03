@@ -31,6 +31,62 @@ import type {
   UserInfo,
 } from './types'
 
+export interface DiagnosticCaptureParams {
+  requestId: string
+  channel: string
+}
+
+export interface DiagnosticCapturePreview {
+  content: string
+  sizeBytes: number
+}
+
+function diagnosticCaptureQuery(params: DiagnosticCaptureParams): string {
+  return new URLSearchParams({
+    request_id: params.requestId,
+    channel: params.channel,
+  }).toString()
+}
+
+export async function previewDiagnosticCapture(
+  params: DiagnosticCaptureParams
+): Promise<DiagnosticCapturePreview> {
+  const response = await api.get<string>(
+    `/api/log/capture/preview?${diagnosticCaptureQuery(params)}`,
+    { responseType: 'text', skipErrorHandler: true }
+  )
+  const sizeHeader = response.headers['x-diagnostic-capture-size']
+  const sizeBytes = Number.parseInt(sizeHeader ?? '', 10)
+  return {
+    content: response.data,
+    sizeBytes: Number.isFinite(sizeBytes) ? sizeBytes : 0,
+  }
+}
+
+function getDiagnosticCaptureUrl(
+  params: DiagnosticCaptureParams
+): string {
+  return `/api/log/capture/download?${diagnosticCaptureQuery(params)}`
+}
+
+export async function downloadDiagnosticCapture(
+  params: DiagnosticCaptureParams
+): Promise<void> {
+  const response = await api.get<Blob>(getDiagnosticCaptureUrl(params), {
+    responseType: 'blob',
+    skipErrorHandler: true,
+  })
+  const url = URL.createObjectURL(response.data)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = `${params.requestId}.json`
+  anchor.style.display = 'none'
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 0)
+}
+
 // ============================================================================
 // Generic API Helpers
 // ============================================================================

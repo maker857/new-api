@@ -97,6 +97,7 @@ type DiagnosticFlow struct {
 	Identity     diagnosticIdentityJSON
 	Context      diagnosticRequestContextJSON
 	isStream     bool
+	relayInfo    *relaycommon.RelayInfo
 	session      *diagnosticCaptureSession
 	writer       *diagnosticResponseWriter
 }
@@ -162,7 +163,7 @@ type diagnosticRequestContextJSON struct {
 	ModelName         string                      `json:"model_name,omitempty"`
 	UpstreamModelName string                      `json:"upstream_model_name,omitempty"`
 	Status            string                      `json:"status,omitempty"`
-	StreamStatus      string                      `json:"stream_status,omitempty"`
+	StreamStatus      *diagnosticStreamStatusJSON `json:"stream_status,omitempty"`
 	DurationMS        int64                       `json:"duration_ms,omitempty"`
 	FirstResponseMS   int64                       `json:"first_response_ms,omitempty"`
 	PromptTokens      int                         `json:"prompt_tokens,omitempty"`
@@ -170,6 +171,15 @@ type diagnosticRequestContextJSON struct {
 	RetryCount        int                         `json:"retry_count,omitempty"`
 	BillingSource     string                      `json:"billing_source,omitempty"`
 	RetrySummary      *diagnosticRetrySummaryJSON `json:"retry_summary,omitempty"`
+}
+
+type diagnosticStreamStatusJSON struct {
+	Status                string   `json:"status"`
+	EndReason             string   `json:"end_reason"`
+	EndError              string   `json:"end_error,omitempty"`
+	ReceivedResponseCount int      `json:"received_response_count"`
+	ErrorCount            int      `json:"error_count"`
+	Errors                []string `json:"errors,omitempty"`
 }
 
 type diagnosticRetrySummaryJSON struct {
@@ -256,6 +266,8 @@ type diagnosticBodyJSON struct {
 
 type diagnosticBodyConversionJSON struct {
 	Converted           bool   `json:"converted,omitempty"`
+	SSEParsed           bool   `json:"sse_parsed"`
+	ResponseAggregated  bool   `json:"response_aggregated"`
 	Source              string `json:"source"`
 	OriginalContentType string `json:"original_content_type,omitempty"`
 	EventCount          int    `json:"event_count,omitempty"`
@@ -2050,7 +2062,7 @@ func mergeDiagnosticFlowMeta(meta map[string]any, flow *DiagnosticFlow, partMeta
 	if len(flow.Context.Status) > 0 {
 		merged["status"] = flow.Context.Status
 	}
-	if len(flow.Context.StreamStatus) > 0 {
+	if flow.Context.StreamStatus != nil {
 		merged["stream_status"] = flow.Context.StreamStatus
 	}
 	if flow.Context.DurationMS > 0 {
@@ -2157,6 +2169,7 @@ func populateDiagnosticFlowFromContext(flow *DiagnosticFlow, c *gin.Context, inf
 		flow.Context.ModelName = common.GetContextKeyString(c, constant.ContextKeyOriginalModel)
 	}
 	if info != nil {
+		flow.relayInfo = info
 		if flow.Context.UpstreamModelName == "" {
 			flow.Context.UpstreamModelName = info.OriginModelName
 		}
@@ -2176,6 +2189,70 @@ func populateDiagnosticFlowFromContext(flow *DiagnosticFlow, c *gin.Context, inf
 			flow.Identity.TokenName = common.GetContextKeyString(c, "token_name")
 		}
 	}
+	if flow.relayInfo != nil {
+		flow.Context.StreamStatus = diagnosticStreamStatus(flow.relayInfo)
+		if flow.Context.StreamStatus != nil && flow.Context.StreamStatus.Status == "error" {
+			flow.Context.Status = "error"
+		}
+	}
+}
+
+func diagnosticStreamStatus(info *relaycommon.RelayInfo) *diagnosticStreamStatusJSON {
+	if info == nil || !info.IsStream || info.StreamStatus == nil {
+		return nil
+	}
+	streamStatus := info.StreamStatus
+	status := "ok"
+	if !isDiagnosticNormalStreamEnd(streamStatus.EndReason) || streamStatus.TotalErrorCount() > 0 {
+		status = "error"
+	}
+	result := &diagnosticStreamStatusJSON{
+		Status:                status,
+		EndReason:             string(streamStatus.EndReason),
+		ReceivedResponseCount: info.ReceivedResponseCount,
+		ErrorCount:            streamStatus.TotalErrorCount(),
+	}
+	if streamStatus.EndError != nil {
+		result.EndError = streamStatus.EndError.Error()
+	}
+	if len(streamStatus.Errors) > 0 {
+		result.Errors = make([]string, 0, len(streamStatus.Errors))
+		for _, entry := range streamStatus.Errors {
+			message := entry.Message
+			result.Errors = append(result.Errors, message)
+		}
+	}
+	return result
+}
+
+func isDiagnosticNormalStreamEnd(reason relaycommon.StreamEndReason) bool {
+	return reason == relaycommon.StreamEndReasonDone ||
+		reason == relaycommon.StreamEndReasonEOF ||
+		reason == relaycommon.StreamEndReasonHandlerStop
+}
+
+func cloneDiagnosticRequestContext(context diagnosticRequestContextJSON) *diagnosticRequestContextJSON {
+	cloned := context
+	if context.StreamStatus != nil {
+		streamStatus := *context.StreamStatus
+		if context.StreamStatus.Errors != nil {
+			streamStatus.Errors = append([]string(nil), context.StreamStatus.Errors...)
+		}
+		cloned.StreamStatus = &streamStatus
+	}
+	if context.RetrySummary != nil {
+		retrySummary := *context.RetrySummary
+		retrySummary.Attempts = append([]diagnosticRetryAttemptJSON(nil), context.RetrySummary.Attempts...)
+		cloned.RetrySummary = &retrySummary
+	}
+	return &cloned
+}
+
+func cloneDiagnosticRequestContextValue(context *diagnosticRequestContextJSON) diagnosticRequestContextJSON {
+	if context == nil {
+		return diagnosticRequestContextJSON{}
+	}
+	return *cloneDiagnosticRequestContext(*context)
 }
 
 func maskDiagnosticTokenKey(key string) string {

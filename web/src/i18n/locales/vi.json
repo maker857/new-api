@@ -908,7 +908,7 @@
     "Clear mode flags in prompts": "Xóa các cờ chế độ trong lời nhắc",
     "Clear node filters": "Xóa bộ lọc nút",
     "Clear search": "Xóa tìm kiếm",
-    "Clear selection": "Bỏ chọn",
+    "Clear selection": "Xóa lựa chọn",
     "Clear selection (Escape)": "Bỏ chọn (Escape)",
     "Cleared": "Đã xóa",
     "Cleared {{bindingType}} binding for user {{username}}": "Đã xóa liên kết {{bindingType}} của người dùng {{username}}",

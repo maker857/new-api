@@ -47,23 +47,36 @@ func diagnosticCapturePartIsSSE(state *diagnosticCapturePartState) bool {
 // object. Unknown SSE protocols are retained as an event array so the original
 // event payloads remain inspectable instead of being encoded as base64.
 func diagnosticCaptureSSEFile(path string) ([]byte, []byte, string, int, error) {
+	streamJSON, streamText, parseErr, eventCount, _, _, err := diagnosticCaptureSSEFileWithStatus(path)
+	return streamJSON, streamText, parseErr, eventCount, err
+}
+
+func diagnosticCaptureSSEFileWithStatus(path string) ([]byte, []byte, string, int, bool, bool, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, nil, "", 0, err
+		return nil, nil, "", 0, false, false, err
 	}
 	events, err := diagnosticParseSSE(raw)
 	if err != nil {
-		return nil, raw, err.Error(), len(events), nil
+		return nil, raw, err.Error(), len(events), false, false, nil
 	}
-	message := diagnosticAggregateSSE(events)
+	message, aggregateErr := diagnosticAggregateSSEWithError(events)
 	data, err := common.Marshal(message)
 	if err != nil {
-		return nil, raw, err.Error(), len(events), nil
+		return nil, raw, err.Error(), len(events), true, false, nil
 	}
-	return data, nil, "", len(events), nil
+	if aggregateErr != nil {
+		return data, nil, aggregateErr.Error(), len(events), true, false, nil
+	}
+	return data, nil, "", len(events), true, true, nil
 }
 
 func diagnosticAggregateSSE(events []diagnosticSSEEvent) any {
+	result, _ := diagnosticAggregateSSEWithError(events)
+	return result
+}
+
+func diagnosticAggregateSSEWithError(events []diagnosticSSEEvent) (any, error) {
 	parsed := make([]map[string]any, 0, len(events))
 	for _, event := range events {
 		if len(event.data) == 0 {
@@ -83,20 +96,26 @@ func diagnosticAggregateSSE(events []diagnosticSSEEvent) any {
 
 	if hasSSEEventType(parsed, "message_start") {
 		if message, err := diagnosticAggregateAnthropicSSE(events); err == nil {
-			return message
+			return message, nil
+		} else {
+			return map[string]any{"events": parsed}, fmt.Errorf("Anthropic response aggregation failed: %w", err)
 		}
 	}
 	if hasSSEEventPrefix(parsed, "response.") {
 		if response, err := diagnosticAggregateOpenAIResponsesSSE(events); err == nil {
-			return response
+			return response, nil
+		} else {
+			return map[string]any{"events": parsed}, fmt.Errorf("OpenAI Responses aggregation failed: %w", err)
 		}
 	}
 	if hasChatCompletionChunk(parsed) {
 		if response, err := diagnosticAggregateOpenAIChatSSE(events); err == nil {
-			return response
+			return response, nil
+		} else {
+			return map[string]any{"events": parsed}, fmt.Errorf("OpenAI Chat aggregation failed: %w", err)
 		}
 	}
-	return map[string]any{"events": parsed}
+	return map[string]any{"events": parsed}, errors.New("no supported SSE response aggregator")
 }
 
 func hasSSEEventType(events []map[string]any, name string) bool {

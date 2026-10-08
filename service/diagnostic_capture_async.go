@@ -88,23 +88,25 @@ type diagnosticCaptureFinalizeLock struct {
 }
 
 type diagnosticCapturePartState struct {
-	partID          string
-	sequence        int64
-	role            string
-	part            string
-	meta            map[string]any
-	file            *os.File
-	tempPath        string
-	tempPaths       []string
-	savedSize       int64
-	originalSize    int64
-	complete        bool
-	jsonBody        bool
-	streamJSON      []byte
-	streamText      []byte
-	streamParseErr  string
-	streamEvents    int
-	webSocketFrames bool
+	partID           string
+	sequence         int64
+	role             string
+	part             string
+	meta             map[string]any
+	file             *os.File
+	tempPath         string
+	tempPaths        []string
+	savedSize        int64
+	originalSize     int64
+	complete         bool
+	jsonBody         bool
+	streamJSON       []byte
+	streamText       []byte
+	streamParseErr   string
+	streamSSEParsed  bool
+	streamAggregated bool
+	streamEvents     int
+	webSocketFrames  bool
 }
 
 type diagnosticCaptureWebSocketGroup struct {
@@ -116,16 +118,17 @@ type diagnosticCaptureWebSocketGroup struct {
 const diagnosticWebSocketFrameFormat = "segmented-v2"
 
 type diagnosticCaptureFailureRecord struct {
-	TraceID       string                         `json:"newapi_request_id"`
-	Channel       string                         `json:"channel"`
-	StartedAt     int64                          `json:"started_at"`
-	FirstFailedAt int64                          `json:"first_failed_at"`
-	AttemptCount  int                            `json:"attempt_count"`
-	LastError     string                         `json:"last_error"`
-	LastAttemptAt int64                          `json:"last_attempt_at"`
-	NextRetryAt   int64                          `json:"next_retry_at,omitempty"`
-	Retryable     bool                           `json:"retryable"`
-	Parts         []diagnosticCaptureFailurePart `json:"parts"`
+	TraceID        string                         `json:"newapi_request_id"`
+	Channel        string                         `json:"channel"`
+	StartedAt      int64                          `json:"started_at"`
+	FirstFailedAt  int64                          `json:"first_failed_at"`
+	AttemptCount   int                            `json:"attempt_count"`
+	LastError      string                         `json:"last_error"`
+	LastAttemptAt  int64                          `json:"last_attempt_at"`
+	NextRetryAt    int64                          `json:"next_retry_at,omitempty"`
+	Retryable      bool                           `json:"retryable"`
+	RequestContext *diagnosticRequestContextJSON  `json:"request_context,omitempty"`
+	Parts          []diagnosticCaptureFailurePart `json:"parts"`
 }
 
 type diagnosticCaptureFailurePart struct {
@@ -545,7 +548,7 @@ func (s *diagnosticCaptureSession) run() {
 		}
 		state.jsonBody = jsonBody
 		if !jsonBody && diagnosticCapturePartIsSSE(state) {
-			streamJSON, streamText, streamParseErr, streamEvents, convertErr := diagnosticCaptureSSEFile(state.tempPath)
+			streamJSON, streamText, streamParseErr, streamEvents, streamSSEParsed, streamAggregated, convertErr := diagnosticCaptureSSEFileWithStatus(state.tempPath)
 			if convertErr != nil {
 				s.fail("failed to convert diagnostic SSE body: " + convertErr.Error())
 				continue
@@ -553,10 +556,18 @@ func (s *diagnosticCaptureSession) run() {
 			state.streamJSON = streamJSON
 			state.streamText = streamText
 			state.streamParseErr = streamParseErr
+			state.streamSSEParsed = streamSSEParsed
+			state.streamAggregated = streamAggregated
 			state.streamEvents = streamEvents
 		}
 	}
 	captureFailed := s.failed.Load()
+	if flow.relayInfo != nil {
+		flow.Context.StreamStatus = diagnosticStreamStatus(flow.relayInfo)
+		if flow.Context.StreamStatus != nil && flow.Context.StreamStatus.Status == "error" {
+			flow.Context.Status = "error"
+		}
+	}
 	writeErr := writeDiagnosticCaptureSession(s.cfg, &flow, orderedParts)
 	if writeErr != nil {
 		s.fail("failed to write diagnostic request-log.json: " + writeErr.Error())
@@ -1058,15 +1069,16 @@ func persistDiagnosticCaptureFailure(cfg DiagnosticCaptureConfig, flow *Diagnost
 		}
 	}()
 	record := diagnosticCaptureFailureRecord{
-		TraceID:       flow.TraceID,
-		Channel:       flow.Channel,
-		StartedAt:     flow.Started.UnixNano(),
-		FirstFailedAt: time.Now().UnixNano(),
-		AttemptCount:  1,
-		LastError:     cause,
-		LastAttemptAt: time.Now().UnixNano(),
-		Retryable:     retryable,
-		Parts:         make([]diagnosticCaptureFailurePart, 0, len(parts)),
+		TraceID:        flow.TraceID,
+		Channel:        flow.Channel,
+		StartedAt:      flow.Started.UnixNano(),
+		FirstFailedAt:  time.Now().UnixNano(),
+		AttemptCount:   1,
+		LastError:      cause,
+		LastAttemptAt:  time.Now().UnixNano(),
+		Retryable:      retryable,
+		RequestContext: cloneDiagnosticRequestContext(flow.Context),
+		Parts:          make([]diagnosticCaptureFailurePart, 0, len(parts)),
 	}
 	for index, state := range parts {
 		if state == nil {
@@ -1280,7 +1292,12 @@ func retryDiagnosticCaptureFailures(cfg DiagnosticCaptureConfig) {
 		// updated failure state.
 		markDiagnosticCaptureActive(record.TraceID)
 		defer markDiagnosticCaptureInactive(record.TraceID)
-		flow := &DiagnosticFlow{TraceID: record.TraceID, Channel: record.Channel, Started: time.Unix(0, record.StartedAt)}
+		flow := &DiagnosticFlow{
+			TraceID: record.TraceID,
+			Channel: record.Channel,
+			Started: time.Unix(0, record.StartedAt),
+			Context: cloneDiagnosticRequestContextValue(record.RequestContext),
+		}
 		parts := make([]*diagnosticCapturePartState, 0, len(record.Parts))
 		for _, part := range record.Parts {
 			state := &diagnosticCapturePartState{
@@ -1365,7 +1382,7 @@ func retryDiagnosticCaptureFailures(cfg DiagnosticCaptureConfig) {
 			}
 			state.jsonBody = jsonBody
 			if !jsonBody && diagnosticCapturePartIsSSE(state) {
-				streamJSON, streamText, streamParseErr, streamEvents, convertErr := diagnosticCaptureSSEFile(state.tempPath)
+				streamJSON, streamText, streamParseErr, streamEvents, streamSSEParsed, streamAggregated, convertErr := diagnosticCaptureSSEFileWithStatus(state.tempPath)
 				if convertErr != nil {
 					stopDiagnosticCaptureRetry(cfg, path, &record, "capture retry stopped: failed to convert retained SSE body: "+convertErr.Error())
 					return filepath.SkipDir
@@ -1373,6 +1390,8 @@ func retryDiagnosticCaptureFailures(cfg DiagnosticCaptureConfig) {
 				state.streamJSON = streamJSON
 				state.streamText = streamText
 				state.streamParseErr = streamParseErr
+				state.streamSSEParsed = streamSSEParsed
+				state.streamAggregated = streamAggregated
 				state.streamEvents = streamEvents
 			}
 		}
@@ -2356,9 +2375,12 @@ func writeDiagnosticCaptureBody(w *diagnosticCaptureJSONWriter, cfg DiagnosticCa
 		w.raw(`,"conversion":`)
 		w.value(diagnosticBodyConversionJSON{
 			Converted:           true,
+			SSEParsed:           state.streamSSEParsed,
+			ResponseAggregated:  state.streamAggregated,
 			Source:              "sse",
 			OriginalContentType: "text/event-stream",
 			EventCount:          state.streamEvents,
+			ParseError:          state.streamParseErr,
 			ConvertedAt:         time.Now().UTC().Format(time.RFC3339Nano),
 		})
 	} else if streamFallback {
@@ -2369,6 +2391,8 @@ func writeDiagnosticCaptureBody(w *diagnosticCaptureJSONWriter, cfg DiagnosticCa
 			Source:              "sse",
 			OriginalContentType: "text/event-stream",
 			EventCount:          state.streamEvents,
+			SSEParsed:           state.streamSSEParsed,
+			ResponseAggregated:  state.streamAggregated,
 			ParseError:          state.streamParseErr,
 		})
 	} else if encoding == "base64" {

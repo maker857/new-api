@@ -1,15 +1,104 @@
 package service
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestDiagnosticCaptureRequestLogPersistsStreamStatusIndependentlyFromTruncation(t *testing.T) {
+	root := t.TempDir()
+	body := []byte("data: {\"id\":\"stream-1\"}\n")
+	streamPath := filepath.Join(root, "response.part")
+	require.NoError(t, os.WriteFile(streamPath, body, 0o600))
+
+	info := &relaycommon.RelayInfo{
+		IsStream:              true,
+		ReceivedResponseCount: 86,
+		StreamStatus:          relaycommon.NewStreamStatus(),
+	}
+	info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, fmt.Errorf("context canceled"))
+	flow := &DiagnosticFlow{
+		TraceID:   "client-gone-trace",
+		Channel:   "channel",
+		Started:   time.Date(2026, 8, 5, 10, 0, 0, 0, time.Local),
+		relayInfo: info,
+		Context: diagnosticRequestContextJSON{
+			Status:       "error",
+			StreamStatus: diagnosticStreamStatus(info),
+		},
+	}
+	state := &diagnosticCapturePartState{
+		partID:           "outbound-000001-response",
+		sequence:         1,
+		role:             "outbound",
+		part:             "response",
+		tempPath:         streamPath,
+		originalSize:     int64(len(body) + 10),
+		savedSize:        int64(len(body)),
+		complete:         false,
+		streamJSON:       []byte(`{"id":"stream-1"}`),
+		streamSSEParsed:  true,
+		streamAggregated: false,
+		streamParseErr:   "Anthropic response aggregation failed: invalid tool input at index 0",
+		streamEvents:     86,
+		meta: map[string]any{
+			"captured_at": "2026-08-05T02:00:00Z",
+			"status_code": 200,
+			"headers":     map[string][]string{"Content-Type": {"text/event-stream"}},
+		},
+	}
+	cfg := DiagnosticCaptureConfig{Enabled: true, Mode: "full", CaptureDir: filepath.Join(root, "captures")}
+	require.NoError(t, writeDiagnosticCaptureSession(cfg, flow, []*diagnosticCapturePartState{state}))
+
+	data, err := os.ReadFile(filepath.Join(cfg.CaptureDir, "channel", "2026-08-05", "client-gone-trace", "request-log.json"))
+	require.NoError(t, err)
+	var combined map[string]any
+	require.NoError(t, common.Unmarshal(data, &combined))
+
+	contextValue, ok := combined["request_context"].(map[string]any)
+	require.True(t, ok)
+	streamStatus, ok := contextValue["stream_status"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "error", streamStatus["status"])
+	assert.Equal(t, "client_gone", streamStatus["end_reason"])
+	assert.Equal(t, "context canceled", streamStatus["end_error"])
+	assert.Equal(t, float64(86), streamStatus["received_response_count"])
+	assert.Equal(t, float64(0), streamStatus["error_count"])
+
+	responses, ok := combined["api_responses"].([]any)
+	require.True(t, ok)
+	bodyValue := responses[0].(map[string]any)["response"].(map[string]any)["body"].(map[string]any)
+	assert.Equal(t, true, bodyValue["truncated"])
+	conversion := bodyValue["conversion"].(map[string]any)
+	assert.Equal(t, true, conversion["converted"])
+	assert.Equal(t, true, conversion["sse_parsed"])
+	assert.Equal(t, false, conversion["response_aggregated"])
+	assert.Contains(t, conversion["parse_error"], "invalid tool input")
+	assert.Equal(t, float64(86), conversion["event_count"])
+}
+
+func TestDiagnosticCapturePersistsNonClientTruncationReason(t *testing.T) {
+	info := &relaycommon.RelayInfo{
+		IsStream:              true,
+		ReceivedResponseCount: 4,
+		StreamStatus:          relaycommon.NewStreamStatus(),
+	}
+	info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonEOF, nil)
+	status := diagnosticStreamStatus(info)
+	require.NotNil(t, status)
+	assert.Equal(t, "ok", status.Status)
+	assert.Equal(t, "eof", status.EndReason)
+	assert.Equal(t, 4, status.ReceivedResponseCount)
+	assert.Equal(t, 0, status.ErrorCount)
+}
 
 func TestDiagnosticAggregateAnthropicSSE(t *testing.T) {
 	raw := []byte("event: message_start\n" +
@@ -74,6 +163,63 @@ func TestDiagnosticCaptureSSEFileConvertsOpenAIResponses(t *testing.T) {
 	require.NoError(t, common.Unmarshal(data, &response))
 	assert.Equal(t, "resp_1", response["id"])
 	assert.Equal(t, "completed", response["status"])
+}
+
+func TestDiagnosticCaptureSSEFileReportsAggregationFailure(t *testing.T) {
+	tests := []struct {
+		name       string
+		raw        []byte
+		wantReason string
+	}{
+		{
+			name: "invalid tool input",
+			raw: []byte("event: message_start\n" +
+				"data: {\"type\":\"message_start\",\"message\":{\"content\":[]}}\n\n" +
+				"event: content_block_start\n" +
+				"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"input\":{},\"name\":\"tool\"}}\n\n" +
+				"event: content_block_delta\n" +
+				"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"broken\\\":\"}}\n\n" +
+				"event: content_block_stop\n" +
+				"data: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+				"event: message_stop\n" +
+				"data: {\"type\":\"message_stop\"}\n\n"),
+			wantReason: "Anthropic response aggregation failed: invalid tool input at index 0: unexpected end of JSON input",
+		},
+		{
+			name: "unsupported delta",
+			raw: []byte("event: message_start\n" +
+				"data: {\"type\":\"message_start\",\"message\":{\"content\":[]}}\n\n" +
+				"event: content_block_start\n" +
+				"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+				"event: content_block_delta\n" +
+				"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"citations_delta\"}}\n\n" +
+				"event: message_stop\n" +
+				"data: {\"type\":\"message_stop\"}\n\n"),
+			wantReason: "Anthropic response aggregation failed: unsupported content block delta type \"citations_delta\"",
+		},
+		{
+			name: "missing message stop",
+			raw: []byte("event: message_start\n" +
+				"data: {\"type\":\"message_start\",\"message\":{\"content\":[]}}\n\n"),
+			wantReason: "Anthropic response aggregation failed: SSE stream ended before message_stop",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "response.part")
+			require.NoError(t, os.WriteFile(path, tt.raw, 0o600))
+
+			data, fallback, parseErr, eventCount, sseParsed, aggregated, err := diagnosticCaptureSSEFileWithStatus(path)
+			require.NoError(t, err)
+			require.Empty(t, fallback)
+			require.NotEmpty(t, data)
+			assert.Equal(t, tt.wantReason, parseErr)
+			assert.Greater(t, eventCount, 0)
+			assert.True(t, sseParsed)
+			assert.False(t, aggregated)
+		})
+	}
 }
 
 func TestDiagnosticAggregateOpenAIChatSSE(t *testing.T) {

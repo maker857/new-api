@@ -747,6 +747,16 @@ func TestDiagnosticCaptureFailureIsRetriedWithoutDiscardingBody(t *testing.T) {
 		TraceID: "retry-trace",
 		Channel: "channel",
 		Started: time.Date(2026, 7, 23, 10, 0, 0, 0, time.Local),
+		Context: diagnosticRequestContextJSON{
+			Status: "error",
+			StreamStatus: &diagnosticStreamStatusJSON{
+				Status:                "error",
+				EndReason:             "client_gone",
+				EndError:              "context canceled",
+				ReceivedResponseCount: 7,
+				ErrorCount:            0,
+			},
+		},
 	}
 	state := &diagnosticCapturePartState{
 		partID:       "inbound-request",
@@ -763,9 +773,27 @@ func TestDiagnosticCaptureFailureIsRetriedWithoutDiscardingBody(t *testing.T) {
 	require.NoFileExists(t, tempFile.Name())
 	failurePath := diagnosticCaptureFailureRecordPath(cfg, flow)
 	require.FileExists(t, failurePath)
+	failureData, err := os.ReadFile(failurePath)
+	require.NoError(t, err)
+	var failureRecord diagnosticCaptureFailureRecord
+	require.NoError(t, common.Unmarshal(failureData, &failureRecord))
+	require.NotNil(t, failureRecord.RequestContext)
+	require.NotNil(t, failureRecord.RequestContext.StreamStatus)
+	require.Equal(t, "client_gone", failureRecord.RequestContext.StreamStatus.EndReason)
 
 	retryDiagnosticCaptureFailures(cfg)
-	require.FileExists(t, filepath.Join(cfg.CaptureDir, "channel", "2026-07-23", "retry-trace", "request-log.json"))
+	requestLogPath := filepath.Join(cfg.CaptureDir, "channel", "2026-07-23", "retry-trace", "request-log.json")
+	require.FileExists(t, requestLogPath)
+	requestLogData, err := os.ReadFile(requestLogPath)
+	require.NoError(t, err)
+	var requestLog map[string]any
+	require.NoError(t, common.Unmarshal(requestLogData, &requestLog))
+	requestContext, ok := requestLog["request_context"].(map[string]any)
+	require.True(t, ok)
+	streamStatus, ok := requestContext["stream_status"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "client_gone", streamStatus["end_reason"])
+	require.Equal(t, "context canceled", streamStatus["end_error"])
 	require.NoDirExists(t, filepath.Dir(failurePath))
 }
 

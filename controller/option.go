@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -147,6 +148,13 @@ func UpdateOption(c *gin.Context) {
 		option.Value = fmt.Sprintf("%v", option.Value)
 	}
 	switch option.Key {
+	case "channel_affinity_setting.claude_cache_model_regex":
+		pattern := strings.TrimSpace(option.Value.(string))
+		if _, err := regexp.Compile(pattern); err != nil || pattern == "" {
+			common.ApiErrorMsg(c, "Claude 缓存亲和的适用模型正则不能为空且必须是有效的 Go 正则表达式")
+			return
+		}
+		option.Value = pattern
 	case "QuotaForInviter", "QuotaForInvitee":
 		if isPositiveOptionValue(option.Value.(string)) && !operation_setting.IsPaymentComplianceConfirmed() {
 			common.ApiErrorI18n(c, i18n.MsgPaymentComplianceRequired)

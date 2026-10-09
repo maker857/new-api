@@ -159,6 +159,10 @@ const MODELS_SECTIONS = [
             settings['channel_affinity_setting.switch_on_success'],
           'channel_affinity_setting.keep_on_channel_disabled':
             settings['channel_affinity_setting.keep_on_channel_disabled'],
+          'channel_affinity_setting.claude_cache_only':
+            settings['channel_affinity_setting.claude_cache_only'],
+          'channel_affinity_setting.claude_cache_model_regex':
+            settings['channel_affinity_setting.claude_cache_model_regex'],
           'channel_affinity_setting.max_entries':
             settings['channel_affinity_setting.max_entries'],
           'channel_affinity_setting.default_ttl_seconds':

@@ -20,11 +20,12 @@ import (
 )
 
 const (
-	ginKeyChannelAffinityCacheKey   = "channel_affinity_cache_key"
-	ginKeyChannelAffinityTTLSeconds = "channel_affinity_ttl_seconds"
-	ginKeyChannelAffinityMeta       = "channel_affinity_meta"
-	ginKeyChannelAffinityLogInfo    = "channel_affinity_log_info"
-	ginKeyChannelAffinitySkipRetry  = "channel_affinity_skip_retry_on_failure"
+	ginKeyChannelAffinityCacheKey     = "channel_affinity_cache_key"
+	ginKeyChannelAffinityTTLSeconds   = "channel_affinity_ttl_seconds"
+	ginKeyChannelAffinityMeta         = "channel_affinity_meta"
+	ginKeyChannelAffinityLogInfo      = "channel_affinity_log_info"
+	ginKeyChannelAffinitySkipRetry    = "channel_affinity_skip_retry_on_failure"
+	ginKeyChannelAffinityTemplateOnly = "channel_affinity_template_only"
 
 	channelAffinityCacheNamespace           = "new-api:channel_affinity:v1"
 	channelAffinityUsageCacheStatsNamespace = "new-api:channel_affinity_usage_cache_stats:v1"
@@ -534,6 +535,13 @@ func ApplyChannelAffinityOverrideTemplate(c *gin.Context, paramOverride map[stri
 	if c == nil {
 		return paramOverride, false
 	}
+	// Cache-only routing must not disable a rule's unrelated header/parameter overrides.
+	if template, ok := c.Get(ginKeyChannelAffinityTemplateOnly); ok {
+		if tpl, ok := template.(map[string]interface{}); ok && len(tpl) > 0 {
+			return mergeChannelOverride(paramOverride, tpl), true
+		}
+		return paramOverride, false
+	}
 	meta, ok := getChannelAffinityMeta(c)
 	if !ok {
 		return paramOverride, false
@@ -552,6 +560,9 @@ func GetPreferredChannelByAffinity(c *gin.Context, modelName string, usingGroup 
 	if setting == nil || !setting.Enabled {
 		return 0, false
 	}
+	bypassAffinity := setting.ClaudeCacheOnly &&
+		matchAnyRegexCached([]string{setting.ClaudeCacheModelRegex}, modelName) &&
+		!requestHasClaudePromptCache(c)
 	path := ""
 	if c != nil && c.Request != nil && c.Request.URL != nil {
 		path = c.Request.URL.Path
@@ -585,6 +596,12 @@ func GetPreferredChannelByAffinity(c *gin.Context, modelName string, usingGroup 
 		}
 		if rule.ValueRegex != "" && !matchAnyRegexCached([]string{rule.ValueRegex}, affinityValue) {
 			continue
+		}
+		if bypassAffinity {
+			// Do not create affinity context: successful requests must neither write
+			// nor refresh bindings, and failed requests must retain normal retries.
+			c.Set(ginKeyChannelAffinityTemplateOnly, cloneStringAnyMap(rule.ParamOverrideTemplate))
+			return 0, false
 		}
 
 		ttlSeconds := rule.TTLSeconds

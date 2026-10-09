@@ -16,7 +16,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { Edit, FileText, Plus, RefreshCw, Trash2, X } from 'lucide-react'
+import {
+  ChevronRight,
+  Edit,
+  FileText,
+  Plus,
+  RefreshCw,
+  Trash2,
+  X,
+} from 'lucide-react'
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -28,14 +36,21 @@ import { StatusBadge, StatusBadgeList } from '@/components/status-badge'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible'
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { Field, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Separator } from '@/components/ui/separator'
+import { Switch } from '@/components/ui/switch'
 
 import { SettingsSwitchField } from '../../components/settings-form-layout'
 import { SettingsPageActionsPortal } from '../../components/settings-page-context'
@@ -125,6 +140,11 @@ interface Props {
 export function ChannelAffinitySection(props: Props) {
   const { t } = useTranslation()
   const updateOption = useUpdateOption()
+  const savedClaudeCacheOnly =
+    props.defaultValues['channel_affinity_setting.claude_cache_only'] ?? false
+  const savedClaudeCacheModelRegex =
+    props.defaultValues['channel_affinity_setting.claude_cache_model_regex'] ??
+    '^claude-.*$'
 
   const [enabled, setEnabled] = useState(
     props.defaultValues['channel_affinity_setting.enabled']
@@ -137,6 +157,11 @@ export function ChannelAffinitySection(props: Props) {
   )
   const [maxEntries, setMaxEntries] = useState(
     props.defaultValues['channel_affinity_setting.max_entries']
+  )
+  const [claudeCacheOnly, setClaudeCacheOnly] = useState(savedClaudeCacheOnly)
+  const [claudeCacheDetailsOpen, setClaudeCacheDetailsOpen] = useState(false)
+  const [claudeCacheModelRegex, setClaudeCacheModelRegex] = useState(
+    savedClaudeCacheModelRegex
   )
   const [defaultTtl, setDefaultTtl] = useState(
     props.defaultValues['channel_affinity_setting.default_ttl_seconds']
@@ -191,6 +216,15 @@ export function ChannelAffinitySection(props: Props) {
     )
   }, [props.defaultValues])
 
+  // Unrelated option refreshes must not discard this policy's unsaved edits.
+  useEffect(() => {
+    setClaudeCacheOnly(savedClaudeCacheOnly)
+  }, [savedClaudeCacheOnly])
+
+  useEffect(() => {
+    setClaudeCacheModelRegex(savedClaudeCacheModelRegex)
+  }, [savedClaudeCacheModelRegex])
+
   const refreshCache = useCallback(async () => {
     setCacheLoading(true)
     try {
@@ -235,6 +269,11 @@ export function ChannelAffinitySection(props: Props) {
   }
 
   const handleSave = async () => {
+    if (!claudeCacheModelRegex.trim()) {
+      setClaudeCacheDetailsOpen(true)
+      toast.error(t('Claude cache affinity model regex is required'))
+      return
+    }
     let rulesJson: string
     if (editMode === 'json') {
       try {
@@ -255,6 +294,20 @@ export function ChannelAffinitySection(props: Props) {
     setSaving(true)
     try {
       const updates: { key: string; value: string }[] = []
+
+      // Save and validate the scope before enabling the policy.
+      if (claudeCacheModelRegex.trim() !== savedClaudeCacheModelRegex) {
+        updates.push({
+          key: 'channel_affinity_setting.claude_cache_model_regex',
+          value: claudeCacheModelRegex.trim(),
+        })
+      }
+      if (claudeCacheOnly !== savedClaudeCacheOnly) {
+        updates.push({
+          key: 'channel_affinity_setting.claude_cache_only',
+          value: String(claudeCacheOnly),
+        })
+      }
 
       if (enabled !== props.defaultValues['channel_affinity_setting.enabled']) {
         updates.push({
@@ -456,6 +509,54 @@ export function ChannelAffinitySection(props: Props) {
             'When enabled, keep the affinity entry even if the affinity channel is disabled or no longer usable for the current group/model. Leave it off to delete the entry and select another channel.'
           )}
         />
+
+        <Collapsible
+          open={claudeCacheDetailsOpen}
+          onOpenChange={setClaudeCacheDetailsOpen}
+        >
+          <div className='flex items-center justify-between gap-4'>
+            <CollapsibleTrigger className='focus-visible:ring-ring flex min-w-0 items-center gap-2 rounded-sm py-2.5 text-left text-sm font-medium outline-none focus-visible:ring-2'>
+              <ChevronRight
+                aria-hidden='true'
+                className={`size-4 shrink-0 transition-transform ${claudeCacheDetailsOpen ? 'rotate-90' : ''}`}
+              />
+              <span id='claude-cache-only-label'>
+                {t('Claude: use affinity only for cached requests')}
+              </span>
+            </CollapsibleTrigger>
+            <Switch
+              id='claude-cache-only'
+              checked={claudeCacheOnly}
+              onCheckedChange={setClaudeCacheOnly}
+              aria-labelledby='claude-cache-only-label'
+            />
+          </div>
+          <CollapsibleContent className='space-y-3 pb-2.5 pl-6'>
+            <FieldDescription>
+              {t(
+                'For matching models, requests without cache_control bypass all affinity bindings and follow normal channel priority and weights. Existing bindings and other models are unchanged.'
+              )}
+            </FieldDescription>
+            <Field>
+              <FieldLabel htmlFor='claude-cache-model-regex'>
+                {t('Claude cache affinity model regex')}
+              </FieldLabel>
+              <Input
+                id='claude-cache-model-regex'
+                value={claudeCacheModelRegex}
+                onChange={(event) =>
+                  setClaudeCacheModelRegex(event.target.value)
+                }
+                aria-describedby='claude-cache-model-regex-help'
+              />
+              <FieldDescription id='claude-cache-model-regex-help'>
+                {t(
+                  'Matches the requested model name before channel mapping. Default: ^claude-.*$. Add only your Claude aliases; models outside this scope keep their existing affinity behavior.'
+                )}
+              </FieldDescription>
+            </Field>
+          </CollapsibleContent>
+        </Collapsible>
 
         <Separator />
 

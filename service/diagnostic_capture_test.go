@@ -268,7 +268,7 @@ func TestCleanupDiagnosticCaptureStorageKeepsRetryableFailureRecord(t *testing.T
 	require.NoError(t, os.MkdirAll(failurePath, 0o700))
 	require.NoError(t, os.WriteFile(filepath.Join(failurePath, "fragment.part"), []byte("body"), 0o600))
 	now := time.Now()
-	require.NoError(t, writeDiagnosticCaptureFailureRecord(filepath.Join(failurePath, "capture-failure.json"), diagnosticCaptureFailureRecord{
+	require.NoError(t, writeDiagnosticCaptureFailureRecord(DiagnosticCaptureConfig{}, filepath.Join(failurePath, "capture-failure.json"), diagnosticCaptureFailureRecord{
 		TraceID:       "retrying",
 		Channel:       "channel",
 		StartedAt:     now.Add(-time.Minute).UnixNano(),
@@ -819,7 +819,7 @@ func TestDiagnosticCaptureRetrySkipsArchivedFailures(t *testing.T) {
 		"capture-failure.json",
 	)
 	require.NoError(t, os.MkdirAll(filepath.Dir(failurePath), 0o700))
-	require.NoError(t, writeDiagnosticCaptureFailureRecord(failurePath, diagnosticCaptureFailureRecord{
+	require.NoError(t, writeDiagnosticCaptureFailureRecord(DiagnosticCaptureConfig{}, failurePath, diagnosticCaptureFailureRecord{
 		TraceID:   flow.TraceID,
 		Channel:   flow.Channel,
 		StartedAt: flow.Started.UnixNano(),
@@ -853,7 +853,7 @@ func TestDiagnosticCaptureRetryRestoresFragmentFromRequestScopedTempDirectory(t 
 	cfg.FailureDir = diagnosticCaptureFailureDir(cfg.CaptureDir)
 	failurePath := diagnosticCaptureFailureRecordPath(cfg, flow)
 	require.NoError(t, os.MkdirAll(filepath.Dir(failurePath), 0o700))
-	require.NoError(t, writeDiagnosticCaptureFailureRecord(failurePath, diagnosticCaptureFailureRecord{
+	require.NoError(t, writeDiagnosticCaptureFailureRecord(DiagnosticCaptureConfig{}, failurePath, diagnosticCaptureFailureRecord{
 		TraceID:       flow.TraceID,
 		Channel:       flow.Channel,
 		StartedAt:     flow.Started.UnixNano(),
@@ -985,7 +985,7 @@ func TestMoveDiagnosticCaptureFragmentRemovesSource(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Dir(destination), 0o700))
 	require.NoError(t, os.WriteFile(source, []byte("captured body"), 0o600))
 
-	require.NoError(t, moveDiagnosticCaptureFragment(source, destination))
+	require.NoError(t, moveDiagnosticCaptureFragment(DiagnosticCaptureConfig{}, source, destination))
 	_, err := os.Stat(source)
 	require.True(t, os.IsNotExist(err))
 	body, err := os.ReadFile(destination)

@@ -303,18 +303,34 @@ var diagnosticActiveCaptures = struct {
 	traceIDs map[string]int
 }{traceIDs: make(map[string]int)}
 
+type diagnosticCaptureUsageCounters struct {
+	captureDir       string
+	tempDir          string
+	failureDir       string
+	totalBytes       int64
+	tempBytes        int64
+	initialized      bool
+	restoreAttempted bool
+	scope            string
+	storageID        string
+	usagePath        string
+	estimated        bool
+	uncertaintyBytes int64
+	activeFiles      map[string]*diagnosticCaptureFileChange
+	scan             *diagnosticCaptureScan
+	lastSaved        time.Time
+	lastSaveError    bool
+	lastScanError    bool
+	restored         bool
+	epoch            uint64
+	lastAttempt      time.Time
+	nextEligibleAt   time.Time
+	lastReconciled   time.Time
+}
+
 var diagnosticCaptureStorageState struct {
 	sync.Mutex
-	captureDir     string
-	tempDir        string
-	failureDir     string
-	totalBytes     int64
-	tempBytes      int64
-	initialized    bool
-	lastAttempt    time.Time
-	nextEligibleAt time.Time
-	lastReconciled time.Time
-	generation     uint64
+	diagnosticCaptureUsageCounters
 }
 
 var diagnosticCaptureCleanupMu sync.Mutex
@@ -950,12 +966,16 @@ func writeCapture(cfg DiagnosticCaptureConfig, flow *DiagnosticFlow, sequence in
 		common.SysError("failed to create diagnostic capture dir: " + err.Error())
 		return
 	}
-	ensureDiagnosticCaptureTimestamp(base)
+	release := acquireDiagnosticCaptureFinalize(filepath.Clean(base))
+	defer release()
+	ensureDiagnosticCaptureTimestamp(cfg, base)
 	content := buildDiagnosticCPAJSON(cfg, flow, sequence, role, part, meta, body)
 	writeCombinedCapture(filepath.Join(base, "request-log.json"), flow, content, cfg)
 }
 
-func ensureDiagnosticCaptureTimestamp(dir string) {
+func ensureDiagnosticCaptureTimestamp(cfg DiagnosticCaptureConfig, dir string) {
+	change := trackDiagnosticCaptureFile(cfg, filepath.Join(dir, ".capture-created-at"))
+	defer change.finishFromDisk()
 	file, err := os.OpenFile(filepath.Join(dir, ".capture-created-at"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		if !os.IsExist(err) {
@@ -978,13 +998,17 @@ func markDiagnosticCaptureComplete(cfg DiagnosticCaptureConfig, flow *Diagnostic
 	if _, err := os.Stat(filepath.Join(dir, "request-log.json")); err != nil {
 		return
 	}
-	if err := os.WriteFile(
-		filepath.Join(dir, ".capture-complete"),
-		[]byte(strconv.FormatInt(time.Now().UnixNano(), 10)),
-		0o600,
-	); err != nil {
+	release := acquireDiagnosticCaptureFinalize(filepath.Clean(dir))
+	defer release()
+	path := filepath.Join(dir, ".capture-complete")
+	change := trackDiagnosticCaptureFile(cfg, path)
+	defer change.finishFromDisk()
+	data := []byte(strconv.FormatInt(time.Now().UnixNano(), 10))
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		common.SysError("failed to mark diagnostic capture complete: " + err.Error())
+		return
 	}
+
 }
 
 func diagnosticCaptureComplete(dir string) bool {
@@ -1077,11 +1101,13 @@ func writeCombinedCapture(path string, flow *DiagnosticFlow, content diagnosticC
 		return
 	}
 	data = append(data, '\n')
+	change := beginDiagnosticCaptureFileChange(cfg, path, previousSize)
+	defer change.finishFromDisk()
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		common.SysError("failed to write diagnostic capture: " + err.Error())
 		return
 	}
-	enforceDiagnosticCaptureStorage(cfg, path, previousSize, int64(len(data)))
+
 }
 
 type diagnosticCaptureCandidate struct {
@@ -1093,76 +1119,30 @@ type diagnosticCaptureCandidate struct {
 }
 
 type DiagnosticCaptureStorageStatus struct {
-	StorageRoot           string `json:"storage_root"`
-	CaptureDir            string `json:"capture_dir"`
-	TemporaryDir          string `json:"temporary_dir"`
-	CurrentBytes          int64  `json:"current_bytes"`
-	TemporaryBytes        int64  `json:"temporary_bytes"`
-	LastCleanupAt         int64  `json:"last_cleanup_at"`
-	LastCleanupCutoff     int64  `json:"last_cleanup_cutoff"`
-	LastDeletedCount      int64  `json:"last_deleted_count"`
-	LastFreedBytes        int64  `json:"last_freed_bytes"`
-	LastCleanupStatus     string `json:"last_cleanup_status"`
-	NextCleanupEligibleAt int64  `json:"next_cleanup_eligible_at"`
-	LastTempCleanupAt     int64  `json:"last_temp_cleanup_at"`
-	LastTempDeletedCount  int64  `json:"last_temp_deleted_count"`
-	LastTempFreedBytes    int64  `json:"last_temp_freed_bytes"`
-}
-
-func enforceDiagnosticCaptureStorage(cfg DiagnosticCaptureConfig, activePath string, previousSize, currentSize int64) {
-	recordDiagnosticCaptureStorageChange(cfg, activePath, currentSize-previousSize)
-}
-
-// recordDiagnosticCaptureTempStorageDeletion updates an initialized counter
-// after the asynchronous temp janitor removes files. When initialization has
-// not completed, the upcoming startup scan already sees the post-cleanup size.
-func recordDiagnosticCaptureTempStorageDeletion(cfg DiagnosticCaptureConfig, freedBytes int64) {
-	if freedBytes <= 0 {
-		return
-	}
-	diagnosticCaptureStorageState.Lock()
-	defer diagnosticCaptureStorageState.Unlock()
-	if !diagnosticCaptureStorageState.initialized ||
-		diagnosticCaptureStorageState.captureDir != cfg.CaptureDir ||
-		diagnosticCaptureStorageState.tempDir != cfg.TempDir ||
-		diagnosticCaptureStorageState.failureDir != cfg.FailureDir {
-		return
-	}
-	diagnosticCaptureStorageState.totalBytes -= freedBytes
-	diagnosticCaptureStorageState.generation++
-	if diagnosticCaptureStorageState.totalBytes < 0 {
-		diagnosticCaptureStorageState.totalBytes = 0
-	}
-	diagnosticCaptureStorageState.tempBytes -= freedBytes
-	if diagnosticCaptureStorageState.tempBytes < 0 {
-		diagnosticCaptureStorageState.tempBytes = 0
-	}
-}
-
-func recordDiagnosticCaptureTempBytesChange(cfg DiagnosticCaptureConfig, delta int64) {
-	if delta == 0 {
-		return
-	}
-	diagnosticCaptureStorageState.Lock()
-	defer diagnosticCaptureStorageState.Unlock()
-	if !diagnosticCaptureStorageState.initialized ||
-		diagnosticCaptureStorageState.captureDir != cfg.CaptureDir ||
-		diagnosticCaptureStorageState.tempDir != cfg.TempDir ||
-		diagnosticCaptureStorageState.failureDir != cfg.FailureDir {
-		return
-	}
-	diagnosticCaptureStorageState.tempBytes += delta
-	diagnosticCaptureStorageState.generation++
-	if diagnosticCaptureStorageState.tempBytes < 0 {
-		diagnosticCaptureStorageState.tempBytes = 0
-	}
-}
-
-func cleanupDiagnosticCaptureStorageIfNeeded(cfg DiagnosticCaptureConfig) {
-	if !cfg.AutoCleanupEnabled || cfg.MaxStorageBytes <= 0 {
-		return
-	}
-	recordDiagnosticCaptureStorageChange(cfg, "", 0)
+	UsageRestored             bool   `json:"usage_restored"`
+	UsageScanPending          bool   `json:"usage_scan_pending"`
+	UsageSaveFailed           bool   `json:"usage_save_failed"`
+	UsageScanFailed           bool   `json:"usage_scan_failed"`
+	UsageLastSavedAt          int64  `json:"usage_last_saved_at"`
+	UsageLastReconciledAt     int64  `json:"usage_last_reconciled_at"`
+	UsageNextReconciliationAt int64  `json:"usage_next_reconciliation_at"`
+	UsageInitialized          bool   `json:"usage_initialized"`
+	UsageEstimated            bool   `json:"usage_estimated"`
+	UsageScanning             bool   `json:"usage_scanning"`
+	StorageRoot               string `json:"storage_root"`
+	CaptureDir                string `json:"capture_dir"`
+	TemporaryDir              string `json:"temporary_dir"`
+	CurrentBytes              int64  `json:"current_bytes"`
+	TemporaryBytes            int64  `json:"temporary_bytes"`
+	LastCleanupAt             int64  `json:"last_cleanup_at"`
+	LastCleanupCutoff         int64  `json:"last_cleanup_cutoff"`
+	LastDeletedCount          int64  `json:"last_deleted_count"`
+	LastFreedBytes            int64  `json:"last_freed_bytes"`
+	LastCleanupStatus         string `json:"last_cleanup_status"`
+	NextCleanupEligibleAt     int64  `json:"next_cleanup_eligible_at"`
+	LastTempCleanupAt         int64  `json:"last_temp_cleanup_at"`
+	LastTempDeletedCount      int64  `json:"last_temp_deleted_count"`
+	LastTempFreedBytes        int64  `json:"last_temp_freed_bytes"`
 }
 
 // NotifyDiagnosticCaptureCleanupSettingsChanged invalidates a previously
@@ -1182,114 +1162,33 @@ func NotifyDiagnosticCaptureCleanupSettingsChanged() {
 	}()
 }
 
+// Refresh only schedules background restore/scanning; never perform I/O on a writer.
 func refreshDiagnosticCaptureStorageState(cfg DiagnosticCaptureConfig) {
-	// The counter is maintained from capture writes and deletes. A full scan is
-	// only needed after startup or a directory change; doing it every cleanup
-	// interval would contend with active capture workers on large stores.
-	diagnosticCaptureStorageState.Lock()
-	needsScan := !diagnosticCaptureStorageState.initialized ||
-		diagnosticCaptureStorageState.captureDir != cfg.CaptureDir ||
-		diagnosticCaptureStorageState.tempDir != cfg.TempDir ||
-		diagnosticCaptureStorageState.failureDir != cfg.FailureDir
-	diagnosticCaptureStorageState.Unlock()
-	if !needsScan {
-		return
-	}
-
-	totalBytes, tempBytes, err := scanDiagnosticCaptureTotalBytes(cfg)
-	if err != nil {
-		logDiagnosticCaptureMaintenanceError(diagnosticCaptureMaintenanceScanError, "failed to scan diagnostic capture storage: "+err.Error())
-		return
-	}
-
-	diagnosticCaptureStorageState.Lock()
-	diagnosticCaptureStorageState.captureDir = cfg.CaptureDir
-	diagnosticCaptureStorageState.tempDir = cfg.TempDir
-	diagnosticCaptureStorageState.failureDir = cfg.FailureDir
-	diagnosticCaptureStorageState.totalBytes = totalBytes
-	diagnosticCaptureStorageState.tempBytes = tempBytes
-	diagnosticCaptureStorageState.initialized = true
-	if cfg.NextCleanupEligibleAt > time.Now().Unix() {
-		diagnosticCaptureStorageState.nextEligibleAt = time.Unix(cfg.NextCleanupEligibleAt, 0)
-	} else {
-		diagnosticCaptureStorageState.nextEligibleAt = time.Time{}
-	}
-	diagnosticCaptureStorageState.lastReconciled = time.Now()
-	diagnosticCaptureStorageState.Unlock()
+	configureDiagnosticCaptureStorage(cfg)
+	wakeDiagnosticCaptureUsage()
 }
 
-// reconcileDiagnosticCaptureStorage refreshes accounting from disk once per
-// day. It only publishes the scan when no capture mutation occurred while the
-// filesystem was being traversed, so concurrent relay traffic cannot lose an
-// in-memory accounting update.
 func reconcileDiagnosticCaptureStorage() {
-	cfg := DiagnosticCaptureConfigFromOptions()
-	diagnosticCaptureStorageState.Lock()
-	if !diagnosticCaptureStorageState.initialized ||
-		diagnosticCaptureStorageState.captureDir != cfg.CaptureDir ||
-		diagnosticCaptureStorageState.tempDir != cfg.TempDir ||
-		diagnosticCaptureStorageState.failureDir != cfg.FailureDir {
-		diagnosticCaptureStorageState.Unlock()
-		refreshDiagnosticCaptureStorageState(cfg)
-		return
-	}
-	generation := diagnosticCaptureStorageState.generation
-	diagnosticCaptureStorageState.Unlock()
-
-	totalBytes, tempBytes, err := scanDiagnosticCaptureTotalBytes(cfg)
-	if err != nil {
-		logDiagnosticCaptureMaintenanceError(diagnosticCaptureMaintenanceReconcileError, "failed to reconcile diagnostic capture storage: "+err.Error())
-		return
-	}
-
-	diagnosticCaptureStorageState.Lock()
-	defer diagnosticCaptureStorageState.Unlock()
-	if diagnosticCaptureStorageState.captureDir != cfg.CaptureDir ||
-		diagnosticCaptureStorageState.tempDir != cfg.TempDir ||
-		diagnosticCaptureStorageState.failureDir != cfg.FailureDir ||
-		diagnosticCaptureStorageState.generation != generation {
-		return
-	}
-	diagnosticCaptureStorageState.totalBytes = totalBytes
-	diagnosticCaptureStorageState.tempBytes = tempBytes
-	diagnosticCaptureStorageState.lastReconciled = time.Now()
+	diagnosticCaptureScanRequested.Store(true)
+	wakeDiagnosticCaptureUsage()
 }
 
-func recordDiagnosticCaptureStorageChange(cfg DiagnosticCaptureConfig, activePath string, delta int64) {
-	if !cfg.AutoCleanupEnabled || cfg.MaxStorageBytes <= 0 {
-		diagnosticCaptureStorageState.Lock()
-		if diagnosticCaptureStorageState.initialized &&
-			diagnosticCaptureStorageState.captureDir == cfg.CaptureDir &&
-			diagnosticCaptureStorageState.tempDir == cfg.TempDir &&
-			diagnosticCaptureStorageState.failureDir == cfg.FailureDir {
-			diagnosticCaptureStorageState.totalBytes += delta
-			if diagnosticCaptureStorageState.totalBytes < 0 {
-				diagnosticCaptureStorageState.totalBytes = 0
-			}
-		}
-		diagnosticCaptureStorageState.Unlock()
-		return
-	}
-
+func cleanupDiagnosticCaptureStorageIfNeeded(cfg DiagnosticCaptureConfig) {
 	diagnosticCaptureStorageState.Lock()
-	now := time.Now()
-	if !diagnosticCaptureStorageState.initialized ||
-		diagnosticCaptureStorageState.captureDir != cfg.CaptureDir ||
-		diagnosticCaptureStorageState.tempDir != cfg.TempDir ||
-		diagnosticCaptureStorageState.failureDir != cfg.FailureDir {
+	if diagnosticCaptureStorageState.captureDir != cfg.CaptureDir || diagnosticCaptureStorageState.tempDir != cfg.TempDir || diagnosticCaptureStorageState.failureDir != cfg.FailureDir {
 		diagnosticCaptureStorageState.Unlock()
-		refreshDiagnosticCaptureStorageState(cfg)
-		// Every caller records a filesystem mutation after it has completed.
-		// The initialization scan above already includes that mutation, so
-		// applying delta again would double-count the first write or delete.
+		return // an older in-flight session must not reset a new directory's counters
+	}
+	if !diagnosticCaptureStorageState.initialized {
+		diagnosticCaptureStorageState.Unlock()
 		return
 	}
-	diagnosticCaptureStorageState.totalBytes += delta
-	diagnosticCaptureStorageState.generation++
 	if diagnosticCaptureStorageState.totalBytes < 0 {
 		diagnosticCaptureStorageState.totalBytes = 0
 	}
-	if diagnosticCaptureStorageState.totalBytes < cfg.MaxStorageBytes ||
+	now := time.Now()
+	if !cfg.AutoCleanupEnabled || cfg.MaxStorageBytes <= 0 ||
+		diagnosticCaptureStorageState.totalBytes-diagnosticCaptureStorageState.uncertaintyBytes < cfg.MaxStorageBytes ||
 		time.Since(diagnosticCaptureStorageState.lastAttempt) < time.Minute {
 		diagnosticCaptureStorageState.Unlock()
 		return
@@ -1299,29 +1198,32 @@ func recordDiagnosticCaptureStorageChange(cfg DiagnosticCaptureConfig, activePat
 		return
 	}
 	diagnosticCaptureStorageState.lastAttempt = now
-	totalBytes := diagnosticCaptureStorageState.totalBytes
+	totalBytes := max(0, diagnosticCaptureStorageState.totalBytes-diagnosticCaptureStorageState.uncertaintyBytes)
 	diagnosticCaptureStorageState.Unlock()
-	go cleanupDiagnosticCaptureStorage(cfg, filepath.Clean(activePath), totalBytes, now)
+	go cleanupDiagnosticCaptureStorage(cfg, "", totalBytes, now)
 }
 
 // cleanupDiagnosticCaptureStorage runs independently of body spooling. A
 // rate-limited cleanup may take hours; blocking the capture worker here would
 // turn a disk-maintenance delay into an unbounded pending-event backlog.
 func cleanupDiagnosticCaptureStorage(cfg DiagnosticCaptureConfig, activePath string, totalBytes int64, now time.Time) {
-	// A single cleanup owns the deletion rate. Later triggers are satisfied by
-	// the running pass or the next periodic check instead of queueing workers.
-	if !diagnosticCaptureCleanupMu.TryLock() {
+	if diagnosticCaptureUsageStopping.Load() {
 		return
 	}
-	defer diagnosticCaptureCleanupMu.Unlock()
+	// A single cleanup owns the deletion rate. Later triggers are satisfied by
+	// the running pass or the next periodic check instead of queueing workers.
+	if !diagnosticCaptureCleanupRunning.CompareAndSwap(false, true) {
+		return
+	}
+	defer diagnosticCaptureCleanupRunning.Store(false)
+	if diagnosticCaptureUsageStopping.Load() {
+		return
+	}
 
-	tempFreedBytes := int64(0)
 	if cfg.TempDir != "" {
 		cutoff := now.Add(-time.Duration(cfg.TempRetentionMinutes) * time.Minute)
-		deletedCount, freedBytes := cleanupDiagnosticCaptureTempFilesAtRate(cfg.TempDir, cutoff, cfg.CleanupRateBytesPerSecond)
+		deletedCount, freedBytes := cleanupDiagnosticCaptureTempFilesAtRate(cfg, cutoff, cfg.CleanupRateBytesPerSecond)
 		recordDiagnosticCaptureTempCleanup(deletedCount, freedBytes)
-		recordDiagnosticCaptureTempBytesChange(cfg, -freedBytes)
-		tempFreedBytes = freedBytes
 		totalBytes -= freedBytes
 		if totalBytes < 0 {
 			totalBytes = 0
@@ -1336,7 +1238,7 @@ func cleanupDiagnosticCaptureStorage(cfg DiagnosticCaptureConfig, activePath str
 	if cfg.IncompleteTimeoutMinutes > 0 {
 		incompleteCutoff = now.Add(-time.Duration(cfg.IncompleteTimeoutMinutes) * time.Minute)
 	}
-	remainingBytes, deletedCount, freedBytes, lastDeletedAt := cleanupDiagnosticCaptureStorageByDate(
+	_, deletedCount, freedBytes, lastDeletedAt := cleanupDiagnosticCaptureStorageByDate(
 		totalBytes,
 		cfg,
 		activePath,
@@ -1345,19 +1247,12 @@ func cleanupDiagnosticCaptureStorage(cfg DiagnosticCaptureConfig, activePath str
 		incompleteCutoff,
 	)
 	diagnosticCaptureStorageState.Lock()
-	// Concurrent capture workers may have appended bytes while cleanup ran.
-	// Deduct only what this cleanup actually removed from their latest total.
+	// Individual deletions already updated the live counters, including any
+	// concurrent writes or reconciliation that finished during this cleanup.
 	sameConfig := diagnosticCaptureStorageState.initialized &&
 		diagnosticCaptureStorageState.captureDir == cfg.CaptureDir &&
 		diagnosticCaptureStorageState.tempDir == cfg.TempDir &&
 		diagnosticCaptureStorageState.failureDir == cfg.FailureDir
-	if sameConfig {
-		diagnosticCaptureStorageState.totalBytes -= (totalBytes - remainingBytes) + tempFreedBytes
-		diagnosticCaptureStorageState.generation++
-		if diagnosticCaptureStorageState.totalBytes < 0 {
-			diagnosticCaptureStorageState.totalBytes = 0
-		}
-	}
 	currentBytes := diagnosticCaptureStorageState.totalBytes
 	diagnosticCaptureStorageState.Unlock()
 	if !sameConfig {
@@ -1445,6 +1340,8 @@ func cleanupDiagnosticCaptureStorageByDate(totalBytes int64, cfg DiagnosticCaptu
 }
 
 func cleanupDiagnosticCaptureStorageByRoots(totalBytes int64, cfg DiagnosticCaptureConfig, activePath string, targetBytes int64, cutoff, incompleteCutoff time.Time, roots []string) (int64, int64, int64, int64) {
+	batch := &diagnosticCaptureMaintenanceBatch{}
+	defer batch.release()
 	days := make([]diagnosticCaptureDayDir, 0)
 	for _, root := range roots {
 		if strings.TrimSpace(root) == "" {
@@ -1481,20 +1378,30 @@ func cleanupDiagnosticCaptureStorageByRoots(totalBytes int64, cfg DiagnosticCapt
 			dayIndex++
 		}
 		for totalBytes > targetBytes {
-			candidates := diagnosticCaptureOldestCandidates(dateDays, activePath, cutoff, incompleteCutoff)
+			candidates := diagnosticCaptureOldestCandidates(dateDays, activePath, cutoff, incompleteCutoff, batch)
 			if len(candidates) == 0 {
 				break
 			}
+			removedAny := false
 			for _, candidate := range candidates {
+				diagnosticCaptureStorageState.Lock()
+				if diagnosticCaptureStorageState.initialized && diagnosticCaptureStorageState.captureDir == cfg.CaptureDir && diagnosticCaptureStorageState.tempDir == cfg.TempDir && diagnosticCaptureStorageState.failureDir == cfg.FailureDir {
+					totalBytes = diagnosticCaptureStorageState.totalBytes
+				}
+				diagnosticCaptureStorageState.Unlock()
 				if totalBytes <= targetBytes {
 					break
 				}
-				actualSize, sizeErr := diagnosticCaptureDirectorySize(candidate.dir)
-				if sizeErr != nil || actualSize == 0 {
-					continue
+				if diagnosticCaptureUsageStopping.Load() {
+					return totalBytes, deletedCount, freedBytes, lastDeletedAt
 				}
-				if err := os.RemoveAll(candidate.dir); err != nil {
-					logDiagnosticCaptureMaintenanceError(diagnosticCaptureMaintenanceDeleteError, "failed to delete diagnostic capture: "+err.Error())
+				actualSize, removed, removeErr := removeEligibleDiagnosticCapture(cfg, candidate, cutoff, incompleteCutoff, batch)
+				if removeErr != nil {
+					logDiagnosticCaptureMaintenanceError(diagnosticCaptureMaintenanceDeleteError, "failed to delete diagnostic capture: "+removeErr.Error())
+				} else if removed {
+					removedAny = true
+				}
+				if actualSize == 0 {
 					continue
 				}
 				totalBytes -= actualSize
@@ -1502,15 +1409,17 @@ func cleanupDiagnosticCaptureStorageByRoots(totalBytes int64, cfg DiagnosticCapt
 					totalBytes = 0
 				}
 				freedBytes += actualSize
-				deletedCount++
-				lastDeletedAt = candidate.capturedAt.Unix()
+				if removeErr == nil {
+					deletedCount++
+					lastDeletedAt = candidate.capturedAt.Unix()
+				}
 				batchCount++
 				batchFreedBytes += actualSize
 				if cfg.CleanupRateBytesPerSecond > 0 || batchCount >= diagnosticCaptureCleanupBatchSize {
 					if cfg.CleanupRateBytesPerSecond > 0 {
 						expected := diagnosticCaptureRateDuration(batchFreedBytes, cfg.CleanupRateBytesPerSecond)
 						if remaining := expected - time.Since(batchStartedAt); remaining > 0 {
-							time.Sleep(remaining)
+							batch.pause(remaining)
 						}
 					}
 					batchCount = 0
@@ -1519,7 +1428,9 @@ func cleanupDiagnosticCaptureStorageByRoots(totalBytes int64, cfg DiagnosticCapt
 					runtime.Gosched()
 				}
 			}
-			if len(candidates) < diagnosticCaptureCleanupSelectSize {
+			// Failed records retain their markers for a later retry. Do not
+			// select the same full batch forever if none could be removed.
+			if !removedAny || len(candidates) < diagnosticCaptureCleanupSelectSize {
 				break
 			}
 		}
@@ -1530,13 +1441,13 @@ func cleanupDiagnosticCaptureStorageByRoots(totalBytes int64, cfg DiagnosticCapt
 	if batchCount > 0 && cfg.CleanupRateBytesPerSecond > 0 {
 		expected := diagnosticCaptureRateDuration(batchFreedBytes, cfg.CleanupRateBytesPerSecond)
 		if remaining := expected - time.Since(batchStartedAt); remaining > 0 {
-			time.Sleep(remaining)
+			batch.pause(remaining)
 		}
 	}
 	return totalBytes, deletedCount, freedBytes, lastDeletedAt
 }
 
-func diagnosticCaptureOldestCandidates(days []diagnosticCaptureDayDir, activePath string, cutoff, incompleteCutoff time.Time) []diagnosticCaptureCandidate {
+func diagnosticCaptureOldestCandidates(days []diagnosticCaptureDayDir, activePath string, cutoff, incompleteCutoff time.Time, batch *diagnosticCaptureMaintenanceBatch) []diagnosticCaptureCandidate {
 	candidates := make(diagnosticCaptureCandidateHeap, 0, diagnosticCaptureCleanupSelectSize)
 	for _, day := range days {
 		dir, err := os.Open(day.path)
@@ -1546,6 +1457,10 @@ func diagnosticCaptureOldestCandidates(days []diagnosticCaptureDayDir, activePat
 		for {
 			entries, readErr := dir.ReadDir(diagnosticCaptureDirectoryReadSize)
 			for _, entry := range entries {
+				if err := batch.step(); err != nil {
+					_ = dir.Close()
+					return nil
+				}
 				if !entry.IsDir() {
 					continue
 				}
@@ -1834,19 +1749,21 @@ func diagnosticCaptureCreatedAt(dir string) (time.Time, bool) {
 
 func GetDiagnosticCaptureStorageStatus() (DiagnosticCaptureStorageStatus, error) {
 	cfg := DiagnosticCaptureConfigFromOptions()
-	storageRoot, err := resolveDiagnosticCaptureDirectory(".")
+	storageRoot, err := filepath.Abs(".")
 	if err != nil {
 		return DiagnosticCaptureStorageStatus{}, err
 	}
-	captureDir, err := resolveDiagnosticCaptureDirectory(cfg.CaptureDir)
+	captureDir, err := filepath.Abs(cfg.CaptureDir)
 	if err != nil {
 		return DiagnosticCaptureStorageStatus{}, err
 	}
-	temporaryDir, err := resolveDiagnosticCaptureDirectory(cfg.TempDir)
+	temporaryDir, err := filepath.Abs(cfg.TempDir)
 	if err != nil {
 		return DiagnosticCaptureStorageStatus{}, err
 	}
 	var currentBytes, temporaryBytes int64
+	var initialized, estimated bool
+	var usageState diagnosticCaptureUsageCounters
 	diagnosticCaptureStorageState.Lock()
 	if diagnosticCaptureStorageState.initialized &&
 		diagnosticCaptureStorageState.captureDir == cfg.CaptureDir &&
@@ -1854,8 +1771,23 @@ func GetDiagnosticCaptureStorageStatus() (DiagnosticCaptureStorageStatus, error)
 		diagnosticCaptureStorageState.failureDir == cfg.FailureDir {
 		currentBytes = diagnosticCaptureStorageState.totalBytes
 		temporaryBytes = diagnosticCaptureStorageState.tempBytes
+		initialized = true
+		estimated = diagnosticCaptureStorageState.estimated
+		usageState = diagnosticCaptureStorageState.diagnosticCaptureUsageCounters
 	}
+	usageState.lastSaveError = diagnosticCaptureStorageState.lastSaveError
+	usageState.lastScanError = diagnosticCaptureStorageState.lastScanError
 	diagnosticCaptureStorageState.Unlock()
+	var savedAt, reconciledAt, nextAt int64
+	if !usageState.lastSaved.IsZero() {
+		savedAt = usageState.lastSaved.Unix()
+	}
+	if !usageState.lastReconciled.IsZero() {
+		reconciledAt = usageState.lastReconciled.Unix()
+	}
+	if cfg.ReconciliationEnabled {
+		nextAt = nextDiagnosticCaptureReconciliation(time.Now().In(time.FixedZone("CST", 8*60*60)), cfg).Unix()
+	}
 	common.OptionMapRWMutex.RLock()
 	defer common.OptionMapRWMutex.RUnlock()
 	lastCleanupStatus := common.OptionMap[DiagnosticCaptureLastCleanupStatusKey]
@@ -1866,20 +1798,30 @@ func GetDiagnosticCaptureStorageStatus() (DiagnosticCaptureStorageStatus, error)
 		lastCleanupStatus = ""
 	}
 	return DiagnosticCaptureStorageStatus{
-		StorageRoot:           storageRoot,
-		CaptureDir:            captureDir,
-		TemporaryDir:          temporaryDir,
-		CurrentBytes:          currentBytes,
-		TemporaryBytes:        temporaryBytes,
-		LastCleanupAt:         diagnosticCaptureOptionInt64(DiagnosticCaptureLastCleanupAtKey),
-		LastCleanupCutoff:     diagnosticCaptureOptionInt64(DiagnosticCaptureLastCleanupCutoffKey),
-		LastDeletedCount:      diagnosticCaptureOptionInt64(DiagnosticCaptureLastCleanupDeletedCountKey),
-		LastFreedBytes:        diagnosticCaptureOptionInt64(DiagnosticCaptureLastCleanupFreedBytesKey),
-		LastCleanupStatus:     lastCleanupStatus,
-		NextCleanupEligibleAt: diagnosticCaptureOptionInt64(DiagnosticCaptureNextCleanupEligibleAtKey),
-		LastTempCleanupAt:     diagnosticCaptureOptionInt64(DiagnosticCaptureLastTempCleanupAtKey),
-		LastTempDeletedCount:  diagnosticCaptureOptionInt64(DiagnosticCaptureLastTempDeletedCountKey),
-		LastTempFreedBytes:    diagnosticCaptureOptionInt64(DiagnosticCaptureLastTempFreedBytesKey),
+		UsageRestored:             usageState.restored,
+		UsageScanPending:          diagnosticCaptureScanRequested.Load(),
+		UsageSaveFailed:           usageState.lastSaveError,
+		UsageScanFailed:           usageState.lastScanError,
+		UsageLastSavedAt:          savedAt,
+		UsageLastReconciledAt:     reconciledAt,
+		UsageNextReconciliationAt: nextAt,
+		UsageInitialized:          initialized,
+		UsageEstimated:            estimated,
+		UsageScanning:             diagnosticCaptureScanRunning.Load(),
+		StorageRoot:               storageRoot,
+		CaptureDir:                captureDir,
+		TemporaryDir:              temporaryDir,
+		CurrentBytes:              currentBytes,
+		TemporaryBytes:            temporaryBytes,
+		LastCleanupAt:             diagnosticCaptureOptionInt64(DiagnosticCaptureLastCleanupAtKey),
+		LastCleanupCutoff:         diagnosticCaptureOptionInt64(DiagnosticCaptureLastCleanupCutoffKey),
+		LastDeletedCount:          diagnosticCaptureOptionInt64(DiagnosticCaptureLastCleanupDeletedCountKey),
+		LastFreedBytes:            diagnosticCaptureOptionInt64(DiagnosticCaptureLastCleanupFreedBytesKey),
+		LastCleanupStatus:         lastCleanupStatus,
+		NextCleanupEligibleAt:     diagnosticCaptureOptionInt64(DiagnosticCaptureNextCleanupEligibleAtKey),
+		LastTempCleanupAt:         diagnosticCaptureOptionInt64(DiagnosticCaptureLastTempCleanupAtKey),
+		LastTempDeletedCount:      diagnosticCaptureOptionInt64(DiagnosticCaptureLastTempDeletedCountKey),
+		LastTempFreedBytes:        diagnosticCaptureOptionInt64(DiagnosticCaptureLastTempFreedBytesKey),
 	}, nil
 }
 

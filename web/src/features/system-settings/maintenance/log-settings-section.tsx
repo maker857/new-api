@@ -87,6 +87,12 @@ import { SettingsSection } from "../components/settings-section";
 import { useUpdateOption } from "../hooks/use-update-option";
 import type { LogCleanupTask } from "../types";
 
+import {
+  DiagnosticUsageStatus,
+  DiagnosticUsageValue,
+  type DiagnosticUsageInfo,
+} from "./diagnostic-usage-status";
+
 const logSettingsSchema = z
   .object({
     LogConsumeEnabled: z.boolean(),
@@ -253,7 +259,7 @@ type ServerLogInfo = {
   newest_time?: string;
 };
 
-type DiagnosticCaptureStorageInfo = {
+type DiagnosticCaptureStorageInfo = DiagnosticUsageInfo & {
   storage_root: string;
   capture_dir: string;
   temporary_dir: string;
@@ -673,14 +679,19 @@ export function LogSettingsSection({
   const [diagnosticStorageInfo, setDiagnosticStorageInfo] =
     useState<DiagnosticCaptureStorageInfo | null>(null);
 
+  const [diagnosticStorageUnavailable, setDiagnosticStorageUnavailable] =
+    useState(false);
   const fetchDiagnosticStorageInfo = useCallback(async () => {
     try {
       const res = await api.get("/api/performance/diagnostic-capture-storage");
       if (res.data?.success) {
         setDiagnosticStorageInfo(res.data.data);
+        setDiagnosticStorageUnavailable(false);
+      } else {
+        setDiagnosticStorageUnavailable(true);
       }
     } catch {
-      setDiagnosticStorageInfo(null);
+      setDiagnosticStorageUnavailable(true);
     }
   }, []);
 
@@ -1876,6 +1887,10 @@ export function LogSettingsSection({
                   </div>
                 </div>
 
+                <DiagnosticUsageStatus
+                  info={diagnosticStorageInfo}
+                  unavailable={diagnosticStorageUnavailable}
+                />
                 {diagnosticStorageInfo && (
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="bg-background space-y-3 rounded-xl border p-4 text-sm">
@@ -1887,7 +1902,11 @@ export function LogSettingsSection({
                           <span className="text-muted-foreground">
                             {t("Current usage")}:
                           </span>{" "}
-                          {formatBytes(diagnosticStorageInfo.current_bytes)}
+                          <DiagnosticUsageValue
+                            initialized={diagnosticStorageInfo.usage_initialized}
+                            estimated={diagnosticStorageInfo.usage_estimated}
+                            value={formatBytes(diagnosticStorageInfo.current_bytes)}
+                          />
                         </div>
                         <div>
                           <span className="text-muted-foreground">
@@ -1938,7 +1957,11 @@ export function LogSettingsSection({
                           <span className="text-muted-foreground">
                             {t("Temporary usage")}:
                           </span>{" "}
-                          {formatBytes(diagnosticStorageInfo.temporary_bytes)}
+                          <DiagnosticUsageValue
+                            initialized={diagnosticStorageInfo.usage_initialized}
+                            estimated={diagnosticStorageInfo.usage_estimated}
+                            value={formatBytes(diagnosticStorageInfo.temporary_bytes)}
+                          />
                         </div>
                         <div>
                           <span className="text-muted-foreground">

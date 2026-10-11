@@ -34,6 +34,9 @@ const (
 	diagnosticCaptureRetryWindow          = time.Hour
 )
 
+// Counts active writers for shutdown only; it is not an admission limit.
+var diagnosticCaptureSessionCount atomic.Int64
+
 type diagnosticCaptureEventKind uint8
 
 const (
@@ -58,23 +61,24 @@ type diagnosticCaptureEvent struct {
 }
 
 type diagnosticCaptureSession struct {
-	cfg           DiagnosticCaptureConfig
-	events        chan diagnosticCaptureEvent
-	pendingMu     sync.Mutex
-	pending       []diagnosticCaptureEvent
-	pendingHead   int
-	pendingClosed bool
-	pendingWake   chan struct{}
-	producers     sync.WaitGroup
-	failed        atomic.Bool
-	discard       atomic.Bool
-	stateMu       sync.RWMutex
-	closed        bool
-	closing       bool
-	failCause     string
-	finalFlow     DiagnosticFlow
-	activeTraceID string
-	spoolDir      string
+	cfg                DiagnosticCaptureConfig
+	events             chan diagnosticCaptureEvent
+	pendingMu          sync.Mutex
+	pending            []diagnosticCaptureEvent
+	pendingHead        int
+	pendingClosed      bool
+	pendingWake        chan struct{}
+	trackedForShutdown bool
+	producers          sync.WaitGroup
+	failed             atomic.Bool
+	discard            atomic.Bool
+	stateMu            sync.RWMutex
+	closed             bool
+	closing            bool
+	failCause          string
+	finalFlow          DiagnosticFlow
+	activeTraceID      string
+	spoolDir           string
 }
 
 var diagnosticCaptureFinalizeState = struct {
@@ -177,14 +181,16 @@ type diagnosticNDJSONCaptureStream struct {
 }
 
 func newDiagnosticCaptureSession(cfg DiagnosticCaptureConfig, flow *DiagnosticFlow) *diagnosticCaptureSession {
-	if flow == nil {
+	if flow == nil || diagnosticCaptureUsageStopping.Load() {
 		return nil
 	}
+	diagnosticCaptureSessionCount.Add(1)
 	session := &diagnosticCaptureSession{
-		cfg:           cfg,
-		events:        make(chan diagnosticCaptureEvent, diagnosticCaptureEventBuffer),
-		pendingWake:   make(chan struct{}, 1),
-		activeTraceID: safeTraceID(flow.TraceID),
+		cfg:                cfg,
+		events:             make(chan diagnosticCaptureEvent, diagnosticCaptureEventBuffer),
+		pendingWake:        make(chan struct{}, 1),
+		activeTraceID:      safeTraceID(flow.TraceID),
+		trackedForShutdown: true,
 	}
 	tempRoot := cfg.TempDir
 	if tempRoot == "" {
@@ -357,6 +363,9 @@ func (s *diagnosticCaptureSession) cancel(flow *DiagnosticFlow) {
 }
 
 func (s *diagnosticCaptureSession) run() {
+	if s.trackedForShutdown {
+		defer diagnosticCaptureSessionCount.Add(-1)
+	}
 	defer markDiagnosticCaptureInactive(s.activeTraceID)
 	defer markDiagnosticTempFileInactive(s.spoolDir)
 	parts := make(map[string]*diagnosticCapturePartState)
@@ -399,14 +408,15 @@ func (s *diagnosticCaptureSession) run() {
 				state.tempPath = file.Name()
 				markDiagnosticTempFileActive(state.tempPath)
 			}
-			_, writeErr := state.file.Write(event.data)
+			change := beginDiagnosticCaptureFileChange(s.cfg, state.tempPath, state.savedSize)
+			n, writeErr := state.file.Write(event.data)
+			state.savedSize += int64(n)
+			change.finish(state.savedSize)
 			if writeErr != nil {
 				s.fail("failed to write diagnostic body spool: " + writeErr.Error())
 				continue
 			}
-			state.savedSize += int64(len(event.data))
-			enforceDiagnosticCaptureStorage(s.cfg, "", 0, int64(len(event.data)))
-			recordDiagnosticCaptureTempBytesChange(s.cfg, int64(len(event.data)))
+
 		case diagnosticCapturePartEnd:
 			state := parts[event.partID]
 			if state == nil {
@@ -469,11 +479,17 @@ func (s *diagnosticCaptureSession) run() {
 				binary.BigEndian.PutUint64(header[16:24], uint64(len(event.data)))
 				binary.BigEndian.PutUint64(header[24:32], uint64(segmentSize))
 				binary.BigEndian.PutUint64(header[32:40], flags)
-				_, headerErr := group.state.file.Write(header[:])
+				change := beginDiagnosticCaptureFileChange(s.cfg, group.state.file.Name(), group.fileSize)
+				headerN, headerErr := group.state.file.Write(header[:])
 				var payloadErr error
+				var payloadN int
 				if headerErr == nil {
-					_, payloadErr = group.state.file.Write(segment)
+					payloadN, payloadErr = group.state.file.Write(segment)
 				}
+				frameSize := int64(headerN + payloadN)
+				group.fileSize += frameSize
+				group.state.savedSize += frameSize
+				change.finish(group.fileSize)
 				if headerErr != nil {
 					s.fail("failed to write diagnostic websocket frame header: " + headerErr.Error())
 					break
@@ -482,12 +498,7 @@ func (s *diagnosticCaptureSession) run() {
 					s.fail("failed to write diagnostic websocket frame: " + payloadErr.Error())
 					break
 				}
-				frameSize := int64(diagnosticWebSocketFrameHeaderBytes + segmentSize)
-				group.fileSize += frameSize
-				group.state.savedSize += frameSize
 				group.state.originalSize += int64(segmentSize)
-				enforceDiagnosticCaptureStorage(s.cfg, "", 0, frameSize)
-				recordDiagnosticCaptureTempBytesChange(s.cfg, frameSize)
 				payload = payload[segmentSize:]
 				firstSegment = false
 			}
@@ -573,7 +584,9 @@ func (s *diagnosticCaptureSession) run() {
 		s.fail("failed to write diagnostic request-log.json: " + writeErr.Error())
 	}
 	if captureFailed || writeErr != nil {
+		s.stateMu.RLock()
 		cause := s.failCause
+		s.stateMu.RUnlock()
 		if cause == "" && writeErr != nil {
 			cause = writeErr.Error()
 		}
@@ -845,6 +858,9 @@ func nextDiagnosticCaptureReconciliation(now time.Time, cfg DiagnosticCaptureCon
 }
 
 func prepareDiagnosticCaptureTempDir(cfg DiagnosticCaptureConfig) {
+	if diagnosticCaptureUsageStopping.Load() {
+		return
+	}
 	tempDir := strings.TrimSpace(cfg.TempDir)
 	if tempDir == "" {
 		return
@@ -877,9 +893,11 @@ func prepareDiagnosticCaptureTempDir(cfg DiagnosticCaptureConfig) {
 			diagnosticCaptureTempJanitor.running[tempDir] = false
 			diagnosticCaptureTempJanitor.Unlock()
 		}()
-		deletedCount, freedBytes := cleanupDiagnosticCaptureTempFilesAtRate(tempDir, cutoff, cfg.CleanupRateBytesPerSecond)
+		if diagnosticCaptureUsageStopping.Load() {
+			return
+		}
+		deletedCount, freedBytes := cleanupDiagnosticCaptureTempFilesAtRate(cfg, cutoff, cfg.CleanupRateBytesPerSecond)
 		recordDiagnosticCaptureTempCleanup(deletedCount, freedBytes)
-		recordDiagnosticCaptureTempStorageDeletion(cfg, freedBytes)
 	}()
 }
 
@@ -887,6 +905,8 @@ func prepareDiagnosticCaptureTempDir(cfg DiagnosticCaptureConfig) {
 // the relay request path.
 func StartDiagnosticCaptureCleanup() {
 	diagnosticCaptureCleanupLoop.Do(func() {
+		configureDiagnosticCaptureStorage(DiagnosticCaptureConfigFromOptions())
+		go runDiagnosticCaptureUsageWorker()
 		go func() {
 			for {
 				cfg := DiagnosticCaptureConfigFromOptions()
@@ -899,11 +919,7 @@ func StartDiagnosticCaptureCleanup() {
 				select {
 				case <-timer.C:
 					reconcileDiagnosticCaptureStorage()
-					// Use the reconciled total immediately so the administrator's
-					// configured time controls both the disk check and the ensuing
-					// capacity-cleanup decision, rather than waiting for the next
-					// ten-minute housekeeping tick.
-					cleanupDiagnosticCaptureStorageIfNeeded(DiagnosticCaptureConfigFromOptions())
+					// The scan checks capacity after publishing its reconciled total.
 				case <-diagnosticCaptureReconciliationWakeup:
 					if !timer.Stop() {
 						select {
@@ -926,10 +942,13 @@ func StartDiagnosticCaptureCleanup() {
 }
 
 func runDiagnosticCaptureCleanup() {
+	if diagnosticCaptureUsageStopping.Load() {
+		return
+	}
 	cfg := DiagnosticCaptureConfigFromOptions()
 	prepareDiagnosticCaptureTempDir(cfg)
 	refreshDiagnosticCaptureStorageState(cfg)
-	retryDiagnosticCaptureFailures(cfg)
+	go retryDiagnosticCaptureFailures(cfg)
 	cleanupDiagnosticCaptureStorageIfNeeded(cfg)
 }
 
@@ -1054,20 +1073,7 @@ func persistDiagnosticCaptureFailure(cfg DiagnosticCaptureConfig, flow *Diagnost
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	previousSize, err := diagnosticCaptureDirectorySize(dir)
-	if err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	ensureDiagnosticCaptureTimestamp(dir)
-	movedBytes := int64(0)
-	defer func() {
-		currentSize, sizeErr := diagnosticCaptureDirectorySize(dir)
-		if sizeErr == nil {
-			// Renames move already-accounted temporary bytes into the failure
-			// directory. Only the failure metadata itself is a net addition.
-			enforceDiagnosticCaptureStorage(cfg, "", previousSize, currentSize-movedBytes)
-		}
-	}()
+	ensureDiagnosticCaptureTimestamp(cfg, dir)
 	record := diagnosticCaptureFailureRecord{
 		TraceID:        flow.TraceID,
 		Channel:        flow.Channel,
@@ -1107,7 +1113,7 @@ func persistDiagnosticCaptureFailure(cfg DiagnosticCaptureConfig, flow *Diagnost
 	// Persist the retry index before moving any source data. A crash or I/O
 	// error can then leave an incomplete failure directory, but never an
 	// unindexed collection of otherwise recoverable body fragments.
-	if err := writeDiagnosticCaptureFailureRecord(path, record); err != nil {
+	if err := writeDiagnosticCaptureFailureRecord(cfg, path, record); err != nil {
 		return err
 	}
 	recordPartIndex := 0
@@ -1130,17 +1136,13 @@ func persistDiagnosticCaptureFailure(cfg DiagnosticCaptureConfig, flow *Diagnost
 		state.tempPaths = make([]string, 0, len(paths))
 		for pathIndex, tempPath := range paths {
 			destination := filepath.Join(dir, part.FileNames[pathIndex])
-			if err := moveDiagnosticCaptureFragment(tempPath, destination); err != nil {
+			if err := moveDiagnosticCaptureFragment(cfg, tempPath, destination); err != nil {
 				return err
-			}
-			if info, err := os.Stat(destination); err == nil {
-				movedBytes += info.Size()
 			}
 			markDiagnosticTempFileInactive(tempPath)
 			state.tempPaths = append(state.tempPaths, destination)
 		}
 		state.tempPath = state.tempPaths[0]
-		recordDiagnosticCaptureTempBytesChange(cfg, -state.savedSize)
 	}
 	return nil
 }
@@ -1148,7 +1150,11 @@ func persistDiagnosticCaptureFailure(cfg DiagnosticCaptureConfig, flow *Diagnost
 // moveDiagnosticCaptureFragment keeps retry data available when the temporary
 // and failure directories are separate filesystem mounts. os.Rename is the
 // normal fast path; Docker volume mounts require copy-and-remove instead.
-func moveDiagnosticCaptureFragment(source, destination string) error {
+func moveDiagnosticCaptureFragment(cfg DiagnosticCaptureConfig, source, destination string) error {
+	sourceChange := trackDiagnosticCaptureFile(cfg, source)
+	destinationChange := trackDiagnosticCaptureFile(cfg, destination)
+	defer sourceChange.finishFromDisk()
+	defer destinationChange.finishFromDisk()
 	if err := os.Rename(source, destination); err == nil {
 		return nil
 	} else if !errors.Is(err, syscall.EXDEV) {
@@ -1170,15 +1176,18 @@ func moveDiagnosticCaptureFragment(source, destination string) error {
 		return err
 	}
 	temporaryPath := temporaryFile.Name()
-	defer os.Remove(temporaryPath)
-	if _, err = io.CopyBuffer(temporaryFile, sourceFile, make([]byte, diagnosticCaptureChunkSize)); err != nil {
+	defer removeDiagnosticCaptureFile(cfg, temporaryPath)
+	if _, err = io.CopyBuffer(&diagnosticCaptureTrackedWriter{file: temporaryFile, cfg: cfg}, sourceFile, make([]byte, diagnosticCaptureChunkSize)); err != nil {
 		_ = temporaryFile.Close()
 		return err
 	}
 	if err = temporaryFile.Close(); err != nil {
 		return err
 	}
-	if err = os.Rename(temporaryPath, destination); err != nil {
+	stagingChange := trackDiagnosticCaptureFile(cfg, temporaryPath)
+	err = os.Rename(temporaryPath, destination)
+	stagingChange.finishFromDisk()
+	if err != nil {
 		return err
 	}
 	return os.Remove(source)
@@ -1187,7 +1196,7 @@ func moveDiagnosticCaptureFragment(source, destination string) error {
 // writeDiagnosticCaptureFailureRecord protects the retry index independently
 // from the formal capture directory. Failure metadata is not synchronized as
 // a formal request log, so a same-directory temporary file is safe here.
-func writeDiagnosticCaptureFailureRecord(path string, record diagnosticCaptureFailureRecord) error {
+func writeDiagnosticCaptureFailureRecord(cfg DiagnosticCaptureConfig, path string, record diagnosticCaptureFailureRecord) error {
 	data, err := common.Marshal(record)
 	if err != nil {
 		return err
@@ -1197,31 +1206,24 @@ func writeDiagnosticCaptureFailureRecord(path string, record diagnosticCaptureFa
 		return err
 	}
 	tempPath := file.Name()
-	defer os.Remove(tempPath)
-	if _, err = file.Write(data); err != nil {
+	defer removeDiagnosticCaptureFile(cfg, tempPath)
+	if _, err = (&diagnosticCaptureTrackedWriter{file: file, cfg: cfg}).Write(data); err != nil {
 		_ = file.Close()
 		return err
 	}
 	if err = file.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tempPath, path)
+	sourceChange := trackDiagnosticCaptureFile(cfg, tempPath)
+	destinationChange := trackDiagnosticCaptureFile(cfg, path)
+	err = os.Rename(tempPath, path)
+	sourceChange.finishFromDisk()
+	destinationChange.finishFromDisk()
+	return err
 }
 
 func updateDiagnosticCaptureFailureRecord(cfg DiagnosticCaptureConfig, path string, record diagnosticCaptureFailureRecord) error {
-	previousSize := int64(0)
-	if info, err := os.Stat(path); err == nil {
-		previousSize = info.Size()
-	} else if !os.IsNotExist(err) {
-		return err
-	}
-	if err := writeDiagnosticCaptureFailureRecord(path, record); err != nil {
-		return err
-	}
-	if info, err := os.Stat(path); err == nil {
-		enforceDiagnosticCaptureStorage(cfg, "", previousSize, info.Size())
-	}
-	return nil
+	return writeDiagnosticCaptureFailureRecord(cfg, path, record)
 }
 
 // stopDiagnosticCaptureRetry preserves the terminal failure record but moves
@@ -1244,16 +1246,28 @@ func stopDiagnosticCaptureRetry(cfg DiagnosticCaptureConfig, path string, record
 	if strings.HasPrefix(name, ".abandoned-") {
 		return
 	}
-	if err := os.Rename(failureDir, filepath.Join(filepath.Dir(failureDir), ".abandoned-"+name)); err != nil {
+	if err := renameDiagnosticCaptureDirectory(cfg, failureDir, filepath.Join(filepath.Dir(failureDir), ".abandoned-"+name)); err != nil {
 		common.SysError("failed to archive stopped diagnostic capture retry: " + err.Error())
 	}
 }
 
 func retryDiagnosticCaptureFailures(cfg DiagnosticCaptureConfig) {
-	if cfg.FailureDir == "" {
+	if cfg.FailureDir == "" || diagnosticCaptureUsageStopping.Load() {
+		return
+	}
+	if !diagnosticCaptureRetryRunning.CompareAndSwap(false, true) {
+		return
+	}
+	defer diagnosticCaptureRetryRunning.Store(false)
+	batch := &diagnosticCaptureMaintenanceBatch{}
+	defer batch.release()
+	if diagnosticCaptureUsageStopping.Load() {
 		return
 	}
 	_ = filepath.WalkDir(cfg.FailureDir, func(path string, entry os.DirEntry, walkErr error) error {
+		if err := batch.step(); err != nil {
+			return err
+		}
 		if walkErr != nil {
 			return nil
 		}
@@ -1262,6 +1276,17 @@ func retryDiagnosticCaptureFailures(cfg DiagnosticCaptureConfig) {
 		}
 		if entry.IsDir() || entry.Name() != "capture-failure.json" {
 			return nil
+		}
+		batch.release()
+		// Claim before reading metadata and keep the claim through recovery or
+		// archival. Capacity cleanup cannot delete this record in between.
+		release := claimDiagnosticCaptureMaintenance(filepath.Base(filepath.Dir(path)))
+		if release == nil {
+			return filepath.SkipDir
+		}
+		defer release()
+		if isDiagnosticCaptureActive(filepath.Base(filepath.Dir(path))) {
+			return filepath.SkipDir
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -1290,6 +1315,9 @@ func retryDiagnosticCaptureFailures(cfg DiagnosticCaptureConfig) {
 		// A retry writes a formal record for an older request. Keep that request
 		// out of capacity cleanup until the retry either completes or records its
 		// updated failure state.
+		if isDiagnosticCaptureActive(record.TraceID) {
+			return nil
+		}
 		markDiagnosticCaptureActive(record.TraceID)
 		defer markDiagnosticCaptureInactive(record.TraceID)
 		flow := &DiagnosticFlow{
@@ -1343,7 +1371,6 @@ func retryDiagnosticCaptureFailures(cfg DiagnosticCaptureConfig) {
 			if len(fileNames) == 0 || len(fileNames) != len(tempFileNames) {
 				continue
 			}
-			movedAny := false
 			for pathIndex, fileName := range fileNames {
 				destination := filepath.Join(failureDir, filepath.Base(fileName))
 				if _, statErr := os.Stat(destination); statErr == nil {
@@ -1357,17 +1384,13 @@ func retryDiagnosticCaptureFailures(cfg DiagnosticCaptureConfig) {
 					stopDiagnosticCaptureRetry(cfg, path, &record, "capture retry stopped: retained body fragment is missing")
 					return filepath.SkipDir
 				}
-				if err := moveDiagnosticCaptureFragment(tempPath, destination); err != nil {
+				if err := moveDiagnosticCaptureFragment(cfg, tempPath, destination); err != nil {
 					markDiagnosticTempFileInactive(tempPath)
 					diagnosticCaptureTempCleanupMu.Unlock()
 					stopDiagnosticCaptureRetry(cfg, path, &record, "capture retry stopped: failed to restore retained body fragment: "+err.Error())
 					return filepath.SkipDir
 				}
 				markDiagnosticTempFileInactive(tempPath)
-				movedAny = true
-			}
-			if movedAny {
-				recordDiagnosticCaptureTempBytesChange(cfg, -parts[index].savedSize)
 			}
 		}
 		diagnosticCaptureTempCleanupMu.Unlock()
@@ -1409,11 +1432,8 @@ func retryDiagnosticCaptureFailures(cfg DiagnosticCaptureConfig) {
 			return nil
 		}
 		markDiagnosticCaptureComplete(cfg, flow)
-		if size, err := diagnosticCaptureDirectorySize(failureDir); err == nil {
-			if os.RemoveAll(failureDir) == nil {
-				enforceDiagnosticCaptureStorage(cfg, "", size, 0)
-				removeEmptyDiagnosticCaptureDirectories(cfg.FailureDir, filepath.Dir(failureDir))
-			}
+		if _, err := removeDiagnosticCaptureDirectory(cfg, failureDir, batch); err == nil {
+			removeEmptyDiagnosticCaptureDirectories(cfg.FailureDir, filepath.Dir(failureDir))
 		}
 		return filepath.SkipDir
 	})
@@ -1473,17 +1493,17 @@ func diagnosticCaptureFailureTempPartPath(cfg DiagnosticCaptureConfig, flow *Dia
 }
 
 func cleanupDiagnosticCaptureTempFiles(tempDir string, cutoff time.Time) (int64, int64) {
-	return cleanupDiagnosticCaptureTempFilesAtRate(tempDir, cutoff, 0)
+	return cleanupDiagnosticCaptureTempFilesAtRate(DiagnosticCaptureConfig{TempDir: tempDir}, cutoff, 0)
 }
 
-func cleanupDiagnosticCaptureTempFilesAtRate(tempDir string, cutoff time.Time, rateBytesPerSecond int64) (int64, int64) {
-	// Both the periodic janitor and capacity cleanup can request this scan.
-	// Let the active scan finish instead of traversing and deleting the same
-	// temporary tree concurrently.
-	if !diagnosticCaptureTempCleanupMu.TryLock() {
+func cleanupDiagnosticCaptureTempFilesAtRate(cfg DiagnosticCaptureConfig, cutoff time.Time, rateBytesPerSecond int64) (int64, int64) {
+	tempDir := cfg.TempDir
+	if !diagnosticCaptureTempCleanupRunning.CompareAndSwap(false, true) {
 		return 0, 0
 	}
-	defer diagnosticCaptureTempCleanupMu.Unlock()
+	defer diagnosticCaptureTempCleanupRunning.Store(false)
+	batch := &diagnosticCaptureMaintenanceBatch{}
+	defer batch.release()
 
 	var deletedCount int64
 	var freedBytes int64
@@ -1491,6 +1511,9 @@ func cleanupDiagnosticCaptureTempFilesAtRate(tempDir string, cutoff time.Time, r
 	batchStartedAt := time.Now()
 	directories := make([]string, 0)
 	_ = filepath.WalkDir(tempDir, func(path string, entry os.DirEntry, walkErr error) error {
+		if err := batch.step(); err != nil {
+			return err
+		}
 		if walkErr != nil {
 			return nil
 		}
@@ -1500,6 +1523,13 @@ func cleanupDiagnosticCaptureTempFilesAtRate(tempDir string, cutoff time.Time, r
 			}
 			return nil
 		}
+		diagnosticCaptureTempCleanupMu.Lock()
+		locked := true
+		defer func() {
+			if locked {
+				diagnosticCaptureTempCleanupMu.Unlock()
+			}
+		}()
 		// The request directory is marked active before any fragment is created.
 		// Checking it as well closes the race between CreateTemp and marking the
 		// individual file active while a concurrent cleanup walk is in progress.
@@ -1514,16 +1544,18 @@ func cleanupDiagnosticCaptureTempFilesAtRate(tempDir string, cutoff time.Time, r
 		if err != nil || !info.ModTime().Before(cutoff) {
 			return nil
 		}
-		if os.Remove(path) != nil {
+		if removeDiagnosticCaptureFile(cfg, path) != nil {
 			return nil
 		}
 		deletedCount++
 		freedBytes += info.Size()
 		batchFreedBytes += info.Size()
+		diagnosticCaptureTempCleanupMu.Unlock()
+		locked = false
 		if batchFreedBytes > 0 && rateBytesPerSecond > 0 {
 			expected := diagnosticCaptureRateDuration(batchFreedBytes, rateBytesPerSecond)
 			if remaining := expected - time.Since(batchStartedAt); remaining > 0 {
-				time.Sleep(remaining)
+				batch.pause(remaining)
 			}
 			batchFreedBytes = 0
 			batchStartedAt = time.Now()
@@ -1531,6 +1563,9 @@ func cleanupDiagnosticCaptureTempFilesAtRate(tempDir string, cutoff time.Time, r
 		return nil
 	})
 	for index := len(directories) - 1; index >= 0; index-- {
+		if err := batch.step(); err != nil {
+			break
+		}
 		if !hasDiagnosticActiveTempPathUnder(directories[index]) {
 			_ = os.Remove(directories[index])
 		}
@@ -1596,22 +1631,12 @@ func removeDiagnosticCaptureTempFile(cfg DiagnosticCaptureConfig, state *diagnos
 	if len(paths) == 0 {
 		return
 	}
-	var removedBytes int64
 	for _, path := range paths {
+		// Keep the activity marker until after deletion to exclude the janitor.
+		_ = removeDiagnosticCaptureFile(cfg, path)
 		markDiagnosticTempFileInactive(path)
-		info, err := os.Stat(path)
-		if err != nil || info.IsDir() {
-			continue
-		}
-		if os.Remove(path) == nil {
-			removedBytes += info.Size()
-		}
 	}
-	if removedBytes > 0 {
-		enforceDiagnosticCaptureStorage(cfg, "", removedBytes, 0)
-		recordDiagnosticCaptureTempBytesChange(cfg, -removedBytes)
-		removeEmptyDiagnosticCaptureDirectories(cfg.TempDir, filepath.Dir(paths[0]))
-	}
+	removeEmptyDiagnosticCaptureDirectories(cfg.TempDir, filepath.Dir(paths[0]))
 }
 
 type diagnosticCaptureJSONWriter struct {
@@ -1782,23 +1807,10 @@ func writeDiagnosticCaptureSession(cfg DiagnosticCaptureConfig, flow *Diagnostic
 	if err := os.MkdirAll(base, 0o755); err != nil {
 		return err
 	}
-	timestampPath := filepath.Join(base, ".capture-created-at")
-	previousTimestampSize := int64(0)
-	if info, err := os.Stat(timestampPath); err == nil {
-		previousTimestampSize = info.Size()
-	}
-	ensureDiagnosticCaptureTimestamp(base)
-	currentTimestampSize := int64(0)
-	if info, err := os.Stat(timestampPath); err == nil {
-		currentTimestampSize = info.Size()
-	}
-	path := filepath.Join(base, "request-log.json")
 	release := acquireDiagnosticCaptureFinalize(filepath.Clean(base))
 	defer release()
-	var previousSize int64
-	if info, err := os.Stat(path); err == nil {
-		previousSize = info.Size()
-	}
+	ensureDiagnosticCaptureTimestamp(cfg, base)
+	path := filepath.Join(base, "request-log.json")
 
 	var inboundRequest *diagnosticCapturePartState
 	var inboundResponse *diagnosticCapturePartState
@@ -1828,9 +1840,9 @@ func writeDiagnosticCaptureSession(cfg DiagnosticCaptureConfig, flow *Diagnostic
 		return err
 	}
 	temporaryPath := temporaryFile.Name()
-	defer os.Remove(temporaryPath)
+	defer removeDiagnosticCaptureFile(cfg, temporaryPath)
 	file := temporaryFile
-	bufferedWriter := bufio.NewWriterSize(file, diagnosticCaptureChunkSize)
+	bufferedWriter := bufio.NewWriterSize(&diagnosticCaptureTrackedWriter{file: file, cfg: cfg}, diagnosticCaptureChunkSize)
 	stream := &diagnosticCaptureJSONWriter{
 		writer:    bufferedWriter,
 		formatter: &diagnosticCaptureJSONFormatter{writer: bufferedWriter},
@@ -1900,15 +1912,15 @@ func writeDiagnosticCaptureSession(cfg DiagnosticCaptureConfig, flow *Diagnostic
 	if stream.err != nil {
 		return stream.err
 	}
-	if err := os.Rename(temporaryPath, path); err != nil {
-		return err
-	}
-
-	info, err := os.Stat(path)
+	sourceChange := trackDiagnosticCaptureFile(cfg, temporaryPath)
+	destinationChange := trackDiagnosticCaptureFile(cfg, path)
+	err = os.Rename(temporaryPath, path)
+	sourceChange.finishFromDisk()
+	destinationChange.finishFromDisk()
 	if err != nil {
 		return err
 	}
-	enforceDiagnosticCaptureStorage(cfg, path, previousSize, info.Size()+currentTimestampSize-previousTimestampSize)
+
 	return nil
 }
 

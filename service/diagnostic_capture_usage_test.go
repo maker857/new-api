@@ -98,7 +98,7 @@ func TestDiagnosticUsageScanRejectsOldDirectory(t *testing.T) {
 	assert.False(t, diagnosticCaptureStorageState.initialized)
 }
 
-func TestDiagnosticUsageStorageScopeSeparatesNodesAndDirectories(t *testing.T) {
+func TestDiagnosticUsageStorageScopeFollowsDirectoriesNotNodes(t *testing.T) {
 	cfg := captureUsageFixture(t)
 	previous := common.NodeName
 	common.NodeName = "node-one"
@@ -111,12 +111,23 @@ func TestDiagnosticUsageStorageScopeSeparatesNodesAndDirectories(t *testing.T) {
 	common.NodeName = "node-two"
 	other, err := diagnosticCaptureStorageScope(cfg)
 	require.NoError(t, err)
-	assert.NotEqual(t, first, other)
-	common.NodeName = "node-one"
-	cfg.CaptureDir = filepath.Join(t.TempDir(), "captures")
-	replaced, err := diagnosticCaptureStorageScope(cfg)
-	require.NoError(t, err)
-	assert.NotEqual(t, first, replaced)
+	assert.Equal(t, first, other, "replacing an instance must not invalidate the same storage")
+	for _, directory := range []string{"capture", "temporary", "failure"} {
+		t.Run(directory, func(t *testing.T) {
+			changed := cfg
+			switch directory {
+			case "capture":
+				changed.CaptureDir += "-other"
+			case "temporary":
+				changed.TempDir += "-other"
+			case "failure":
+				changed.FailureDir += "-other"
+			}
+			replaced, err := diagnosticCaptureStorageScope(changed)
+			require.NoError(t, err)
+			assert.NotEqual(t, first, replaced)
+		})
+	}
 }
 
 func TestDiagnosticCaptureWritesNewFileWhileMaintenanceIsBusy(t *testing.T) {

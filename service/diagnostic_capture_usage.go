@@ -72,9 +72,10 @@ func wakeDiagnosticCaptureUsage() {
 }
 
 // diagnosticCaptureStorageScope is evaluated only by the background worker.
-// NODE_NAME and the configured directories separate instances. The random
-// storage identity is kept inside the checkpoint, not in a separate marker.
-func diagnosticCaptureStorageScope(cfg DiagnosticCaptureConfig) (string, error) {
+// Statistics belong to the storage directories, not a process or NODE_NAME.
+// The optional node name is used only to recognize version-2 checkpoints on
+// upgrade; new checkpoints always use the directory-only scope.
+func diagnosticCaptureStorageScope(cfg DiagnosticCaptureConfig, legacyNodeName ...string) (string, error) {
 	captureDir, err := resolveDiagnosticCaptureDirectory(cfg.CaptureDir)
 	if err != nil {
 		return "", err
@@ -87,7 +88,11 @@ func diagnosticCaptureStorageScope(cfg DiagnosticCaptureConfig) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	digest := sha256.Sum256([]byte(common.NodeName + "\x00" + captureDir + "\x00" + tempDir + "\x00" + failureDir))
+	identity := captureDir + "\x00" + tempDir + "\x00" + failureDir
+	if len(legacyNodeName) > 0 {
+		identity = legacyNodeName[0] + "\x00" + identity
+	}
+	digest := sha256.Sum256([]byte(identity))
 	return hex.EncodeToString(digest[:]), nil
 }
 
@@ -138,7 +143,7 @@ func checkpointDiagnosticCaptureUsage(ctx context.Context, clean bool) error {
 	usage := diagnosticCaptureUsage{
 		Scope:     scope,
 		StorageID: diagnosticCaptureStorageState.storageID,
-		Version:   2, TotalBytes: max(0, diagnosticCaptureStorageState.totalBytes),
+		Version:   3, TotalBytes: max(0, diagnosticCaptureStorageState.totalBytes),
 		TemporaryBytes: max(0, diagnosticCaptureStorageState.tempBytes),
 		SavedAt:        time.Now().Unix(), ReconciledAt: diagnosticCaptureStorageState.lastReconciled.Unix(),
 		CleanShutdown:    clean && !diagnosticCaptureScanRunning.Load() && !diagnosticCaptureScanRequested.Load(),
@@ -176,8 +181,12 @@ func runDiagnosticCaptureUsageWorker() {
 		if !loaded {
 			scope, err := diagnosticCaptureStorageScope(cfg)
 			if err == nil {
+				legacyScope, legacyErr := diagnosticCaptureStorageScope(cfg, common.NodeName)
+				if legacyErr != nil {
+					legacyScope = "" // valid version-3 files need no legacy identity
+				}
 				path := filepath.Join(filepath.Dir(cfg.CaptureDir), diagnosticCaptureUsageFilename)
-				usage, loadErr := loadDiagnosticCaptureUsage(path, scope)
+				usage, loadErr := loadDiagnosticCaptureUsage(path, scope, legacyScope)
 				// A corrupt/unavailable checkpoint is not a reason to stop
 				// accounting. Bootstrap in the background and retry later saves.
 				restoreDiagnosticCaptureUsage(cfg, scope, usage)

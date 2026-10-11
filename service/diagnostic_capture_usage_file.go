@@ -34,7 +34,7 @@ func (usage diagnosticCaptureUsage) validate() error {
 	if len(usage.StorageID) != 32 || strings.Trim(usage.StorageID, "0123456789abcdef") != "" {
 		return errors.New("invalid diagnostic capture storage identity")
 	}
-	if usage.Version != 2 || usage.TotalBytes < 0 || usage.TemporaryBytes < 0 || usage.TemporaryBytes > usage.TotalBytes || usage.SavedAt <= 0 || usage.UncertaintyBytes < 0 {
+	if (usage.Version != 2 && usage.Version != 3) || usage.TotalBytes < 0 || usage.TemporaryBytes < 0 || usage.TemporaryBytes > usage.TotalBytes || usage.SavedAt <= 0 || usage.UncertaintyBytes < 0 {
 		return errors.New("invalid diagnostic capture usage checkpoint")
 	}
 	return nil
@@ -42,7 +42,7 @@ func (usage diagnosticCaptureUsage) validate() error {
 
 // Loading is background-only. A bounded read also rejects an accidentally
 // replaced statistics file without loading arbitrary capture bodies into RAM.
-func loadDiagnosticCaptureUsage(path, scope string) (*diagnosticCaptureUsage, error) {
+func loadDiagnosticCaptureUsage(path, scope string, legacyScope ...string) (*diagnosticCaptureUsage, error) {
 	file, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -66,7 +66,16 @@ func loadDiagnosticCaptureUsage(path, scope string) (*diagnosticCaptureUsage, er
 	if err := usage.validate(); err != nil {
 		return nil, err
 	}
-	if usage.Scope != scope {
+	if usage.Version == 2 {
+		// Old files contain only a node+directory hash, not recoverable paths.
+		// Migrate only a verified old identity, never blindly trust a sibling
+		// checkpoint that could describe a different capture directory.
+		if len(legacyScope) == 0 || usage.Scope != legacyScope[0] {
+			return nil, errors.New("legacy diagnostic capture usage belongs to another storage scope")
+		}
+		usage.Version = 3
+		usage.Scope = scope
+	} else if usage.Scope != scope {
 		return nil, errors.New("diagnostic capture usage belongs to another storage scope")
 	}
 	return &usage, nil
@@ -79,6 +88,9 @@ func loadDiagnosticCaptureUsage(path, scope string) (*diagnosticCaptureUsage, er
 func saveDiagnosticCaptureUsage(ctx context.Context, path string, usage diagnosticCaptureUsage) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+	if usage.Version != 3 {
+		return errors.New("diagnostic capture usage must be saved in version 3")
 	}
 	if err := usage.validate(); err != nil {
 		return err
@@ -93,7 +105,7 @@ func saveDiagnosticCaptureUsage(ctx context.Context, path string, usage diagnost
 			"文件用途":              "自动保存诊断抓包容量统计；请勿手动修改数值。与抓包、临时目录同级，备份时一起保留。",
 			"version":           "统计文件格式版本，不是程序版本。",
 			"storage_id":        "本次存储统计的随机标识，正常重启保持不变；文件丢失或失效后重新生成。",
-			"scope":             "节点名与抓包、临时、失败目录组合的哈希，用于校验统计适用范围。",
+			"scope":             "抓包、临时、失败目录组合的哈希，用于校验统计适用范围；不绑定节点名称或 New API 实例。",
 			"total_bytes":       "抓包、临时和失败目录的总占用，单位：字节；不包含本统计文件。",
 			"temporary_bytes":   "临时抓包目录占用，单位：字节；已包含在 total_bytes 内，请勿重复相加。",
 			"saved_at":          "本次保存时间，Unix 时间戳，单位：秒。",

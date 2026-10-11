@@ -14,7 +14,7 @@ import (
 
 func TestDiagnosticUsageFileReplacementKeepsCompleteCheckpoint(t *testing.T) {
 	path := filepath.Join(t.TempDir(), diagnosticCaptureUsageFilename)
-	usage := diagnosticCaptureUsage{Version: 2, StorageID: strings.Repeat("b", 32), Scope: strings.Repeat("a", 64), TotalBytes: 1234, TemporaryBytes: 50, SavedAt: 1700000000, CleanShutdown: true}
+	usage := diagnosticCaptureUsage{Version: 3, StorageID: strings.Repeat("b", 32), Scope: strings.Repeat("a", 64), TotalBytes: 1234, TemporaryBytes: 50, SavedAt: 1700000000, CleanShutdown: true}
 	missing, err := loadDiagnosticCaptureUsage(path, usage.Scope)
 	require.NoError(t, err)
 	assert.Nil(t, missing)
@@ -75,7 +75,7 @@ func TestDiagnosticUsageFailedCheckpointKeepsLastSuccessAndLiveAccounting(t *tes
 }
 
 func TestDiagnosticUsageFileRejectsCorruptionAndWrongScope(t *testing.T) {
-	valid := diagnosticCaptureUsage{Version: 2, StorageID: strings.Repeat("b", 32), Scope: strings.Repeat("a", 64), TotalBytes: 10, SavedAt: 1700000000}
+	valid := diagnosticCaptureUsage{Version: 3, StorageID: strings.Repeat("b", 32), Scope: strings.Repeat("a", 64), TotalBytes: 10, SavedAt: 1700000000}
 	validJSON, err := common.Marshal(valid)
 	require.NoError(t, err)
 	negative := valid
@@ -86,10 +86,15 @@ func TestDiagnosticUsageFileRejectsCorruptionAndWrongScope(t *testing.T) {
 	missingID.StorageID = ""
 	missingIDJSON, err := common.Marshal(missingID)
 	require.NoError(t, err)
+	unsupported := valid
+	unsupported.Version = 99
+	unsupportedJSON, err := common.Marshal(unsupported)
+	require.NoError(t, err)
 	for _, tc := range []struct{ name, data, scope string }{
 		{"truncated", `{"version":1`, valid.Scope},
 		{"negative", string(invalidJSON), valid.Scope},
 		{"missing_identity", string(missingIDJSON), valid.Scope},
+		{"unsupported_version", string(unsupportedJSON), valid.Scope},
 		{"wrong_storage", string(validJSON), strings.Repeat("b", 64)},
 		{"oversized", strings.Repeat(" ", 64*1024+1), valid.Scope},
 	} {
@@ -103,9 +108,79 @@ func TestDiagnosticUsageFileRejectsCorruptionAndWrongScope(t *testing.T) {
 	}
 }
 
+func TestDiagnosticUsageLegacyMigrationSurvivesInstanceReplacement(t *testing.T) {
+	cfg := captureUsageFixture(t)
+	previousNode := common.NodeName
+	t.Cleanup(func() { common.NodeName = previousNode })
+	common.NodeName = "original-node"
+	scope, err := diagnosticCaptureStorageScope(cfg)
+	require.NoError(t, err)
+	legacyScope, err := diagnosticCaptureStorageScope(cfg, common.NodeName)
+	require.NoError(t, err)
+	path := filepath.Join(filepath.Dir(cfg.CaptureDir), diagnosticCaptureUsageFilename)
+	old := diagnosticCaptureUsage{
+		Version: 2, StorageID: strings.Repeat("b", 32), Scope: legacyScope,
+		TotalBytes: 595736803, TemporaryBytes: 123, SavedAt: 1791688373,
+		ReconciledAt: 1791687778, CleanShutdown: true,
+	}
+	data, err := common.Marshal(old)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, data, 0o600))
+	// A version-2 hash cannot prove the directory after its node name changes.
+	// Do not silently accept unverifiable old statistics or modify their file.
+	wrongLegacyScope, err := diagnosticCaptureStorageScope(cfg, "another-node")
+	require.NoError(t, err)
+	unverified, err := loadDiagnosticCaptureUsage(path, scope, wrongLegacyScope)
+	require.Error(t, err)
+	assert.Nil(t, unverified)
+	loaded, err := loadDiagnosticCaptureUsage(path, scope, legacyScope)
+	require.NoError(t, err)
+	require.NotNil(t, loaded)
+	expected := old
+	expected.Version = 3
+	expected.Scope = scope
+	assert.Equal(t, expected, *loaded, "migration preserves every recorded value")
+	onDisk, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, data, onDisk, "reading a legacy checkpoint never overwrites it")
+	restoreDiagnosticCaptureUsage(cfg, scope, loaded)
+	assert.False(t, diagnosticCaptureScanRequested.Load(), "verified migration must not scan")
+	require.NoError(t, checkpointDiagnosticCaptureUsage(context.Background(), false))
+
+	// Replacement instance reads the upgraded file despite a different name.
+	common.NodeName = "replacement-node"
+	replacementScope, err := diagnosticCaptureStorageScope(cfg)
+	require.NoError(t, err)
+	require.Equal(t, scope, replacementScope)
+	saved, err := loadDiagnosticCaptureUsage(path, replacementScope)
+	require.NoError(t, err)
+	require.NotNil(t, saved)
+	assert.Equal(t, 3, saved.Version)
+	assert.Equal(t, old.StorageID, saved.StorageID)
+	assert.Equal(t, old.TotalBytes, saved.TotalBytes)
+	assert.Equal(t, old.TemporaryBytes, saved.TemporaryBytes)
+	diagnosticCaptureStorageState.Lock()
+	diagnosticCaptureStorageState.diagnosticCaptureUsageCounters = diagnosticCaptureUsageCounters{}
+	diagnosticCaptureStorageState.Unlock()
+	configureDiagnosticCaptureStorage(cfg)
+	restoreDiagnosticCaptureUsage(cfg, replacementScope, saved)
+	assert.False(t, diagnosticCaptureScanRequested.Load(), "new instance must reuse the same directory's statistics")
+	assert.Equal(t, old.TotalBytes, diagnosticCaptureStorageState.totalBytes)
+
+	// Sibling capture directories share a checkpoint location, but must not
+	// share capacity when the actual configured directory changes.
+	other := cfg
+	other.CaptureDir += "-other"
+	otherScope, err := diagnosticCaptureStorageScope(other)
+	require.NoError(t, err)
+	mismatched, err := loadDiagnosticCaptureUsage(path, otherScope, legacyScope)
+	require.Error(t, err)
+	assert.Nil(t, mismatched)
+}
+
 func TestDiagnosticUsageFileIgnoresInterruptedTemporarySave(t *testing.T) {
 	path := filepath.Join(t.TempDir(), diagnosticCaptureUsageFilename)
-	usage := diagnosticCaptureUsage{Version: 2, StorageID: strings.Repeat("b", 32), Scope: strings.Repeat("a", 64), TotalBytes: 200, SavedAt: 1700000000}
+	usage := diagnosticCaptureUsage{Version: 3, StorageID: strings.Repeat("b", 32), Scope: strings.Repeat("a", 64), TotalBytes: 200, SavedAt: 1700000000}
 	require.NoError(t, saveDiagnosticCaptureUsage(context.Background(), path, usage))
 	// Simulate process termination after creating the next temp file, before rename.
 	require.NoError(t, os.WriteFile(path+".tmp-interrupted", []byte(`{"version":`), 0o600))

@@ -181,6 +181,13 @@ func BuildRequestPolicy(options map[string]string) (*RequestPolicySnapshot, erro
 	default:
 		return nil, fmt.Errorf("invalid global session mode")
 	}
+	// The Claude cache-only scope must be a valid, non-empty Go regex; the
+	// generic option endpoint enforced this before the policy page existed.
+	if pattern := strings.TrimSpace(snapshot.Affinity.ClaudeCacheModelRegex); pattern == "" {
+		return nil, fmt.Errorf("claude cache affinity model regex is required")
+	} else if _, err := regexp.Compile(pattern); err != nil {
+		return nil, fmt.Errorf("claude cache affinity model regex: %w", err)
+	}
 	for _, rule := range snapshot.Affinity.Rules {
 		switch rule.SessionMode {
 		case "", "inherit", "off", "prefer", "strict":

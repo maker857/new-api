@@ -20,19 +20,19 @@ import { SystemBehaviorSection } from '../general/system-behavior-section'
 import { EmailSettingsSection } from '../integrations/email-settings-section'
 import { MonitoringSettingsSection } from '../integrations/monitoring-settings-section'
 import { WorkerSettingsSection } from '../integrations/worker-settings-section'
+import { DiagnosticCaptureSettingsSection } from '../maintenance/diagnostic-capture-settings-section'
 import { LogSettingsSection } from '../maintenance/log-settings-section'
 import { PerformanceSection } from '../maintenance/performance-section'
 import { UpdateCheckerSection } from '../maintenance/update-checker-section'
 import type { OperationsSettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
 
-function buildLogSettingsSection(
-  settings: OperationsSettings,
-  mode: 'maintenance' | 'capture'
-) {
+// Log capture (diagnostic request/response files and error rewrite rules) is a
+// model-router feature; log maintenance uses the upstream section.
+function buildDiagnosticCaptureSection(settings: OperationsSettings) {
   return (
-    <LogSettingsSection
-      mode={mode}
+    <DiagnosticCaptureSettingsSection
+      mode='capture'
       defaultEnabled={Boolean(settings.LogConsumeEnabled)}
       diagnosticDefaults={{
         DiagnosticCaptureEnabled: Boolean(settings.DiagnosticCaptureEnabled),
@@ -118,11 +118,10 @@ const OPERATIONS_SECTIONS = [
   },
   {
     id: 'alerts',
-    titleKey: 'Monitoring & Alerts',
+    titleKey: 'Model performance metrics',
     build: (settings: OperationsSettings) => (
       <MonitoringSettingsSection
         defaultValues={{
-          QuotaRemindThreshold: settings.QuotaRemindThreshold,
           'perf_metrics_setting.enabled':
             settings['perf_metrics_setting.enabled'] ?? true,
           'perf_metrics_setting.flush_interval':
@@ -137,10 +136,16 @@ const OPERATIONS_SECTIONS = [
   },
   {
     id: 'email',
-    titleKey: 'SMTP Email',
+    titleKey: 'Email & Notifications',
     build: (settings: OperationsSettings) => (
       <EmailSettingsSection
         defaultValues={{
+          QuotaRemindEnabled: settings.QuotaRemindEnabled,
+          QuotaRemindThreshold: settings.QuotaRemindThreshold,
+          EmailProvider: settings.EmailProvider,
+          ResendApiKey: settings.ResendApiKey,
+          ResendKeyConfigured: settings.ResendKeyConfigured,
+          ResendFrom: settings.ResendFrom,
           SMTPServer: settings.SMTPServer,
           SMTPPort: settings.SMTPPort,
           SMTPAccount: settings.SMTPAccount,
@@ -171,14 +176,23 @@ const OPERATIONS_SECTIONS = [
   {
     id: 'logs',
     titleKey: 'Log Maintenance',
-    build: (settings: OperationsSettings) =>
-      buildLogSettingsSection(settings, 'maintenance'),
+    build: (settings: OperationsSettings) => (
+      <LogSettingsSection
+        defaultValues={{
+          LogConsumeEnabled: Boolean(settings.LogConsumeEnabled),
+          'log_setting.user_export_enabled':
+            settings['log_setting.user_export_enabled'] ?? true,
+          'log_setting.max_range_days':
+            settings['log_setting.max_range_days'] ?? 365,
+        }}
+      />
+    ),
   },
   {
     id: 'capture',
     titleKey: 'Log Capture',
     build: (settings: OperationsSettings) =>
-      buildLogSettingsSection(settings, 'capture'),
+      buildDiagnosticCaptureSection(settings),
   },
   {
     id: 'performance',

@@ -41,5 +41,7 @@ func TestCommittedNativeTaskResponseIsNotRetried(t *testing.T) {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Set("native_response_committed", true)
 
-	assert.False(t, shouldRetryTaskRelay(c, 1, &dto.TaskError{StatusCode: http.StatusInternalServerError}, 1))
+	decision := decideTaskRetry(c, &dto.TaskError{StatusCode: http.StatusInternalServerError}, 1)
+	assert.Equal(t, "stop", decision.Action)
+	assert.Equal(t, "native_response_committed", decision.Reason)
 }

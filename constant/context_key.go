@@ -40,6 +40,11 @@ const (
 	ContextKeyChannelMultiKeyIndex     ContextKey = "channel_multi_key_index"
 	ContextKeyChannelKey               ContextKey = "channel_key"
 
+	// ContextKeyUpstreamRequestOrigin is the scheme and host of the last upstream
+	// request, which differs from the base URL for absolute Advanced Custom routes
+	// and for adaptors that build official endpoints themselves.
+	ContextKeyUpstreamRequestOrigin ContextKey = "upstream_request_origin"
+
 	ContextKeyAutoGroup           ContextKey = "auto_group"
 	ContextKeyAutoGroupIndex      ContextKey = "auto_group_index"
 	ContextKeyAutoGroupRetryIndex ContextKey = "auto_group_retry_index"
@@ -66,8 +71,9 @@ const (
 	ContextKeyAdminRejectReason ContextKey = "admin_reject_reason"
 
 	// ContextKeyLanguage stores the user's language preference for i18n
-	ContextKeyLanguage ContextKey = "language"
-	ContextKeyIsStream ContextKey = "is_stream"
+	ContextKeyLanguage             ContextKey = "language"
+	ContextKeyIsStream             ContextKey = "is_stream"
+	ContextKeyResponseStreamStatus ContextKey = "response_stream_status"
 
 	// ContextKeyNativeSeedanceResponse selects the Volcengine-native response
 	// body for a Seedance task submission.
@@ -78,4 +84,9 @@ const (
 	// fallback in authHelper (finishAdminAudit) skips its record to avoid
 	// duplicate entries.
 	ContextKeyAuditLogged ContextKey = "audit_logged"
+
+	// ContextKeyTokenAuditParams contains only the API token operation's safe metadata.
+	ContextKeyTokenAuditParams ContextKey = "token_audit_params"
+	// ContextKeyTokenAuditSucceeded disambiguates token responses that exceed the audit buffer.
+	ContextKeyTokenAuditSucceeded ContextKey = "token_audit_succeeded"
 )

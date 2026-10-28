@@ -31,20 +31,31 @@ func TestClaudeStreamFinalUsageEstimatesOnlyUncountedUsage(t *testing.T) {
 		streamText                               bool
 		wantInput, wantOutput                    int
 		wantLocalCount                           bool
+		estimatePrompt                           int
+		wantEstimated                            *bool
 	}{
 		{name: "cache-only refusal keeps zeros", startUsage: `{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":20000,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":20000}}`, deltaUsage: `{"output_tokens":0}`, stopReason: "refusal"},
 		{name: "broken stream keeps cache-only input", startUsage: `{"input_tokens":0,"output_tokens":1,"cache_read_input_tokens":50000}`, streamText: true, wantOutput: 2, wantLocalCount: true},
 		{name: "zeros after streamed text are estimated", startUsage: `{"input_tokens":0,"output_tokens":0}`, deltaUsage: `{"output_tokens":0}`, stopReason: "end_turn", streamText: true, wantInput: 1200, wantOutput: 2, wantLocalCount: true},
 		{name: "zero delta input keeps start input", startUsage: `{"input_tokens":1000,"output_tokens":1}`, deltaUsage: `{"input_tokens":0,"output_tokens":50}`, stopReason: "end_turn", streamText: true, wantInput: 1000, wantOutput: 50},
+		{name: "empty upstream uses request estimate", estimatePrompt: 13_808_340, wantInput: 13_808_340, wantLocalCount: true, wantEstimated: commonPointer(true)},
+		{name: "terminal zero usage uses request estimate", startUsage: `{"input_tokens":0,"output_tokens":0}`, deltaUsage: `{"output_tokens":0}`, stopReason: "end_turn", estimatePrompt: 13_808_340, wantInput: 13_808_340, wantLocalCount: true, wantEstimated: commonPointer(false)},
+		{name: "upstream usage overrides request estimate", startUsage: `{"input_tokens":322172,"output_tokens":0}`, deltaUsage: `{"output_tokens":0}`, stopReason: "end_turn", estimatePrompt: 13_808_340, wantInput: 322_172, wantEstimated: commonPointer(false)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())
 			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
 			info := &relaycommon.RelayInfo{RelayFormat: types.RelayFormatClaude, ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "claude-opus-4-8"}}
-			info.SetEstimatePromptTokens(1200)
+			estimate := tc.estimatePrompt
+			if estimate == 0 {
+				estimate = 1200
+			}
+			info.SetEstimatePromptTokens(estimate)
 			state := &ClaudeResponseInfo{Usage: &dto.Usage{}}
-			start := fmt.Sprintf(`{"type":"message_start","message":{"id":"msg_1","model":"claude-opus-4-8","usage":%s}}`, tc.startUsage)
-			require.Nil(t, HandleStreamResponseData(c, info, state, start))
+			if tc.startUsage != "" {
+				start := fmt.Sprintf(`{"type":"message_start","message":{"id":"msg_1","model":"claude-opus-4-8","usage":%s}}`, tc.startUsage)
+				require.Nil(t, HandleStreamResponseData(c, info, state, start))
+			}
 			if tc.streamText {
 				require.Nil(t, HandleStreamResponseData(c, info, state, `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}`))
 			}
@@ -61,6 +72,9 @@ func TestClaudeStreamFinalUsageEstimatesOnlyUncountedUsage(t *testing.T) {
 			require.True(t, ok)
 			assert.Equal(t, tc.wantInput, canonical.PromptTokens, "settlement must bill the same input")
 			assert.Equal(t, tc.wantOutput, canonical.CompletionTokens)
+			if tc.wantEstimated != nil {
+				assert.Equal(t, *tc.wantEstimated, state.Usage.BillingUsage.Estimated)
+			}
 		})
 	}
 }
@@ -102,7 +116,11 @@ func TestResponseOpenAI2ClaudeToolUseInputIsObject(t *testing.T) {
 
 			require.Len(t, resp.Content, 1)
 			assert.Equal(t, "tool_use", resp.Content[0].Type)
-			assert.Equal(t, tt.want, resp.Content[0].Input)
+			encoded, err := common.Marshal(resp.Content[0].Input)
+			require.NoError(t, err)
+			want, err := common.Marshal(tt.want)
+			require.NoError(t, err)
+			assert.Equal(t, string(want), string(encoded))
 		})
 	}
 }

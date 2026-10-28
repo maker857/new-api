@@ -78,7 +78,6 @@ type DiagnosticCaptureConfig struct {
 	TempDir                   string
 	FailureDir                string
 	TempRetentionMinutes      int64
-	NextCleanupEligibleAt     int64
 	ReconciliationEnabled     bool
 	ReconciliationMode        string
 	ReconciliationHour        int
@@ -324,7 +323,6 @@ type diagnosticCaptureUsageCounters struct {
 	restored         bool
 	epoch            uint64
 	lastAttempt      time.Time
-	nextEligibleAt   time.Time
 	lastReconciled   time.Time
 }
 
@@ -487,7 +485,6 @@ func DiagnosticCaptureConfigFromOptions() DiagnosticCaptureConfig {
 		TempDir:                   diagnosticCaptureTempDir(captureDir),
 		FailureDir:                diagnosticCaptureFailureDir(captureDir),
 		TempRetentionMinutes:      tempRetentionMinutes,
-		NextCleanupEligibleAt:     diagnosticCaptureOptionInt64(DiagnosticCaptureNextCleanupEligibleAtKey),
 		AutoCleanupEnabled:        options[DiagnosticCaptureAutoCleanupEnabledKey] == "true",
 		MaxStorageBytes:           maxStorageBytes,
 		CleanupPercent:            cleanupPercent,
@@ -1145,13 +1142,11 @@ type DiagnosticCaptureStorageStatus struct {
 	LastTempFreedBytes        int64  `json:"last_temp_freed_bytes"`
 }
 
-// NotifyDiagnosticCaptureCleanupSettingsChanged invalidates a previously
-// computed retention wait and schedules one asynchronous capacity check. It is
-// called only after an administrator changes a setting that can alter which
-// capture directories are eligible for deletion.
+// NotifyDiagnosticCaptureCleanupSettingsChanged resets the retry throttle and
+// schedules one asynchronous capacity check after an administrator changes a
+// setting that can alter which capture directories are eligible for deletion.
 func NotifyDiagnosticCaptureCleanupSettingsChanged() {
 	diagnosticCaptureStorageState.Lock()
-	diagnosticCaptureStorageState.nextEligibleAt = time.Time{}
 	diagnosticCaptureStorageState.lastAttempt = time.Time{}
 	diagnosticCaptureStorageState.Unlock()
 	notifyDiagnosticCaptureReconciliationSettingsChanged()
@@ -1193,10 +1188,9 @@ func cleanupDiagnosticCaptureStorageIfNeeded(cfg DiagnosticCaptureConfig) {
 		diagnosticCaptureStorageState.Unlock()
 		return
 	}
-	if !diagnosticCaptureStorageState.nextEligibleAt.IsZero() && now.Before(diagnosticCaptureStorageState.nextEligibleAt) {
-		diagnosticCaptureStorageState.Unlock()
-		return
-	}
+	// Retention is checked against each capture's timestamp during selection
+	// and again before deletion. It must not postpone the entire next pass:
+	// protected captures can expire, or finish recovery, between checks.
 	diagnosticCaptureStorageState.lastAttempt = now
 	totalBytes := max(0, diagnosticCaptureStorageState.totalBytes-diagnosticCaptureStorageState.uncertaintyBytes)
 	diagnosticCaptureStorageState.Unlock()
@@ -1260,38 +1254,16 @@ func cleanupDiagnosticCaptureStorage(cfg DiagnosticCaptureConfig, activePath str
 	}
 
 	status := "completed"
-	nextEligibleAt := int64(0)
 	if currentBytes > targetBytes {
 		status = "retention_limited"
-		next := now.Add(time.Duration(cfg.MinRetentionMinutes) * time.Minute)
-		if cfg.IncompleteTimeoutMinutes > 0 {
-			incompleteNext := now.Add(time.Duration(cfg.IncompleteTimeoutMinutes) * time.Minute)
-			if next.IsZero() || incompleteNext.Before(next) {
-				next = incompleteNext
-			}
-		}
-		if next.After(now) {
-			nextEligibleAt = next.Unix()
-		}
 	}
-	diagnosticCaptureStorageState.Lock()
-	if diagnosticCaptureStorageState.captureDir == cfg.CaptureDir &&
-		diagnosticCaptureStorageState.tempDir == cfg.TempDir &&
-		diagnosticCaptureStorageState.failureDir == cfg.FailureDir {
-		if nextEligibleAt > 0 {
-			diagnosticCaptureStorageState.nextEligibleAt = time.Unix(nextEligibleAt, 0)
-		} else {
-			diagnosticCaptureStorageState.nextEligibleAt = time.Time{}
-		}
-	}
-	diagnosticCaptureStorageState.Unlock()
 	if err := model.UpdateOptionsBulk(map[string]string{
 		DiagnosticCaptureLastCleanupAtKey:           strconv.FormatInt(time.Now().Unix(), 10),
 		DiagnosticCaptureLastCleanupCutoffKey:       strconv.FormatInt(lastDeletedAt, 10),
 		DiagnosticCaptureLastCleanupDeletedCountKey: strconv.FormatInt(deletedCount, 10),
 		DiagnosticCaptureLastCleanupFreedBytesKey:   strconv.FormatInt(freedBytes, 10),
 		DiagnosticCaptureLastCleanupStatusKey:       status,
-		DiagnosticCaptureNextCleanupEligibleAtKey:   strconv.FormatInt(nextEligibleAt, 10),
+		DiagnosticCaptureNextCleanupEligibleAtKey:   "0", // clear the obsolete persisted retention wait
 	}); err != nil {
 		logDiagnosticCaptureMaintenanceError(diagnosticCaptureMaintenanceCleanupStatusError, "failed to save diagnostic capture cleanup status: "+err.Error())
 	}
@@ -1818,7 +1790,7 @@ func GetDiagnosticCaptureStorageStatus() (DiagnosticCaptureStorageStatus, error)
 		LastDeletedCount:          diagnosticCaptureOptionInt64(DiagnosticCaptureLastCleanupDeletedCountKey),
 		LastFreedBytes:            diagnosticCaptureOptionInt64(DiagnosticCaptureLastCleanupFreedBytesKey),
 		LastCleanupStatus:         lastCleanupStatus,
-		NextCleanupEligibleAt:     diagnosticCaptureOptionInt64(DiagnosticCaptureNextCleanupEligibleAtKey),
+		NextCleanupEligibleAt:     0, // retained for API compatibility; no global retention wait
 		LastTempCleanupAt:         diagnosticCaptureOptionInt64(DiagnosticCaptureLastTempCleanupAtKey),
 		LastTempDeletedCount:      diagnosticCaptureOptionInt64(DiagnosticCaptureLastTempDeletedCountKey),
 		LastTempFreedBytes:        diagnosticCaptureOptionInt64(DiagnosticCaptureLastTempFreedBytesKey),

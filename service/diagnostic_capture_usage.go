@@ -56,10 +56,6 @@ func configureDiagnosticCaptureStorage(cfg DiagnosticCaptureConfig) {
 	diagnosticCaptureStorageState.storageID = ""
 	diagnosticCaptureStorageState.usagePath = ""
 	diagnosticCaptureStorageState.lastAttempt = time.Time{}
-	diagnosticCaptureStorageState.nextEligibleAt = time.Time{}
-	if cfg.NextCleanupEligibleAt > time.Now().Unix() {
-		diagnosticCaptureStorageState.nextEligibleAt = time.Unix(cfg.NextCleanupEligibleAt, 0)
-	}
 	diagnosticCaptureStorageState.lastReconciled = time.Time{}
 	diagnosticCaptureScanRetryAfter.Store(0)
 }

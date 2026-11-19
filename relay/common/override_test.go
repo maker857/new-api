@@ -3,7 +3,9 @@ package common
 import (
 	"encoding/json"
 	"fmt"
+	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 
 	common2 "github.com/QuantumNous/new-api/common"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting/model_setting"
+	"github.com/gin-gonic/gin"
 	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -2698,4 +2701,104 @@ func TestReasoningEffortOverrideIsAuditedWithoutDebugMode(t *testing.T) {
 	_, err := ApplyParamOverrideWithRelayInfo([]byte(`{"reasoning":{"effort":"high"}}`), info)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"set reasoning.effort = max"}, info.ParamOverrideAudit)
+}
+
+func TestApplyPassThroughFields(t *testing.T) {
+	clientBody := `{"model":"claude-alias","max_tokens":1024,"compaction":{"type":"summarize"},"service_tier":"priority","n":3,"messages":[{"role":"user","content":"hi"}]}`
+	convertedBody := `{"model":"claude-upstream","max_tokens":1024,"messages":[{"role":"user","content":"hi"}]}`
+
+	tests := []struct {
+		name      string
+		enabled   bool
+		fields    []string
+		converted any
+		want      string
+	}{
+		{
+			name:      "copies listed field the conversion dropped",
+			enabled:   true,
+			fields:    []string{"compaction"},
+			converted: &dto.ClaudeRequest{},
+			want:      `{"model":"claude-upstream","max_tokens":1024,"messages":[{"role":"user","content":"hi"}],"compaction":{"type":"summarize"}}`,
+		},
+		{
+			name:      "never replaces a value the gateway produced",
+			enabled:   true,
+			fields:    []string{"messages", "absent_field"},
+			converted: &dto.ClaudeRequest{},
+			want:      convertedBody,
+		},
+		{
+			name:      "denied fields are ignored",
+			enabled:   true,
+			fields:    []string{"n"},
+			converted: &dto.ClaudeRequest{},
+			want:      convertedBody,
+		},
+		{
+			name:      "switch off copies nothing",
+			enabled:   false,
+			fields:    []string{"compaction"},
+			converted: &dto.ClaudeRequest{},
+			want:      convertedBody,
+		},
+		{
+			name:      "request converted to another protocol is left alone",
+			enabled:   true,
+			fields:    []string{"compaction"},
+			converted: &dto.GeneralOpenAIRequest{},
+			want:      convertedBody,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest("POST", "/v1/messages", strings.NewReader(clientBody))
+			info := &RelayInfo{
+				RelayFormat: types.RelayFormatClaude,
+				ChannelMeta: &ChannelMeta{ChannelOtherSettings: dto.ChannelOtherSettings{
+					PassThroughFieldsEnabled: tt.enabled,
+					PassThroughFields:        tt.fields,
+				}},
+			}
+
+			out, err := ApplyPassThroughFields(c, info, tt.converted, []byte(convertedBody))
+			require.NoError(t, err)
+			assert.JSONEq(t, tt.want, string(out))
+		})
+	}
+}
+
+// Copied fields still go through the default filters and the param override.
+func TestApplyPassThroughFieldsKeepsDefaultRules(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"m","service_tier":"priority","compaction":{"type":"summarize"}}`))
+	info := &RelayInfo{
+		RelayFormat: types.RelayFormatClaude,
+		ChannelMeta: &ChannelMeta{
+			ChannelOtherSettings: dto.ChannelOtherSettings{
+				PassThroughFieldsEnabled: true,
+				PassThroughFields:        []string{"service_tier", "compaction"},
+			},
+			ParamOverride: map[string]any{"compaction": map[string]any{"type": "override"}},
+		},
+	}
+
+	out, err := ApplyPassThroughFields(c, info, &dto.ClaudeRequest{}, []byte(`{"model":"m"}`))
+	require.NoError(t, err)
+	out, err = RemoveDisabledFields(out, info.ChannelOtherSettings, false)
+	require.NoError(t, err)
+	out, err = ApplyParamOverrideWithRelayInfo(out, info)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"model":"m","compaction":{"type":"override"}}`, string(out))
+}
+
+func TestValidatePassThroughFields(t *testing.T) {
+	valid := dto.ChannelOtherSettings{PassThroughFields: []string{"compaction", "context-edit_2"}}
+	assert.NoError(t, valid.ValidatePassThroughFields())
+
+	for _, name := range []string{"model", "stream", "max_tokens", "a.b", "", "x*"} {
+		settings := dto.ChannelOtherSettings{PassThroughFields: []string{name}}
+		assert.Error(t, settings.ValidatePassThroughFields(), name)
+	}
 }

@@ -18,6 +18,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 func commonPointer[T any](value T) *T {
@@ -515,4 +516,107 @@ func TestClaudeResponsePassesInputTransformationsThrough(t *testing.T) {
 		transformations + `,"usage":{"input_tokens":5,"output_tokens":1}}}`
 	require.Nil(t, HandleStreamResponseData(c, info, &ClaudeResponseInfo{Usage: &dto.Usage{}}, event))
 	assert.Contains(t, w.Body.String(), "data: "+event+"\n")
+}
+
+// Compaction usage is reported only in usage.iterations; the payloads below are
+// the shapes the Anthropic API returned for on-demand and threshold compaction.
+func TestClaudeCompactionUsageBilling(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const onDemandUsage = `{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,` +
+		`"iterations":[{"type":"compaction","input_tokens":108,"output_tokens":408,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}]}`
+	const thresholdUsage = `{"input_tokens":23000,"output_tokens":1000,"cache_read_input_tokens":500,"cache_creation_input_tokens":0,` +
+		`"iterations":[{"type":"compaction","input_tokens":180000,"output_tokens":3500,"cache_read_input_tokens":200,"cache_creation_input_tokens":40,"cache_creation":{"ephemeral_5m_input_tokens":40,"ephemeral_1h_input_tokens":0}},` +
+		`{"type":"message","input_tokens":23000,"output_tokens":1000,"cache_read_input_tokens":500,"cache_creation_input_tokens":0}]}`
+	// Returned by api.anthropic.com for a threshold compaction request on
+	// claude-fable-5-2: the top-level usage equals the message iteration only.
+	const officialThresholdUsage = `{"input_tokens":630,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":346,` +
+		`"iterations":[{"type":"compaction","input_tokens":95026,"output_tokens":1024,"cache_read_input_tokens":0,"cache_creation_input_tokens":0},` +
+		`{"type":"message","input_tokens":630,"output_tokens":346,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}]}`
+	const advisorUsage = `{"input_tokens":1760,"output_tokens":531,"iterations":[{"type":"message","input_tokens":412,"output_tokens":89},` +
+		`{"type":"advisor_message","model":"claude-opus-5-5","input_tokens":823,"output_tokens":1612},{"type":"message","input_tokens":1348,"output_tokens":442}]}`
+
+	for _, tc := range []struct {
+		name                                  string
+		enabled                               bool
+		relayFormat                           types.RelayFormat
+		usage                                 string
+		wantInput, wantOutput, wantCR, wantCC int
+		wantCompaction                        bool
+	}{
+		{name: "on-demand compaction is billed", enabled: true, relayFormat: types.RelayFormatClaude, usage: onDemandUsage, wantInput: 108, wantOutput: 408, wantCompaction: true},
+		{name: "official threshold compaction", enabled: true, relayFormat: types.RelayFormatClaude, usage: officialThresholdUsage, wantInput: 95656, wantOutput: 1370, wantCompaction: true},
+		{name: "threshold compaction adds to the reply", enabled: true, relayFormat: types.RelayFormatClaude, usage: thresholdUsage, wantInput: 203000, wantOutput: 4500, wantCR: 700, wantCC: 40, wantCompaction: true},
+		{name: "switch off keeps top-level usage", relayFormat: types.RelayFormatClaude, usage: thresholdUsage, wantInput: 23000, wantOutput: 1000, wantCR: 500},
+		{name: "advisor and message entries are not added", enabled: true, relayFormat: types.RelayFormatClaude, usage: advisorUsage, wantInput: 1760, wantOutput: 531},
+		{name: "converted client format is left alone", enabled: true, relayFormat: types.RelayFormatOpenAI, usage: thresholdUsage, wantInput: 23000, wantOutput: 1000, wantCR: 500},
+	} {
+		newInfo := func() *relaycommon.RelayInfo {
+			return &relaycommon.RelayInfo{RelayFormat: tc.relayFormat, ChannelMeta: &relaycommon.ChannelMeta{
+				UpstreamModelName:    "claude-fable-5-2",
+				ChannelOtherSettings: dto.ChannelOtherSettings{ClaudeCompactionUsageEnabled: tc.enabled},
+			}}
+		}
+		assertBilled := func(t *testing.T, info *relaycommon.RelayInfo, usage *dto.Usage) {
+			assert.Equal(t, tc.wantInput, usage.PromptTokens)
+			assert.Equal(t, tc.wantOutput, usage.CompletionTokens)
+			assert.Equal(t, tc.wantCR, usage.PromptTokensDetails.CachedTokens)
+			assert.Equal(t, tc.wantCC, usage.PromptTokensDetails.CachedCreationTokens)
+			canonical, ok := usage.BillingUsage.CanonicalUsage()
+			require.True(t, ok)
+			assert.Equal(t, tc.wantInput, canonical.PromptTokens, "settlement must bill the same input")
+			assert.Equal(t, tc.wantOutput, canonical.CompletionTokens)
+			assert.Equal(t, tc.wantCR, canonical.PromptTokensDetails.CachedTokens)
+			assert.Equal(t, tc.wantCC, canonical.PromptTokensDetails.CachedCreationTokens)
+			assert.Equal(t, tc.wantCompaction, info.CompactionUsage != nil)
+		}
+
+		t.Run(tc.name+"/non-stream", func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+			info := newInfo()
+			state := &ClaudeResponseInfo{Usage: &dto.Usage{}}
+			body := `{"id":"msg_1","type":"message","role":"assistant","model":"claude-fable-5-2",` +
+				`"content":[{"type":"compaction","content":"summary","signature":"sig"}],"stop_reason":"compaction","usage":` + tc.usage + `}`
+			require.Nil(t, HandleClaudeResponseData(c, info, state, nil, []byte(body)))
+			assertBilled(t, info, state.Usage)
+			if tc.relayFormat == types.RelayFormatClaude {
+				assert.Equal(t, body, w.Body.String(), "the client receives the upstream usage unchanged")
+			}
+		})
+
+		t.Run(tc.name+"/stream", func(t *testing.T) {
+			if tc.relayFormat != types.RelayFormatClaude {
+				t.Skip("converted stream formats are covered by the non-stream case")
+			}
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+			info := newInfo()
+			info.SetEstimatePromptTokens(48)
+			state := &ClaudeResponseInfo{Usage: &dto.Usage{}}
+			delta := `{"type":"message_delta","delta":{"stop_reason":"compaction"},"usage":` + tc.usage + `}`
+			for _, event := range []string{
+				`{"type":"message_start","message":{"id":"msg_1","model":"claude-fable-5-2","content":[],"usage":{"input_tokens":0,"output_tokens":0}}}`,
+				`{"type":"content_block_start","index":0,"content_block":{"type":"compaction","content":"summary","signature":"sig"}}`,
+				`{"type":"content_block_stop","index":0}`,
+				delta,
+				`{"type":"message_stop"}`,
+			} {
+				require.Nil(t, HandleStreamResponseData(c, info, state, event))
+			}
+			HandleStreamFinalResponse(c, info, state)
+			assertBilled(t, info, state.Usage)
+			assert.False(t, common.GetContextKeyBool(c, constant.ContextKeyLocalCountTokens), "real compaction usage must not fall back to estimation")
+			for line := range strings.SplitSeq(w.Body.String(), "\n") {
+				event, ok := strings.CutPrefix(line, "data: ")
+				if !ok || !strings.Contains(event, `"message_delta"`) {
+					continue
+				}
+				assert.Equal(t, gjson.Get(delta, "usage.input_tokens").Int(), gjson.Get(event, "usage.input_tokens").Int(),
+					"the client's top-level usage must not include compaction")
+				assert.Equal(t, gjson.Get(delta, "usage.iterations").Raw, gjson.Get(event, "usage.iterations").Raw)
+			}
+		})
+	}
 }

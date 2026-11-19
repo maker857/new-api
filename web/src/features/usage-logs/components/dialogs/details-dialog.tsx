@@ -52,6 +52,7 @@ import {
   UserCog,
   Info,
   LogIn,
+  Shrink,
 } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -1234,6 +1235,42 @@ export function DetailsDialog(props: DetailsDialogProps) {
               <DetailRow
                 label={t('Text Output')}
                 value={formatTokens(other.text_output)}
+                mono
+              />
+            )}
+          </DetailSection>
+        )}
+
+        {/* Claude compaction usage, already included in the billed tokens */}
+        {other?.compaction_usage && (
+          <DetailSection
+            icon={<Shrink className='size-3.5' aria-hidden='true' />}
+            iconTone='chart-4'
+            label={t('Compaction Usage (included above)')}
+          >
+            <DetailRow
+              label={t('Input')}
+              value={formatTokens(other.compaction_usage.input_tokens)}
+              mono
+            />
+            <DetailRow
+              label={t('Output')}
+              value={formatTokens(other.compaction_usage.output_tokens)}
+              mono
+            />
+            {other.compaction_usage.cache_read_tokens > 0 && (
+              <DetailRow
+                label={t('Cache Read')}
+                value={formatTokens(other.compaction_usage.cache_read_tokens)}
+                mono
+              />
+            )}
+            {other.compaction_usage.cache_creation_tokens > 0 && (
+              <DetailRow
+                label={t('Cache Write')}
+                value={formatTokens(
+                  other.compaction_usage.cache_creation_tokens
+                )}
                 mono
               />
             )}

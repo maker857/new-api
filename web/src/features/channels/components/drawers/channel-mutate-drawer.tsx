@@ -68,6 +68,7 @@ import { JsonEditor } from '@/components/json-editor'
 import { LearnMore } from '@/components/learn-more'
 import { LoadingState } from '@/components/loading-state'
 import { MultiSelect } from '@/components/multi-select'
+import { TagInput } from '@/components/tag-input'
 import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -305,6 +306,8 @@ const SENSITIVE_FORM_FIELDS = [
   'http2_connection_shards',
   'tls_insecure_skip_verify',
   'pass_through_body_enabled',
+  'pass_through_fields_enabled',
+  'pass_through_fields',
   'responses_websocket_enabled',
   'system_prompt',
   'system_prompt_override',
@@ -314,6 +317,7 @@ const SENSITIVE_FORM_FIELDS = [
   'allow_include_obfuscation',
   'allow_inference_geo',
   'allow_speed',
+  'claude_compaction_usage_enabled',
   'claude_beta_query',
   'ollama_openai_chat',
   'disable_task_polling_sleep',
@@ -1869,6 +1873,59 @@ export function ChannelMutateDrawer({
     />
   )
 
+  const passThroughSelectedFields = (
+    <div className='space-y-3'>
+      <FormField
+        control={form.control}
+        name='pass_through_fields_enabled'
+        render={({ field }) => (
+          <FormItem className='flex items-center justify-between px-4 py-3'>
+            <div className='space-y-0.5'>
+              <FormLabel>{t('Pass Through Selected Fields')}</FormLabel>
+              <FormDescription>
+                {t(
+                  'Copy the listed top-level request fields to upstream when format conversion drops them; only applies when API formats match, never replaces converted values, and field filtering and parameter override still apply'
+                )}
+              </FormDescription>
+            </div>
+            <FormControl>
+              <Switch
+                disabled={sensitiveLocked}
+                checked={field.value === true}
+                onCheckedChange={field.onChange}
+              />
+            </FormControl>
+          </FormItem>
+        )}
+      />
+      {formValues.pass_through_fields_enabled === true && (
+        <FormField
+          control={form.control}
+          name='pass_through_fields'
+          render={({ field }) => (
+            <FormItem className='px-4'>
+              <FormLabel>{t('Pass-through fields')}</FormLabel>
+              <FormControl>
+                <TagInput
+                  value={field.value ?? []}
+                  onChange={field.onChange}
+                  placeholder={t('e.g., compaction')}
+                  disabled={sensitiveLocked}
+                />
+              </FormControl>
+              <FormDescription>
+                {t(
+                  'Press Enter or comma to add a field. model, stream, stream_options, n and max token fields cannot be passed through.'
+                )}
+              </FormDescription>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+      )}
+    </div>
+  )
+
   const passthroughFields = (
     <FormField
       control={form.control}
@@ -3120,6 +3177,32 @@ export function ChannelMutateDrawer({
                       <Switch
                         disabled={sensitiveLocked}
                         checked={field.value}
+                        onCheckedChange={field.onChange}
+                      />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name='claude_compaction_usage_enabled'
+                render={({ field }) => (
+                  <FormItem className='flex items-center justify-between gap-3 px-4 py-3'>
+                    <div className='space-y-0.5'>
+                      <FormLabel className='text-sm'>
+                        {t('Bill compaction usage')}
+                      </FormLabel>
+                      <FormDescription>
+                        {t(
+                          'Add the compaction entries of usage.iterations to billed usage; Anthropic leaves them out of the top-level usage'
+                        )}
+                      </FormDescription>
+                    </div>
+                    <FormControl>
+                      <Switch
+                        disabled={sensitiveLocked}
+                        checked={field.value === true}
                         onCheckedChange={field.onChange}
                       />
                     </FormControl>
@@ -4811,6 +4894,7 @@ export function ChannelMutateDrawer({
                 {ollamaOpenAIChatFields}
                 {thinkingFields}
                 {passthroughFields}
+                {passThroughSelectedFields}
                 {systemPromptFields}
                 {systemPromptOverrideFields}
               </fieldset>

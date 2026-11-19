@@ -214,6 +214,27 @@ function addRequiredIssue(
   })
 }
 
+// Mirrors the backend rules in relaykit/dto/channel_settings.go.
+export const MAX_PASS_THROUGH_FIELDS = 32
+const PASS_THROUGH_FIELD_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_-]*$/
+const PASS_THROUGH_FIELDS_DENIED = new Set([
+  'model',
+  'stream',
+  'stream_options',
+  'n',
+  'max_tokens',
+  'max_completion_tokens',
+  'max_output_tokens',
+  'max_tokens_to_sample',
+])
+
+export function isPassThroughFieldAllowed(name: string): boolean {
+  return (
+    PASS_THROUGH_FIELD_NAME_PATTERN.test(name) &&
+    !PASS_THROUGH_FIELDS_DENIED.has(name)
+  )
+}
+
 export const channelFormSchema = z
   .object({
     name: z.string().min(1, ERROR_MESSAGES.REQUIRED_NAME),
@@ -310,9 +331,13 @@ export const channelFormSchema = z
     allow_include_obfuscation: z.boolean().optional(), // OpenAI: include usage obfuscation
     allow_inference_geo: z.boolean().optional(), // OpenAI/Anthropic: inference geography
     allow_speed: z.boolean().optional(), // Anthropic: speed mode control
+    claude_compaction_usage_enabled: z.boolean().optional(), // Anthropic: bill usage.iterations compaction entries
     claude_beta_query: z.boolean().optional(), // Anthropic: beta query passthrough
     ollama_openai_chat: z.boolean().optional(), // Ollama: OpenAI-compatible /v1/chat/completions instead of native /api/chat
     disable_task_polling_sleep: z.boolean().optional(),
+    // Selected client fields copied into the converted upstream request
+    pass_through_fields_enabled: z.boolean().optional(),
+    pass_through_fields: z.array(z.string()).optional(),
     // Upstream model update settings (stored in settings JSON)
     upstream_model_update_check_enabled: z.boolean().optional(),
     upstream_model_update_auto_sync_enabled: z.boolean().optional(),
@@ -500,6 +525,25 @@ export const channelFormSchema = z
         ERROR_MESSAGES.INVALID_HTTP1_WITH_SHARDS
       )
     }
+
+    const passThroughFields = (data.pass_through_fields ?? [])
+      .map((name) => name.trim())
+      .filter(Boolean)
+    if (passThroughFields.length > MAX_PASS_THROUGH_FIELDS) {
+      addRequiredIssue(
+        ctx,
+        'pass_through_fields',
+        'At most 32 pass-through fields are allowed'
+      )
+    } else if (
+      passThroughFields.some((name) => !isPassThroughFieldAllowed(name))
+    ) {
+      addRequiredIssue(
+        ctx,
+        'pass_through_fields',
+        'Pass-through fields must be top-level field names and cannot include model, stream, stream_options, n or max token fields'
+      )
+    }
   })
 
 export type ChannelFormValues = z.infer<typeof channelFormSchema>
@@ -571,9 +615,12 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   allow_include_obfuscation: false,
   allow_inference_geo: false,
   allow_speed: false,
+  claude_compaction_usage_enabled: false,
   claude_beta_query: false,
   ollama_openai_chat: false,
   disable_task_polling_sleep: false,
+  pass_through_fields_enabled: false,
+  pass_through_fields: [],
   upstream_model_update_check_enabled: false,
   upstream_model_update_auto_sync_enabled: false,
   upstream_model_update_ignored_models: '',
@@ -655,9 +702,12 @@ export function transformChannelToFormDefaults(
   let allowIncludeObfuscation = false
   let allowInferenceGeo = false
   let allowSpeed = false
+  let claudeCompactionUsageEnabled = false
   let claudeBetaQuery = false
   let ollamaOpenAIChat = false
   let disableTaskPollingSleep = false
+  let passThroughFieldsEnabled = false
+  let passThroughFields: string[] = []
   let upstreamModelUpdateCheckEnabled = false
   let upstreamModelUpdateAutoSyncEnabled = false
   let upstreamModelUpdateIgnoredModels = ''
@@ -680,9 +730,17 @@ export function transformChannelToFormDefaults(
       allowIncludeObfuscation = parsed.allow_include_obfuscation === true
       allowInferenceGeo = parsed.allow_inference_geo === true
       allowSpeed = parsed.allow_speed === true
+      claudeCompactionUsageEnabled =
+        parsed.claude_compaction_usage_enabled === true
       claudeBetaQuery = parsed.claude_beta_query === true
       ollamaOpenAIChat = parsed.ollama_openai_chat === true
       disableTaskPollingSleep = parsed.disable_task_polling_sleep === true
+      passThroughFieldsEnabled = parsed.pass_through_fields_enabled === true
+      passThroughFields = Array.isArray(parsed.pass_through_fields)
+        ? parsed.pass_through_fields.filter(
+            (name: unknown): name is string => typeof name === 'string'
+          )
+        : []
       upstreamModelUpdateCheckEnabled =
         parsed.upstream_model_update_check_enabled === true
       upstreamModelUpdateAutoSyncEnabled =
@@ -741,9 +799,12 @@ export function transformChannelToFormDefaults(
     allow_include_obfuscation: allowIncludeObfuscation,
     allow_inference_geo: allowInferenceGeo,
     allow_speed: allowSpeed,
+    claude_compaction_usage_enabled: claudeCompactionUsageEnabled,
     claude_beta_query: claudeBetaQuery,
     ollama_openai_chat: ollamaOpenAIChat,
     disable_task_polling_sleep: disableTaskPollingSleep,
+    pass_through_fields_enabled: passThroughFieldsEnabled,
+    pass_through_fields: passThroughFields,
     allow_safety_identifier: allowSafetyIdentifier,
     upstream_model_update_check_enabled: upstreamModelUpdateCheckEnabled,
     upstream_model_update_auto_sync_enabled: upstreamModelUpdateAutoSyncEnabled,
@@ -890,8 +951,11 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
 
   if (CLAUDE_FIELD_PASSTHROUGH_TYPES.has(formData.type)) {
     settingsObj.allow_speed = formData.allow_speed === true
-  } else if ('allow_speed' in settingsObj) {
+    settingsObj.claude_compaction_usage_enabled =
+      formData.claude_compaction_usage_enabled === true
+  } else {
     delete settingsObj.allow_speed
+    delete settingsObj.claude_compaction_usage_enabled
   }
 
   // Only the Anthropic adaptor supports forcing the Claude beta query.
@@ -910,6 +974,25 @@ function buildSettingsJSON(formData: ChannelFormValues): string {
 
   settingsObj.disable_task_polling_sleep =
     formData.disable_task_polling_sleep === true
+
+  const passThroughFields = [
+    ...new Set(
+      (formData.pass_through_fields ?? [])
+        .map((name) => name.trim())
+        .filter(Boolean)
+    ),
+  ]
+  if (
+    formData.pass_through_fields_enabled === true ||
+    passThroughFields.length > 0
+  ) {
+    settingsObj.pass_through_fields_enabled =
+      formData.pass_through_fields_enabled === true
+    settingsObj.pass_through_fields = passThroughFields
+  } else {
+    delete settingsObj.pass_through_fields_enabled
+    delete settingsObj.pass_through_fields
+  }
 
   // Upstream model update settings (for model-fetchable channel types)
   if (MODEL_FETCHABLE_TYPES.has(formData.type)) {

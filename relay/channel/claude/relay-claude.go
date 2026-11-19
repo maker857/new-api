@@ -122,6 +122,9 @@ func HandleStreamResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 			if !shouldSkipClaudeMessageDeltaUsagePatch(info) {
 				data = patchClaudeMessageDeltaUsageData(data, buildMessageDeltaPatchUsage(&claudeResponse, claudeInfo))
 			}
+			// After the client patch, so the event the client receives keeps
+			// the upstream top-level usage and compaction is not counted twice.
+			relaycommon.ApplyClaudeCompactionUsage(info, claudeInfo.Usage, []byte(data), "usage")
 		}
 		countClaudeStreamBillableTools(info, &claudeResponse)
 		helper.ClaudeChunkData(c, claudeResponse, data)
@@ -382,6 +385,7 @@ func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claud
 		claudeInfo.Usage.PromptTokensDetails.CachedCreationTokens = claudeResponse.Usage.CacheCreationInputTokens
 		claudeInfo.Usage.ClaudeCacheCreation5mTokens = claudeResponse.Usage.GetCacheCreation5mTokens()
 		claudeInfo.Usage.ClaudeCacheCreation1hTokens = claudeResponse.Usage.GetCacheCreation1hTokens()
+		relaycommon.ApplyClaudeCompactionUsage(info, claudeInfo.Usage, data, "usage")
 	}
 	var responseData []byte
 	switch info.RelayFormat {

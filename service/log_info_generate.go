@@ -129,6 +129,9 @@ func GenerateTextOtherInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, m
 	appendBillingInfo(relayInfo, other)
 	appendParamOverrideInfo(relayInfo, other)
 	appendStreamStatus(relayInfo, other)
+	if relayInfo.CompactionUsage != nil {
+		other.SetPublic("compaction_usage", *relayInfo.CompactionUsage)
+	}
 	return other
 }
 

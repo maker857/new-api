@@ -228,6 +228,16 @@ export interface LogOtherData {
   request_rules?: RequestRuleTrace[]
   usage_facts?: Record<string, string | number>
   reasoning_effort?: string
+  // Claude compaction usage from usage.iterations, already included in the
+  // billed tokens above.
+  compaction_usage?: {
+    input_tokens: number
+    output_tokens: number
+    cache_read_tokens: number
+    cache_creation_tokens: number
+    cache_creation_5m_tokens?: number
+    cache_creation_1h_tokens?: number
+  }
   image?: boolean
   image_ratio?: number
   image_output?: number

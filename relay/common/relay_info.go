@@ -182,6 +182,9 @@ type RelayInfo struct {
 	// ImageQuotaBeforeGroup is the frozen legacy estimate before request ratios.
 	ImageRequestCount     int
 	ImageQuotaBeforeGroup float64
+	// CompactionUsage is the Claude compaction usage added to this attempt's
+	// billed usage, kept for the consume log. Nil when nothing was added.
+	CompactionUsage *ClaudeCompactionUsage
 
 	Request dto.Request
 
@@ -276,6 +279,7 @@ func (info *RelayInfo) InitChannelMeta(c *gin.Context) {
 	info.SendResponseCount = 0
 	info.ClaudeToChatStreamState = nil
 	info.ChatToGeminiStreamState = nil
+	info.CompactionUsage = nil
 	channelType := common.GetContextKeyInt(c, constant.ContextKeyChannelType)
 	paramOverride := common.GetContextKeyStringMap(c, constant.ContextKeyChannelParamOverride)
 	headerOverride := common.GetContextKeyStringMap(c, constant.ContextKeyChannelHeaderOverride)

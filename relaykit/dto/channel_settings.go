@@ -253,6 +253,58 @@ type ChannelOtherSettings struct {
 	// rejection. Empty follows the default allow policy. Accepted values:
 	// "", "allow", "safe", "strict".
 	ToolLossPolicy string `json:"tool_loss_policy,omitempty"`
+	// PassThroughFieldsEnabled copies the listed top-level client fields into
+	// the converted upstream body when the conversion dropped them. It is
+	// separate from the whole-body pass-through switches: every other default
+	// rule (field filtering, param override) still applies.
+	PassThroughFieldsEnabled bool     `json:"pass_through_fields_enabled,omitempty"`
+	PassThroughFields        []string `json:"pass_through_fields,omitempty"`
+	// ClaudeCompactionUsageEnabled bills the compaction entries of a Claude
+	// response's usage.iterations. Anthropic leaves compaction tokens out of
+	// the top-level usage and bills them separately; when disabled only the
+	// top-level usage is counted, as before.
+	ClaudeCompactionUsageEnabled bool `json:"claude_compaction_usage_enabled,omitempty"`
+}
+
+// MaxPassThroughFields bounds the per-channel pass-through field list.
+const MaxPassThroughFields = 32
+
+var passThroughFieldNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]*$`)
+
+// passThroughFieldsDenied are fields the gateway owns: the model name after
+// mapping, the stream mode its response handling depends on, and billing
+// multipliers that must go through request validation.
+var passThroughFieldsDenied = []string{
+	"model",
+	"stream",
+	"stream_options",
+	"n",
+	"max_tokens",
+	"max_completion_tokens",
+	"max_output_tokens",
+	"max_tokens_to_sample",
+}
+
+// IsPassThroughFieldAllowed reports whether name may be listed as a
+// pass-through field.
+func IsPassThroughFieldAllowed(name string) bool {
+	return passThroughFieldNamePattern.MatchString(name) && !slices.Contains(passThroughFieldsDenied, name)
+}
+
+// ValidatePassThroughFields validates the pass-through field list.
+func (s *ChannelOtherSettings) ValidatePassThroughFields() error {
+	if s == nil {
+		return nil
+	}
+	if len(s.PassThroughFields) > MaxPassThroughFields {
+		return fmt.Errorf("pass_through_fields allows at most %d fields", MaxPassThroughFields)
+	}
+	for _, name := range s.PassThroughFields {
+		if !IsPassThroughFieldAllowed(name) {
+			return fmt.Errorf("invalid pass_through_fields entry: %q", name)
+		}
+	}
+	return nil
 }
 
 func (s *ChannelOtherSettings) IsOpenRouterEnterprise() bool {

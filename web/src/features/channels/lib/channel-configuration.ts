@@ -60,6 +60,8 @@ const CONFIGURATION_BLOCKS = {
       'force_format',
       'thinking_to_content',
       'pass_through_body_enabled',
+      'pass_through_fields_enabled',
+      'pass_through_fields',
       'responses_websocket_enabled',
       'ollama_openai_chat',
       'system_prompt',
@@ -75,6 +77,7 @@ const CONFIGURATION_BLOCKS = {
       'allow_include_obfuscation',
       'allow_inference_geo',
       'allow_speed',
+      'claude_compaction_usage_enabled',
       'claude_beta_query',
     ],
   },
@@ -155,6 +158,8 @@ export function getChannelConfigurationState(
       values.thinking_to_content ||
       (values.type !== CHANNEL_TYPE_ADVANCED_CUSTOM &&
         values.pass_through_body_enabled) ||
+      (values.pass_through_fields_enabled &&
+        (values.pass_through_fields?.length ?? 0) > 0) ||
       (supportsResponsesWebSocket(values.type) &&
         values.responses_websocket_enabled) ||
       (values.type === CHANNEL_TYPE_OLLAMA && values.ollama_openai_chat) ||
@@ -170,6 +175,7 @@ export function getChannelConfigurationState(
           values.allow_include_obfuscation)) ||
       (claudePassthrough &&
         (values.allow_speed ||
+          values.claude_compaction_usage_enabled ||
           (values.type === 14 && values.claude_beta_query)))
     ),
     extraSettings: Boolean(

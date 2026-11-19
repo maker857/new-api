@@ -130,3 +130,27 @@ test('compaction usage switch round-trips for Anthropic and is dropped for other
   )
   expect(openaiSettings).not.toHaveProperty('claude_compaction_usage_enabled')
 })
+
+test('new Anthropic channels enable compaction usage by default while existing channels keep their saved value', () => {
+  const newChannel = channelFormSchema.parse(baseForm)
+  const newSettings = JSON.parse(
+    transformFormDataToCreatePayload(newChannel).channel.settings ?? '{}'
+  )
+  expect(newSettings.claude_compaction_usage_enabled).toBe(true)
+
+  const existing = channelSchema.parse({
+    ...transformFormDataToCreatePayload(newChannel).channel,
+    settings: '{}',
+    other: '',
+    remark: '',
+    id: 8,
+    status: 1,
+    created_time: 1,
+    test_time: 0,
+    response_time: 0,
+    balance_updated_time: 0,
+  })
+  expect(
+    transformChannelToFormDefaults(existing).claude_compaction_usage_enabled
+  ).toBe(false)
+})

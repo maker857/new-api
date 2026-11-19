@@ -615,7 +615,8 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   allow_include_obfuscation: false,
   allow_inference_geo: false,
   allow_speed: false,
-  claude_compaction_usage_enabled: false,
+  // On for new channels; existing channels keep their saved value.
+  claude_compaction_usage_enabled: true,
   claude_beta_query: false,
   ollama_openai_chat: false,
   disable_task_polling_sleep: false,
